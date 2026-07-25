@@ -221,7 +221,9 @@ async function loadModels(query: ProcessModelQuery = currentQuery.value) {
   currentQuery.value = { ...query }
   const request = ++listRequest
   try {
-    const result = await context.client.listModels(query)
+    const result = await context.client.listModels(query, {
+      showGlobalLoading: !Object.prototype.hasOwnProperty.call(query, 'filterText'),
+    })
     assertCurrentSession(context)
     if (request !== listRequest) return
     models.value = result.data

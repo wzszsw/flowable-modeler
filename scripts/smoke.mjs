@@ -414,6 +414,18 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+const builtIndexHtml = readFileSync('dist/index.html', 'utf8')
+const builtEntryMatch = builtIndexHtml.match(
+  /<script[^>]+type="module"[^>]+src="([^"]*\/assets\/index-[^"]+\.js)"/,
+)
+assert(
+  builtIndexHtml.includes('id="app-bootstrap-loading"') &&
+    builtIndexHtml.includes('正在加载 Flowable Modeler...'),
+  '生产 index.html 缺少 app 挂载前 Loading',
+)
+assert(builtEntryMatch, '无法从生产 index.html 定位入口脚本')
+const builtEntrySource = builtEntryMatch[1]
+
 function parseHashRoute(url) {
   const pageUrl = url instanceof URL ? url : new URL(url)
   const routeUrl = new URL(pageUrl.hash.slice(1) || '/', pageUrl.origin)
@@ -825,17 +837,24 @@ async function loginToModeler(page, username = 'admin', password = 'test') {
 
 async function createModelFromList(page, name, key, description = '') {
   await page.locator('[data-testid="create-model"]').click()
-  await page
-    .locator('input[data-testid="model-create-name"], [data-testid="model-create-name"] input')
-    .fill(name)
-  await page
-    .locator('input[data-testid="model-create-key"], [data-testid="model-create-key"] input')
-    .fill(key)
-  await page
-    .locator(
-      'textarea[data-testid="model-create-description"], [data-testid="model-create-description"] textarea',
-    )
-    .fill(description)
+  const nameInput = page.locator(
+    'input[data-testid="model-create-name"], [data-testid="model-create-name"] input',
+  )
+  const keyInput = page.locator(
+    'input[data-testid="model-create-key"], [data-testid="model-create-key"] input',
+  )
+  const descriptionInput = page.locator(
+    'textarea[data-testid="model-create-description"], [data-testid="model-create-description"] textarea',
+  )
+  assert(
+    (await nameInput.inputValue()) === '' &&
+      (await keyInput.inputValue()) === '' &&
+      (await descriptionInput.inputValue()) === '',
+    '新建 BPMN 流程表单仍带有默认值',
+  )
+  await nameInput.fill(name)
+  await keyInput.fill(key)
+  await descriptionInput.fill(description)
   await page.locator('[data-testid="confirm-create-model"]').click()
   const canvas = page.locator('.djs-container')
   const createError = page.locator('.el-message--error')
@@ -1171,8 +1190,56 @@ let browser
 try {
   await waitForServer()
   browser = await chromium.launch({ headless: true, executablePath })
-  const page = await browser.newPage({ viewport: { width: 1600, height: 960 } })
   const runtimeErrors = []
+
+  const bootstrapPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  const bootstrapApi = createMockModelerApi()
+  trackRuntimeErrors(bootstrapPage, runtimeErrors, new Set([401]))
+  await installMockModelerApiRoutes(bootstrapPage, bootstrapApi)
+  let notifyEntryRequested
+  let releaseEntry
+  const entryRequested = new Promise((resolve) => {
+    notifyEntryRequested = resolve
+  })
+  const entryRelease = new Promise((resolve) => {
+    releaseEntry = resolve
+  })
+  await bootstrapPage.route(new URL(builtEntrySource, `${origin}/`).href, async (route) => {
+    notifyEntryRequested()
+    await entryRelease
+    await route.continue()
+  })
+  const bootstrapNavigation = bootstrapPage.goto(origin, { waitUntil: 'networkidle' })
+  await entryRequested
+  await bootstrapPage.waitForFunction(() => {
+    const loading = document.querySelector('#app-bootstrap-loading')
+    return loading && getComputedStyle(loading).opacity === '1'
+  })
+  const bootstrapSnapshot = await bootstrapPage.locator('#app-bootstrap-loading').evaluate(
+    (element) => ({
+      display: getComputedStyle(element).display,
+      label: element.textContent?.trim(),
+      spinnerAnimation: getComputedStyle(
+        element.querySelector('.app-bootstrap-spinner'),
+      ).animationName,
+    }),
+  )
+  assert(
+    bootstrapSnapshot.display === 'flex' &&
+      bootstrapSnapshot.label === '正在加载 Flowable Modeler...' &&
+      bootstrapSnapshot.spinnerAnimation === 'app-bootstrap-spin',
+    `app 挂载前 Loading 样式或语义错误：${JSON.stringify(bootstrapSnapshot)}`,
+  )
+  releaseEntry()
+  await bootstrapNavigation
+  await bootstrapPage.locator('[data-testid="login-page"]').waitFor()
+  assert(
+    (await bootstrapPage.locator('#app-bootstrap-loading').count()) === 0,
+    'Vue app 挂载后仍残留首屏 Loading',
+  )
+  await bootstrapPage.close()
+
+  const page = await browser.newPage({ viewport: { width: 1600, height: 960 } })
   trackRuntimeErrors(page, runtimeErrors, new Set([401]))
   const mainModelApi = createMockModelerApi()
   await installMockModelerApiRoutes(page, mainModelApi)
@@ -1412,8 +1479,42 @@ try {
   const modelSearchInput = modelPage.locator(
     'input[data-testid="model-search"], [data-testid="model-search"] input',
   )
+  const modelQueriesBeforeSearch = modelApi.state.requests.filter(
+    (request) => request.method === 'GET' && request.path === '/models',
+  ).length
+  const searchStartedAt = Date.now()
   await modelSearchInput.fill('Process_model_b')
+  await modelPage.waitForTimeout(900)
+  assert(
+    modelApi.state.requests.filter(
+      (request) => request.method === 'GET' && request.path === '/models',
+    ).length === modelQueriesBeforeSearch,
+    '搜索输入停顿不足 1 秒时提前发起了模型查询',
+  )
   await modelPage.waitForFunction(() => document.querySelectorAll('[data-testid="model-row"]').length === 1)
+  const modelQueriesAfterSearch = modelApi.state.requests.filter(
+    (request) => request.method === 'GET' && request.path === '/models',
+  ).length
+  assert(
+    Date.now() - searchStartedAt >= 1000 &&
+      modelQueriesAfterSearch === modelQueriesBeforeSearch + 1,
+    `搜索防抖没有在停顿 1 秒后仅查询一次：${JSON.stringify({
+      elapsed: Date.now() - searchStartedAt,
+      before: modelQueriesBeforeSearch,
+      after: modelQueriesAfterSearch,
+    })}`,
+  )
+  await modelPage.waitForTimeout(250)
+  assert(
+    modelApi.state.requests.filter(
+      (request) => request.method === 'GET' && request.path === '/models',
+    ).length === modelQueriesAfterSearch,
+    '单次搜索停顿触发了重复模型查询',
+  )
+  assert(
+    await modelSearchInput.evaluate((element) => document.activeElement === element),
+    '搜索请求完成后搜索框失去了焦点',
+  )
   assert((await findModelRow(modelPage, '流程模型 B').count()) === 1, '流程模型搜索返回了错误记录')
   const searchRequest = [...modelApi.state.requests]
     .reverse()

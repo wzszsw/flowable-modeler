@@ -1,5 +1,15 @@
-import axios from 'axios'
+import axios, { type InternalAxiosRequestConfig } from 'axios'
 import { ElLoading, type LoadingInstance } from 'element-plus'
+
+declare module 'axios' {
+  interface AxiosRequestConfig {
+    showGlobalLoading?: boolean
+  }
+
+  interface InternalAxiosRequestConfig {
+    globalLoadingStarted?: boolean
+  }
+}
 
 const MODELER_REST_BASE = '/modeler-app/rest'
 
@@ -43,6 +53,12 @@ function finishLoading() {
   }, 0)
 }
 
+function finishRequestLoading(config: InternalAxiosRequestConfig | undefined) {
+  if (!config?.globalLoadingStarted) return
+  config.globalLoadingStarted = false
+  finishLoading()
+}
+
 export class ModelerApiError extends Error {
   readonly status: number
   readonly details: unknown
@@ -82,20 +98,28 @@ export function createModelerHttpClient() {
   })
 
   client.interceptors.request.use((config) => {
-    beginLoading()
-    config.headers.set('Accept', 'application/json')
-    config.headers.set('Cache-Control', 'no-cache')
-    config.headers.set('Pragma', 'no-cache')
-    return config
+    try {
+      config.headers.set('Accept', 'application/json')
+      config.headers.set('Cache-Control', 'no-cache')
+      config.headers.set('Pragma', 'no-cache')
+      if (config.showGlobalLoading !== false) {
+        config.globalLoadingStarted = true
+        beginLoading()
+      }
+      return config
+    } catch (error) {
+      finishRequestLoading(config)
+      throw error
+    }
   })
 
   client.interceptors.response.use(
     (response) => {
-      finishLoading()
+      finishRequestLoading(response.config)
       return response
     },
     (error: unknown) => {
-      finishLoading()
+      if (axios.isAxiosError(error)) finishRequestLoading(error.config)
       if (error instanceof ModelerApiError) return Promise.reject(error)
       if (!axios.isAxiosError(error)) return Promise.reject(error)
 

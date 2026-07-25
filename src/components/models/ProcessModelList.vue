@@ -51,8 +51,7 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-const DEFAULT_NAME = '请假审批流程'
-const DEFAULT_KEY = 'Process_leave_request'
+const SEARCH_DEBOUNCE_MS = 1000
 const PROCESS_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
 
 const searchQuery = ref('')
@@ -61,8 +60,8 @@ const createDialogVisible = ref(false)
 const createFormRef = ref<FormInstance>()
 const importInputRef = ref<HTMLInputElement>()
 const createForm = reactive<ModelCreateForm>({
-  name: DEFAULT_NAME,
-  key: DEFAULT_KEY,
+  name: '',
+  key: '',
   description: '',
 })
 
@@ -91,13 +90,25 @@ function currentQuery(): ProcessModelQuery {
   return { filterText: searchQuery.value.trim(), sort: sortMode.value }
 }
 
+function clearSearchTimer() {
+  if (searchTimer === undefined) return
+  clearTimeout(searchTimer)
+  searchTimer = undefined
+}
+
 watch(searchQuery, () => {
-  if (searchTimer) clearTimeout(searchTimer)
-  searchTimer = setTimeout(() => emit('queryChange', currentQuery()), 250)
+  clearSearchTimer()
+  searchTimer = setTimeout(() => {
+    searchTimer = undefined
+    emit('queryChange', currentQuery())
+  }, SEARCH_DEBOUNCE_MS)
 })
 
-watch(sortMode, () => emit('queryChange', currentQuery()))
-onBeforeUnmount(() => searchTimer && clearTimeout(searchTimer))
+watch(sortMode, () => {
+  clearSearchTimer()
+  emit('queryChange', currentQuery())
+})
+onBeforeUnmount(clearSearchTimer)
 
 const dateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   year: 'numeric',
@@ -114,8 +125,8 @@ function formatDateTime(value: string) {
 }
 
 function resetCreateForm() {
-  createForm.name = DEFAULT_NAME
-  createForm.key = DEFAULT_KEY
+  createForm.name = ''
+  createForm.key = ''
   createForm.description = ''
   createFormRef.value?.clearValidate()
 }

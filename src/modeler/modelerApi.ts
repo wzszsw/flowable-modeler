@@ -43,6 +43,10 @@ export interface ProcessModelQuery {
   sort?: ModelSort
 }
 
+export interface ModelerRequestOptions {
+  showGlobalLoading?: boolean
+}
+
 export interface CreateProcessModelInput {
   name: string
   key: string
@@ -162,7 +166,10 @@ export class ModelerApi {
     })
   }
 
-  async listModels(query: ProcessModelQuery = {}): Promise<ProcessModelListResult> {
+  async listModels(
+    query: ProcessModelQuery = {},
+    options: ModelerRequestOptions = {},
+  ): Promise<ProcessModelListResult> {
     const parameters = new URLSearchParams({
       filter: 'processes',
       sort: query.sort || 'modifiedDesc',
@@ -171,7 +178,10 @@ export class ModelerApi {
     const filterText = query.filterText?.trim()
     if (filterText) parameters.set('filterText', filterText)
 
-    const response = await this.http.get('/models', { params: parameters })
+    const response = await this.http.get('/models', {
+      params: parameters,
+      showGlobalLoading: options.showGlobalLoading,
+    })
     const result = asRecord(response.data)
     const data = Array.isArray(result.data) ? result.data.map(parseProcessModel) : []
     return {
