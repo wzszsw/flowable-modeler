@@ -31,7 +31,9 @@ async function submit() {
   } catch {
     return
   }
-  emit('login', { username: form.username.trim(), password: form.password })
+  const credentials = { username: form.username.trim(), password: form.password }
+  form.password = ''
+  emit('login', credentials)
 }
 </script>
 

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { shallowRef, ref } from 'vue'
+import { onMounted, shallowRef, ref } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 
 import LoginView from '@/components/auth/LoginView.vue'
@@ -39,6 +39,7 @@ const embeddedMode = isEmbeddedMode()
 const api = shallowRef<ModelerApi | null>(null)
 const authenticated = ref(false)
 const authenticating = ref(false)
+const sessionRestoring = ref(!embeddedMode)
 const loginError = ref('')
 const username = ref('')
 const models = ref<ProcessModel[]>([])
@@ -111,6 +112,7 @@ function resetSession(message = '') {
   listLoading.value = false
   activeModel.value = null
   activeXml.value = ''
+  sessionRestoring.value = false
   loginError.value = message
 }
 
@@ -132,12 +134,16 @@ async function login(credentials: ModelerCredentials) {
   const generation = ++authGeneration
   authenticating.value = true
   loginError.value = ''
-  const candidate = new ModelerApi(credentials)
+  const candidate = new ModelerApi()
   try {
+    await candidate.authenticate(credentials)
+    if (generation !== authGeneration) return
+    const account = await candidate.getAccount()
+    if (generation !== authGeneration) return
     const result = await candidate.listModels(currentQuery.value)
     if (generation !== authGeneration) return
     api.value = candidate
-    username.value = credentials.username
+    username.value = account.id
     models.value = result.data
     totalModels.value = result.total
     authenticated.value = true
@@ -154,8 +160,56 @@ async function login(credentials: ModelerCredentials) {
   }
 }
 
-function logout() {
-  resetSession()
+async function restoreSession() {
+  const generation = ++authGeneration
+  const candidate = new ModelerApi()
+  try {
+    const account = await candidate.getAccount()
+    if (generation !== authGeneration) return
+    const result = await candidate.listModels(currentQuery.value)
+    if (generation !== authGeneration) return
+    api.value = candidate
+    username.value = account.id
+    models.value = result.data
+    totalModels.value = result.total
+    authenticated.value = true
+  } catch (error) {
+    if (generation !== authGeneration) return
+    if (!isAuthenticationError(error)) {
+      loginError.value = error instanceof Error ? error.message : '无法连接 Flowable Modeler'
+    }
+  } finally {
+    if (generation === authGeneration) sessionRestoring.value = false
+  }
+}
+
+async function logout() {
+  const client = api.value
+  if (!client || authenticating.value) return
+
+  const generation = ++authGeneration
+  listRequest += 1
+  pendingOperations.clear()
+  api.value = null
+  authenticated.value = false
+  authenticating.value = true
+  username.value = ''
+  models.value = []
+  totalModels.value = 0
+  listLoading.value = false
+  activeModel.value = null
+  activeXml.value = ''
+  loginError.value = ''
+
+  try {
+    await client.logout()
+  } catch (error) {
+    if (generation === authGeneration) {
+      loginError.value = error instanceof Error ? error.message : '退出登录失败'
+    }
+  } finally {
+    if (generation === authGeneration) authenticating.value = false
+  }
 }
 
 async function loadModels(query: ProcessModelQuery = currentQuery.value) {
@@ -346,10 +400,23 @@ function closeEditor() {
   activeXml.value = ''
   void loadModels()
 }
+
+onMounted(() => {
+  if (!embeddedMode) void restoreSession()
+})
 </script>
 
 <template>
   <BpmnDesigner v-if="embeddedMode" />
+  <div
+    v-else-if="sessionRestoring"
+    class="session-restoring"
+    data-testid="session-restoring"
+    role="status"
+    aria-label="正在恢复登录状态"
+  >
+    <span class="session-spinner" aria-hidden="true" />
+  </div>
   <LoginView
     v-else-if="!authenticated"
     :busy="authenticating"
@@ -380,3 +447,26 @@ function closeEditor() {
     @logout="logout"
   />
 </template>
+
+<style scoped>
+.session-restoring {
+  display: grid;
+  width: 100%;
+  height: 100%;
+  place-items: center;
+  background: #f4f6f8;
+}
+
+.session-spinner {
+  width: 34px;
+  height: 34px;
+  border: 3px solid #d0d5dd;
+  border-top-color: #2563eb;
+  border-radius: 50%;
+  animation: session-spin 0.8s linear infinite;
+}
+
+@keyframes session-spin {
+  to { transform: rotate(360deg); }
+}
+</style>

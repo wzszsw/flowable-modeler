@@ -414,7 +414,9 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-const EXPECTED_BASIC_AUTHORIZATION = `Basic ${Buffer.from('admin:test').toString('base64')}`
+const MOCK_SESSION_COOKIE_NAME = 'FLOWABLE_REMEMBER_ME'
+const MOCK_SESSION_COOKIE_VALUE = 'mock-admin-session'
+const MOCK_SESSION_COOKIE = `${MOCK_SESSION_COOKIE_NAME}=${MOCK_SESSION_COOKIE_VALUE}`
 
 function createDefaultOryxModel(name, key, description = '') {
   return {
@@ -497,14 +499,21 @@ function createMockModelerApi() {
   async function routeHandler(route) {
     const request = route.request()
     const url = new URL(request.url())
-    const path = url.pathname.replace(/^\/api\/editor/, '')
-    const authorized = request.headers().authorization === EXPECTED_BASIC_AUTHORIZATION
+    const headers = request.headers()
+    const path = url.pathname.startsWith('/modeler-app/rest')
+      ? url.pathname.slice('/modeler-app/rest'.length) || '/'
+      : url.pathname
+    const authorized = (headers.cookie || '')
+      .split(';')
+      .some((cookie) => cookie.trim() === MOCK_SESSION_COOKIE)
     const event = {
       method: request.method(),
       path,
       query: Object.fromEntries(url.searchParams),
       authorized,
-      contentType: request.headers()['content-type'] || '',
+      authorization: headers.authorization || '',
+      cookie: headers.cookie || '',
+      contentType: headers['content-type'] || '',
       body: request.postData() || '',
     }
     requests.push(event)
@@ -517,8 +526,44 @@ function createMockModelerApi() {
         body: JSON.stringify(body),
       })
 
+    if (path === '/app/authentication') {
+      if (request.method() !== 'POST') {
+        return json(405, { message: 'Authentication requires POST' })
+      }
+      const form = new URLSearchParams(request.postData() || '')
+      event.form = Object.fromEntries(form)
+      if (form.get('j_username') !== 'admin' || form.get('j_password') !== 'test') {
+        return json(401, { message: 'Bad credentials', messageKey: 'GENERAL.ERROR.UNAUTHORIZED' })
+      }
+      return json(
+        200,
+        {},
+        { 'Set-Cookie': `${MOCK_SESSION_COOKIE}; Path=/; HttpOnly; SameSite=Lax` },
+      )
+    }
+
+    if (path === '/app/logout') {
+      if (request.method() !== 'POST') return json(405, { message: 'Logout requires POST' })
+      return json(
+        200,
+        {},
+        {
+          'Set-Cookie': `${MOCK_SESSION_COOKIE_NAME}=; Path=/; Max-Age=0; HttpOnly; SameSite=Lax`,
+        },
+      )
+    }
+
     if (!authorized) {
       return json(401, { message: 'Bad credentials', messageKey: 'GENERAL.ERROR.UNAUTHORIZED' })
+    }
+
+    if (path === '/account' && request.method() === 'GET') {
+      return json(200, {
+        id: 'admin',
+        firstName: 'Flowable',
+        lastName: 'Administrator',
+        fullName: 'Flowable Administrator',
+      })
     }
 
     if (path === '/import-process-model') {
@@ -645,6 +690,23 @@ function createMockModelerApi() {
   return { state, createRecord, routeHandler }
 }
 
+async function installMockModelerApiRoutes(target, api) {
+  await target.route('**/app/authentication', api.routeHandler)
+  await target.route('**/app/logout', api.routeHandler)
+  await target.route('**/modeler-app/rest/**', api.routeHandler)
+}
+
+function assertModelRequestsUseCookie(api, phase) {
+  const modelRequests = api.state.requests.filter(
+    (request) => request.path === '/models' || request.path.startsWith('/models/'),
+  )
+  assert(modelRequests.length > 0, `${phase}没有发起模型请求`)
+  assert(
+    modelRequests.every((request) => request.authorized && !request.authorization),
+    `${phase}没有仅使用 Flowable 会话 Cookie：${JSON.stringify(modelRequests)}`,
+  )
+}
+
 async function installBrowserStorageProbe(page) {
   await page.addInitScript(() => {
     window.__browserStorageAccesses = []
@@ -740,7 +802,7 @@ function trackRuntimeErrors(page, runtimeErrors, expectedApiErrorStatuses = new 
     if (
       statusMatch &&
       expectedApiErrorStatuses.has(Number(statusMatch[1])) &&
-      sourceUrl.includes('/api/editor/')
+      (sourceUrl.includes('/modeler-app/rest/') || sourceUrl.includes('/app/authentication'))
     ) {
       return
     }
@@ -1046,9 +1108,9 @@ try {
   browser = await chromium.launch({ headless: true, executablePath })
   const page = await browser.newPage({ viewport: { width: 1600, height: 960 } })
   const runtimeErrors = []
-  trackRuntimeErrors(page, runtimeErrors)
+  trackRuntimeErrors(page, runtimeErrors, new Set([401]))
   const mainModelApi = createMockModelerApi()
-  await page.route('**/api/editor/**', mainModelApi.routeHandler)
+  await installMockModelerApiRoutes(page, mainModelApi)
   await installBrowserStorageProbe(page)
 
   const embeddedPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
@@ -1156,7 +1218,7 @@ try {
 
   const modelApi = createMockModelerApi()
   const modelContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
-  await modelContext.route('**/api/editor/**', modelApi.routeHandler)
+  await installMockModelerApiRoutes(modelContext, modelApi)
   const modelPage = await modelContext.newPage()
   trackRuntimeErrors(modelPage, runtimeErrors, new Set([401, 409, 500]))
   await installBrowserStorageProbe(modelPage)
@@ -1186,9 +1248,14 @@ try {
   )
   assert(
     modelApi.state.requests.some(
-      (request) => request.method === 'GET' && request.path === '/models' && !request.authorized,
+      (request) =>
+        request.method === 'POST' &&
+        request.path === '/app/authentication' &&
+        request.form?.j_username === 'admin' &&
+        request.form?.j_password === 'wrong-password' &&
+        request.form?._spring_security_remember_me === 'true',
     ),
-    `无效凭据没有触发 HTTP Basic 401 校验（${invalidLoginMessage}）：${JSON.stringify(modelApi.state.requests)}`,
+    `无效凭据没有触发 Flowable 表单认证 401（${invalidLoginMessage}）：${JSON.stringify(modelApi.state.requests)}`,
   )
 
   await loginToModeler(modelPage)
@@ -1202,6 +1269,7 @@ try {
     initialListRequest?.query.modelType === '0' && initialListRequest?.query.sort === 'modifiedDesc',
     `初始流程模型查询参数错误：${JSON.stringify(initialListRequest?.query)}`,
   )
+  assertModelRequestsUseCookie(modelApi, '登录后的初始流程模型查询')
 
   await createModelFromList(modelPage, '流程模型 A', 'Process_model_a', '用于多模型隔离回归')
   const createModelARequest = modelApi.state.requests.find(
@@ -1224,7 +1292,8 @@ try {
   const modelAFirstSaveResponse = modelPage.waitForResponse(
     (response) =>
       response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === `/api/editor/models/${modelAId}/editor/json`,
+      new URL(response.url()).pathname ===
+        `/modeler-app/rest/models/${modelAId}/editor/json`,
   )
   await modelPage.locator('[data-testid="save-model"]').click()
   await modelAFirstSaveResponse
@@ -1286,16 +1355,30 @@ try {
   assert(sortRequest?.query.sort === 'nameAsc', `流程模型排序参数错误：${JSON.stringify(sortRequest?.query)}`)
 
   await assertNoBrowserPersistence(modelPage, '流程模型创建和查询后')
+  const loginRequestCountBeforeRefresh = modelApi.state.requests.filter(
+    (request) => request.method === 'POST' && request.path === '/app/authentication',
+  ).length
+  const accountRequestCountBeforeRefresh = modelApi.state.requests.filter(
+    (request) => request.method === 'GET' && request.path === '/account',
+  ).length
   await modelPage.reload({ waitUntil: 'networkidle' })
-  await modelPage.locator('[data-testid="login-page"]').waitFor()
-  assert(
-    (await modelPage.locator('[data-testid="process-model-list-page"]').count()) === 0,
-    '刷新后错误地从浏览器存储恢复了登录态',
-  )
-  await assertNoBrowserPersistence(modelPage, '刷新登录页后')
-  await loginToModeler(modelPage)
   await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  assert(
+    modelApi.state.requests.filter(
+      (request) => request.method === 'POST' && request.path === '/app/authentication',
+    ).length === loginRequestCountBeforeRefresh,
+    '刷新恢复会话时错误地重新提交了登录表单',
+  )
+  const accountRequestsAfterRefresh = modelApi.state.requests.filter(
+    (request) => request.method === 'GET' && request.path === '/account',
+  )
+  assert(
+    accountRequestsAfterRefresh.length === accountRequestCountBeforeRefresh + 1 &&
+      accountRequestsAfterRefresh.at(-1).authorized,
+    `刷新后没有通过 Flowable 会话 Cookie 恢复账户：${JSON.stringify(accountRequestsAfterRefresh)}`,
+  )
   assert((await modelPage.locator('[data-testid="model-row"]').count()) === 2, '刷新后未从后端重新加载流程模型')
+  await assertNoBrowserPersistence(modelPage, '刷新恢复登录后')
 
   const savedModelARow = findModelRow(modelPage, '流程模型 A 已保存')
   await savedModelARow.locator('[data-testid="model-primary-open"]').focus()
@@ -1324,7 +1407,8 @@ try {
   const overwriteResponse = modelPage.waitForResponse(
     (response) =>
       response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === `/api/editor/models/${modelAId}/editor/json`,
+      new URL(response.url()).pathname ===
+        `/modeler-app/rest/models/${modelAId}/editor/json`,
   )
   await modelPage.getByRole('button', { name: '覆盖保存', exact: true }).click()
   await overwriteResponse
@@ -1598,7 +1682,41 @@ try {
     '移动端流程模型行操作缺少可访问名称',
   )
   await modelPage.screenshot({ path: 'artifacts/ui-models-mobile.png', fullPage: true })
+  assertModelRequestsUseCookie(modelApi, '流程模型完整 API 回归')
   await assertNoBrowserPersistence(modelPage, '流程模型完整 API 回归后')
+  const loginRequestCountBeforeLogout = modelApi.state.requests.filter(
+    (request) => request.method === 'POST' && request.path === '/app/authentication',
+  ).length
+  const logoutResponse = modelPage.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === '/app/logout',
+  )
+  await modelPage.locator('[data-testid="logout"]').click()
+  await logoutResponse
+  await modelPage.locator('[data-testid="login-page"]').waitFor()
+  assert(
+    modelApi.state.requests.some(
+      (request) =>
+        request.method === 'POST' && request.path === '/app/logout' && request.authorized,
+    ),
+    '退出登录没有携带 Flowable 会话 Cookie 调用 /app/logout',
+  )
+  const cookiesAfterLogout = await modelContext.cookies(origin)
+  assert(
+    !cookiesAfterLogout.some((cookie) => cookie.name === MOCK_SESSION_COOKIE_NAME),
+    `退出登录后仍保留 Flowable 会话 Cookie：${JSON.stringify(cookiesAfterLogout)}`,
+  )
+  await modelPage.reload({ waitUntil: 'networkidle' })
+  await modelPage.locator('[data-testid="login-page"]').waitFor()
+  assert(
+    (await modelPage.locator('[data-testid="process-model-list-page"]').count()) === 0 &&
+      modelApi.state.requests.filter(
+        (request) => request.method === 'POST' && request.path === '/app/authentication',
+      ).length === loginRequestCountBeforeLogout,
+    '退出后刷新错误地恢复了登录态或重新提交了登录表单',
+  )
+  await assertNoBrowserPersistence(modelPage, '退出后刷新登录页')
   await modelContext.close()
 
   await page.goto(origin, { waitUntil: 'networkidle' })
@@ -2914,7 +3032,8 @@ try {
   const keyboardSaveResponse = page.waitForResponse(
     (response) =>
       response.request().method() === 'POST' &&
-      new URL(response.url()).pathname === `/api/editor/models/${mainModelId}/editor/json`,
+      new URL(response.url()).pathname ===
+        `/modeler-app/rest/models/${mainModelId}/editor/json`,
   )
   await jobCategoryInput.press('Control+s')
   await keyboardSaveResponse
@@ -6190,8 +6309,8 @@ try {
     description: '浏览器验证模型',
   })
   const desktopPage = await browser.newPage({ viewport: { width: 1600, height: 960 } })
-  trackRuntimeErrors(desktopPage, runtimeErrors)
-  await desktopPage.route('**/api/editor/**', screenshotApi.routeHandler)
+  trackRuntimeErrors(desktopPage, runtimeErrors, new Set([401]))
+  await installMockModelerApiRoutes(desktopPage, screenshotApi)
   await installBrowserStorageProbe(desktopPage)
   await desktopPage.goto(origin, { waitUntil: 'networkidle' })
   await loginToModeler(desktopPage)
@@ -6201,8 +6320,8 @@ try {
   await desktopPage.close()
 
   const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } })
-  trackRuntimeErrors(mobilePage, runtimeErrors)
-  await mobilePage.route('**/api/editor/**', screenshotApi.routeHandler)
+  trackRuntimeErrors(mobilePage, runtimeErrors, new Set([401]))
+  await installMockModelerApiRoutes(mobilePage, screenshotApi)
   await installBrowserStorageProbe(mobilePage)
   await mobilePage.goto(origin, { waitUntil: 'networkidle' })
   await loginToModeler(mobilePage)

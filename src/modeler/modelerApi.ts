@@ -7,6 +7,11 @@ export interface ModelerCredentials {
   password: string
 }
 
+export interface ModelerAccount {
+  id: string
+  fullName: string
+}
+
 export interface ProcessModel {
   id: string
   name: string
@@ -61,6 +66,10 @@ export interface SaveEditorModelInput {
 
 type Fetcher = typeof fetch
 
+const MODELER_REST_BASE = '/modeler-app/rest'
+const AUTHENTICATION_URL = '/app/authentication'
+const LOGOUT_URL = '/app/logout'
+
 export class ModelerApiError extends Error {
   readonly status: number
   readonly details: unknown
@@ -71,13 +80,6 @@ export class ModelerApiError extends Error {
     this.status = status
     this.details = details
   }
-}
-
-function basicAuthorization(credentials: ModelerCredentials) {
-  const bytes = new TextEncoder().encode(`${credentials.username}:${credentials.password}`)
-  let binary = ''
-  for (const byte of bytes) binary += String.fromCharCode(byte)
-  return `Basic ${btoa(binary)}`
 }
 
 function asRecord(value: unknown): Record<string, unknown> {
@@ -133,6 +135,14 @@ function parseEditorDocument(value: unknown): EditorModelDocument {
   }
 }
 
+function parseAccount(value: unknown): ModelerAccount {
+  const account = asRecord(value)
+  return {
+    id: requiredString(account.id, 'id'),
+    fullName: optionalString(account.fullName),
+  }
+}
+
 async function responseError(response: Response) {
   const body = await response.text()
   let details: unknown = body
@@ -153,24 +163,56 @@ async function responseError(response: Response) {
 }
 
 export class ModelerApi {
-  private readonly authorization: string
-
   constructor(
-    credentials: ModelerCredentials,
     private readonly fetcher: Fetcher = globalThis.fetch.bind(globalThis),
-  ) {
-    this.authorization = basicAuthorization(credentials)
+  ) {}
+
+  async authenticate(credentials: ModelerCredentials) {
+    const body = new URLSearchParams({
+      j_username: credentials.username,
+      j_password: credentials.password,
+      _spring_security_remember_me: 'true',
+      submit: 'Login',
+    })
+    const response = await this.fetcher(AUTHENTICATION_URL, {
+      method: 'POST',
+      headers: {
+        Accept: 'application/json',
+        'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
+      },
+      body,
+      credentials: 'same-origin',
+      cache: 'no-store',
+    })
+    if (!response.ok) throw await responseError(response)
+  }
+
+  async getAccount() {
+    const response = await this.request('/account')
+    return parseAccount(await response.json())
+  }
+
+  async logout() {
+    const response = await this.fetcher(LOGOUT_URL, {
+      method: 'POST',
+      headers: { Accept: 'application/json' },
+      credentials: 'same-origin',
+      cache: 'no-store',
+      redirect: 'manual',
+    })
+    if (response.type !== 'opaqueredirect' && !response.ok && response.status !== 401) {
+      throw await responseError(response)
+    }
   }
 
   private async request(path: string, init: RequestInit = {}) {
     const headers = new Headers(init.headers)
-    headers.set('Authorization', this.authorization)
     headers.set('Accept', 'application/json')
 
-    const response = await this.fetcher(`/api/editor${path}`, {
+    const response = await this.fetcher(`${MODELER_REST_BASE}${path}`, {
       ...init,
       headers,
-      credentials: 'omit',
+      credentials: 'same-origin',
       cache: 'no-store',
     })
     if (!response.ok) throw await responseError(response)

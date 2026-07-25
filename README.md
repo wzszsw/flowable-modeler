@@ -10,13 +10,14 @@
 
 ```text
 Flowable Oryx JSON -> 浏览器转换 -> BPMN XML -> bpmn-js
-bpmn-js BPMN XML  -> 浏览器转换 -> Oryx JSON -> /api/editor
+bpmn-js BPMN XML  -> 浏览器转换 -> Oryx JSON -> /modeler-app/rest
 ```
 
-- 登录使用 HTTP Basic，请求目标为官方 `/api/editor` 接口。
-- 用户名和密码只保存在当前页面的 JavaScript 内存中。
-- 不使用 localStorage、sessionStorage、IndexedDB 或应用持久化 Cookie。
-- 刷新页面后会回到登录页，这是有意的认证边界。
+- 登录使用官方 `POST /app/authentication`，模型请求使用 `/modeler-app/rest`。
+- 用户名和密码只用于登录请求，不由应用持久化或保存在 API 客户端中。
+- 不使用 localStorage、sessionStorage 或 IndexedDB。
+- 登录态由 Flowable 签发的 HttpOnly `FLOWABLE_REMEMBER_ME` Cookie 维护，刷新页面会恢复会话。
+- 退出登录调用官方 `/app/logout` 并清除该 Cookie。
 - Oryx JSON 与 BPMN XML 的转换完全在浏览器中完成，不调用后端导入转换接口。
 - 后端仍保存 Flowable 官方 Oryx JSON，列表、创建、读取、保存和删除均使用原生接口。
 
@@ -42,12 +43,13 @@ shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明�
 独立模式使用以下 Flowable 6.8.1 原生接口：
 
 ```text
-GET    /api/editor/models?modelType=0&sort=modifiedDesc
-POST   /api/editor/models
-GET    /api/editor/models/{id}
-DELETE /api/editor/models/{id}
-GET    /api/editor/models/{id}/editor/json
-POST   /api/editor/models/{id}/editor/json
+GET    /modeler-app/rest/account
+GET    /modeler-app/rest/models?modelType=0&sort=modifiedDesc
+POST   /modeler-app/rest/models
+GET    /modeler-app/rest/models/{id}
+DELETE /modeler-app/rest/models/{id}
+GET    /modeler-app/rest/models/{id}/editor/json
+POST   /modeler-app/rest/models/{id}/editor/json
 ```
 
 保存请求为 `application/x-www-form-urlencoded`，包含 `name`、`key`、`description`、
@@ -108,8 +110,9 @@ Oryx 打开与保存、冲突处理、浏览器端导入、失败回滚、删除
 `-FlowableRoot`。
 
 `test:real-backend` 要求 `flowable-lab` 已在 8080 启动，默认验证
-`http://127.0.0.1:8080/flowable-modeler/index.html`。它会在真实浏览器中验证 Basic 登录、
-模型 CRUD、浏览器端双向转换和零浏览器持久化，并在结束时删除测试模型。
+`http://127.0.0.1:8080/flowable-modeler/index.html`。它会在真实浏览器中验证 Flowable UI
+Cookie 登录、刷新恢复、注销、模型 CRUD、浏览器端双向转换和零 Web Storage 持久化，并在
+结束时删除测试模型。
 
 ## 集成桥
 

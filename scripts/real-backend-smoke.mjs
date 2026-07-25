@@ -15,6 +15,9 @@ const origin = new URL(baseUrl).origin
 const editorApiBase = stripTrailingSlash(
   env.FLOWABLE_EDITOR_API_URL || new URL('/api/editor', origin).href,
 )
+const modelerRestBase = stripTrailingSlash(
+  env.FLOWABLE_MODELER_REST_URL || new URL('/modeler-app/rest', origin).href,
+)
 const artifactDirectory = env.FLOWABLE_SMOKE_ARTIFACT_DIR || 'artifacts'
 const timeout = Number(env.FLOWABLE_SMOKE_TIMEOUT_MS || 30_000)
 const headless = env.FLOWABLE_SMOKE_HEADLESS !== 'false'
@@ -55,13 +58,14 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-function editorPath(pathname) {
-  return `${new URL(editorApiBase).pathname.replace(/\/$/, '')}${pathname}`
+function modelerRestPath(pathname) {
+  return `${new URL(modelerRestBase).pathname.replace(/\/$/, '')}${pathname}`
 }
 
 function isResponse(response, method, pathname) {
   return (
-    response.request().method() === method && new URL(response.url()).pathname === editorPath(pathname)
+    response.request().method() === method &&
+    new URL(response.url()).pathname === modelerRestPath(pathname)
   )
 }
 
@@ -276,22 +280,34 @@ async function deleteModelFromList(page, modelId, name) {
 mkdirSync(artifactDirectory, { recursive: true })
 
 let browser
+let browserContext
 let primaryError
 let result
 try {
   browser = await chromium.launch({ executablePath, headless })
-  const context = await browser.newContext({
+  browserContext = await browser.newContext({
     viewport: { width: 1440, height: 900 },
     ignoreHTTPSErrors: true,
   })
+  const context = browserContext
   context.setDefaultTimeout(timeout)
   await blockBrowserPersistence(context)
   const page = await context.newPage()
   const pageErrors = []
   const forbiddenBackendConversionRequests = []
+  const browserModelerRequests = []
+  const authenticationRequests = []
   page.on('pageerror', (error) => pageErrors.push(error.message))
   page.on('request', (request) => {
     const pathname = new URL(request.url()).pathname
+    if (pathname === '/app/authentication') authenticationRequests.push(request.method())
+    if (pathname.startsWith(`${new URL(modelerRestBase).pathname.replace(/\/$/, '')}/`)) {
+      browserModelerRequests.push({
+        method: request.method(),
+        pathname,
+        authorization: request.headers().authorization || '',
+      })
+    }
     if (pathname.endsWith('/import-process-model') || pathname.endsWith('/bpmn20')) {
       forbiddenBackendConversionRequests.push(`${request.method()} ${request.url()}`)
     }
@@ -310,6 +326,13 @@ try {
 
   await submitLogin(page, username, password)
   await page.locator('[data-testid="process-model-list-page"]').waitFor()
+  const authenticationCookie = (await context.cookies(origin)).find(
+    (cookie) => cookie.name === 'FLOWABLE_REMEMBER_ME',
+  )
+  assert(
+    authenticationCookie?.httpOnly,
+    'Flowable UI login did not issue an HttpOnly FLOWABLE_REMEMBER_ME cookie',
+  )
   await page.screenshot({ path: `${artifactDirectory}/real-list.png`, fullPage: true })
 
   await fillCreateDialog(page)
@@ -372,7 +395,7 @@ try {
     const pathname = new URL(response.url()).pathname
     return (
       response.request().method() === 'POST' &&
-      pathname.startsWith(`${editorPath('/models/')}`) &&
+      pathname.startsWith(`${modelerRestPath('/models/')}`) &&
       pathname.endsWith('/editor/json')
     )
   })
@@ -390,7 +413,7 @@ try {
   await assertResponseOk(importSaveResponse, 'Save imported model')
   assert(
     new URL(importSaveResponse.url()).pathname ===
-      editorPath(`/models/${importedModel.id}/editor/json`),
+      modelerRestPath(`/models/${importedModel.id}/editor/json`),
     'Import saved Oryx JSON to the wrong model',
   )
   const importForm = new URLSearchParams(importSaveResponse.request().postData() || '')
@@ -493,11 +516,35 @@ try {
   await deleteModelFromList(page, importedModel.id, importedName)
   await deleteModelFromList(page, createdModel.id, savedName)
 
+  const authenticationRequestCount = authenticationRequests.length
+  const restoredModelsResponse = page.waitForResponse((response) =>
+    isResponse(response, 'GET', '/models'),
+  )
+  await page.reload({ waitUntil: 'networkidle' })
+  await assertResponseOk(await restoredModelsResponse, 'Restore models after refresh')
+  await page.locator('[data-testid="process-model-list-page"]').waitFor()
+  assert(
+    (await page.locator('[data-testid="login-page"]').count()) === 0 &&
+      authenticationRequests.length === authenticationRequestCount,
+    'Refresh did not restore the Flowable UI cookie session directly',
+  )
+  assert(
+    browserModelerRequests.length > 0 &&
+      browserModelerRequests.every((request) => !request.authorization),
+    `Browser Modeler requests unexpectedly used Authorization: ${JSON.stringify(browserModelerRequests)}`,
+  )
+
+  await page.locator('[data-testid="logout"]').click()
+  await page.locator('[data-testid="login-page"]').waitFor()
+  assert(
+    !(await context.cookies(origin)).some((cookie) => cookie.name === 'FLOWABLE_REMEMBER_ME'),
+    'Logout did not clear FLOWABLE_REMEMBER_ME',
+  )
   await page.reload({ waitUntil: 'networkidle' })
   await page.locator('[data-testid="login-page"]').waitFor()
   assert(
     (await page.locator('[data-testid="process-model-list-page"]').count()) === 0,
-    'Refresh restored browser credentials or an authenticated model list',
+    'Logout was not preserved after refresh',
   )
   assert(pageErrors.length === 0, `Browser page errors:\n${pageErrors.join('\n')}`)
 
@@ -508,6 +555,8 @@ try {
     createdModelId: createdModel.id,
     importedModelId: importedModel.id,
     importedOryxShapes: importedEditorDocument.model.childShapes?.length || 0,
+    refreshSessionRestored: true,
+    authenticationCookieHttpOnly: authenticationCookie.httpOnly,
     frontendRoundTrip: {
       rootId: frontendRoundTrip.rootId,
       elementCount: frontendRoundTrip.elementIds.length,
@@ -524,6 +573,9 @@ try {
   } catch (error) {
     cleanupError = error
   }
+  await browserContext?.request
+    .post(new URL('/app/logout', origin).href, { failOnStatusCode: false, maxRedirects: 0 })
+    .catch(() => {})
   await browser?.close().catch(() => {})
   if (cleanupError) {
     primaryError = new Error(
