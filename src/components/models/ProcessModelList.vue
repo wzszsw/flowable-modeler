@@ -51,7 +51,7 @@ const emit = defineEmits<{
   logout: []
 }>()
 
-const SEARCH_DEBOUNCE_MS = 1000
+const SEARCH_DEBOUNCE_MS = 500
 const PROCESS_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
 
 const searchQuery = ref('')
@@ -262,7 +262,7 @@ async function confirmDelete(model: ProcessModel) {
             :prefix-icon="Search"
             clearable
             data-testid="model-search"
-            placeholder="搜索名称、标识或描述"
+            placeholder="搜索"
             aria-label="搜索流程模型"
           />
           <el-select

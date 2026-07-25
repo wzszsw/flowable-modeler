@@ -1484,21 +1484,21 @@ try {
   ).length
   const searchStartedAt = Date.now()
   await modelSearchInput.fill('Process_model_b')
-  await modelPage.waitForTimeout(900)
+  await modelPage.waitForTimeout(400)
   assert(
     modelApi.state.requests.filter(
       (request) => request.method === 'GET' && request.path === '/models',
     ).length === modelQueriesBeforeSearch,
-    '搜索输入停顿不足 1 秒时提前发起了模型查询',
+    '搜索输入停顿不足 500ms 时提前发起了模型查询',
   )
   await modelPage.waitForFunction(() => document.querySelectorAll('[data-testid="model-row"]').length === 1)
   const modelQueriesAfterSearch = modelApi.state.requests.filter(
     (request) => request.method === 'GET' && request.path === '/models',
   ).length
   assert(
-    Date.now() - searchStartedAt >= 1000 &&
+    Date.now() - searchStartedAt >= 500 &&
       modelQueriesAfterSearch === modelQueriesBeforeSearch + 1,
-    `搜索防抖没有在停顿 1 秒后仅查询一次：${JSON.stringify({
+    `搜索防抖没有在停顿 500ms 后仅查询一次：${JSON.stringify({
       elapsed: Date.now() - searchStartedAt,
       before: modelQueriesBeforeSearch,
       after: modelQueriesAfterSearch,
