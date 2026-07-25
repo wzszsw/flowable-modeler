@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import {
   Aim,
+  Back,
   CircleCheck,
   Document,
-  DocumentAdd,
   Download,
-  FolderOpened,
   FullScreen,
   RefreshLeft,
   RefreshRight,
@@ -38,8 +37,7 @@ defineProps<{
 }>()
 
 const emit = defineEmits<{
-  new: []
-  open: []
+  back: []
   save: []
   import: []
   exportXml: []
@@ -75,9 +73,23 @@ const alignments: Array<{
 <template>
   <div class="designer-toolbar bpmn-toolbar flex items-center gap-1" :class="{ 'is-embedded': embedded }">
     <template v-if="!embedded">
-      <el-button text :icon="DocumentAdd" @click="emit('new')">新建</el-button>
-      <el-button text :icon="FolderOpened" @click="emit('open')">打开</el-button>
-      <el-button type="primary" :disabled="!ready" @click="emit('save')">保存草稿</el-button>
+      <el-button
+        text
+        :icon="Back"
+        :disabled="!ready"
+        data-testid="back-to-drafts"
+        @click="emit('back')"
+      >
+        返回草稿
+      </el-button>
+      <el-button
+        type="primary"
+        :disabled="!ready"
+        data-testid="save-draft"
+        @click="emit('save')"
+      >
+        保存草稿
+      </el-button>
 
       <span class="toolbar-divider" />
     </template>

@@ -10,6 +10,44 @@ const p0ExtensionXml = readFileSync(
   'utf8',
 )
 
+const collaborationXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  id="Definitions_pool"
+  targetNamespace="http://flowable.org/processdef">
+  <bpmn:process id="Process_pool" name="池内流程" isExecutable="true">
+    <bpmn:startEvent id="Start_pool">
+      <bpmn:outgoing>Flow_pool</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:endEvent id="End_pool">
+      <bpmn:incoming>Flow_pool</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_pool" sourceRef="Start_pool" targetRef="End_pool" />
+  </bpmn:process>
+  <bpmn:collaboration id="Collaboration_pool" name="协作池">
+    <bpmn:participant id="Participant_pool" name="业务池" processRef="Process_pool" />
+  </bpmn:collaboration>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_pool">
+    <bpmndi:BPMNPlane id="BPMNPlane_pool" bpmnElement="Collaboration_pool">
+      <bpmndi:BPMNShape id="Participant_pool_di" bpmnElement="Participant_pool" isHorizontal="true">
+        <dc:Bounds x="100" y="100" width="600" height="200" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Start_pool_di" bpmnElement="Start_pool">
+        <dc:Bounds x="200" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_pool_di" bpmnElement="End_pool">
+        <dc:Bounds x="520" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_pool_di" bpmnElement="Flow_pool">
+        <di:waypoint x="236" y="200" />
+        <di:waypoint x="520" y="200" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`
+
 const customExtensionXml = `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -338,6 +376,33 @@ function stopServer() {
 
 function assert(condition, message) {
   if (!condition) throw new Error(message)
+}
+
+async function createDraftFromList(page, name, key, description = '') {
+  await page.locator('[data-testid="create-draft"]').click()
+  await page
+    .locator('input[data-testid="draft-create-name"], [data-testid="draft-create-name"] input')
+    .fill(name)
+  await page
+    .locator('input[data-testid="draft-create-key"], [data-testid="draft-create-key"] input')
+    .fill(key)
+  await page
+    .locator(
+      'textarea[data-testid="draft-create-description"], [data-testid="draft-create-description"] textarea',
+    )
+    .fill(description)
+  await page.locator('[data-testid="confirm-create-draft"]').click()
+  await page.waitForSelector('.djs-container')
+  await page.waitForFunction(() => {
+    const saveButton = document.querySelector('[data-testid="save-draft"]')
+    return Boolean(window.bpmnModeler && saveButton && !saveButton.disabled)
+  })
+}
+
+function findDraftRow(page, name) {
+  return page.locator('[data-testid="draft-row"]').filter({
+    has: page.locator('[data-testid="draft-title"]', { hasText: name }),
+  })
 }
 
 function trackRuntimeErrors(page, runtimeErrors) {
@@ -671,6 +736,10 @@ try {
   )
   assert(!embeddedReadySnapshot.loading, 'flowable-modeler-ready 触发时仍显示加载状态')
   assert(await embeddedPage.locator('.designer-shell.is-embedded').isVisible(), '嵌入模式标记未生效')
+  assert(
+    (await embeddedPage.locator('[data-testid="draft-list-page"]').count()) === 0,
+    '嵌入模式错误显示了草稿列表',
+  )
   assert(await embeddedPage.locator('.bpmn-toolbar').isVisible(), '嵌入模式未保留 BPMN 工具栏')
   assert((await embeddedPage.locator('.designer-header').count()) === 0, '嵌入模式仍显示设计器页头')
   assert(
@@ -745,8 +814,246 @@ try {
   assert(crossRealmHostCalls.select.length === 1, '父窗口未收到可克隆的表单选择上下文')
   await iframeHostPage.close()
 
+  const draftContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  const draftPage = await draftContext.newPage()
+  trackRuntimeErrors(draftPage, runtimeErrors)
+  await draftPage.goto(origin, { waitUntil: 'networkidle' })
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  assert(await draftPage.locator('[data-testid="draft-list-empty"]').isVisible(), '空草稿状态未显示')
+  assert((await draftPage.locator('.djs-container').count()) === 0, '草稿列表后台挂载了编辑器')
+
+  await createDraftFromList(draftPage, '草稿 A', 'Process_draft_a', '用于多草稿隔离回归')
+  await draftPage.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const root = modeler.get('canvas').getRootElement()
+    modeler.get('modeling').updateProperties(root, { name: '草稿 A 已保存' })
+  })
+  await draftPage.locator('[data-testid="save-draft"]').click()
+  await draftPage.waitForFunction(() => {
+    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
+    const drafts = raw ? JSON.parse(raw).drafts : []
+    return drafts?.some(
+      (draft) => draft.key === 'Process_draft_a' && draft.name === '草稿 A 已保存',
+    )
+  })
+  await draftPage.locator('[data-testid="back-to-drafts"]').click()
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  assert((await findDraftRow(draftPage, '草稿 A 已保存').count()) === 1, '保存后列表元数据未刷新')
+
+  await createDraftFromList(draftPage, '草稿 B', 'Process_draft_b')
+  await draftPage.locator('[data-testid="back-to-drafts"]').click()
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  assert((await draftPage.locator('[data-testid="draft-row"]').count()) === 2, '多草稿未同时保留')
+
+  const draftSearchInput = draftPage.locator(
+    'input[data-testid="draft-search"], [data-testid="draft-search"] input',
+  )
+  await draftSearchInput.fill('Process_draft_b')
+  assert((await draftPage.locator('[data-testid="draft-row"]').count()) === 1, '草稿搜索未过滤列表')
+  assert((await findDraftRow(draftPage, '草稿 B').count()) === 1, '草稿搜索返回了错误记录')
+  await draftSearchInput.clear()
+  await draftPage.locator('[data-testid="draft-sort"]').click()
+  await draftPage.getByRole('option', { name: '名称 A-Z', exact: true }).click()
+  const sortedDraftTitles = await draftPage.locator('[data-testid="draft-title"]').allTextContents()
+  assert(
+    JSON.stringify(sortedDraftTitles) === JSON.stringify(['草稿 A 已保存', '草稿 B']),
+    `草稿名称排序错误：${JSON.stringify(sortedDraftTitles)}`,
+  )
+
+  await draftPage.reload({ waitUntil: 'networkidle' })
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  assert((await draftPage.locator('[data-testid="draft-row"]').count()) === 2, '刷新后草稿列表未持久化')
+  const draftBXmlBefore = await draftPage.evaluate(() => {
+    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
+    return (raw ? JSON.parse(raw).drafts : []).find((draft) => draft.key === 'Process_draft_b')?.xml
+  })
+  const savedDraftARow = findDraftRow(draftPage, '草稿 A 已保存')
+  await savedDraftARow.locator('[data-testid="draft-primary-open"]').focus()
+  await draftPage.keyboard.press('Enter')
+  await draftPage.waitForSelector('.djs-container')
+  assert(
+    await draftPage.evaluate(
+      () => window.bpmnModeler.get('canvas').getRootElement().businessObject.id === 'Process_draft_a',
+    ),
+    '按草稿 ID 打开了错误流程',
+  )
+  await draftPage.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const root = modeler.get('canvas').getRootElement()
+    modeler.get('modeling').updateProperties(root, { name: '草稿 A 二次保存' })
+  })
+  await draftPage.locator('[data-testid="save-draft"]').click()
+  await draftPage.locator('[data-testid="back-to-drafts"]').click()
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  const isolationSnapshot = await draftPage.evaluate(() => {
+    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
+    const drafts = raw ? JSON.parse(raw).drafts : []
+    return {
+      a: drafts.find((draft) => draft.key === 'Process_draft_a'),
+      b: drafts.find((draft) => draft.key === 'Process_draft_b'),
+    }
+  })
+  assert(
+    isolationSnapshot.a?.name === '草稿 A 二次保存' &&
+      isolationSnapshot.a?.xml.includes('name="草稿 A 二次保存"'),
+    '同时存在多个草稿时未更新活动草稿',
+  )
+  assert(isolationSnapshot.b?.xml === draftBXmlBefore, '保存草稿 A 覆盖了草稿 B 的 XML')
+
+  await findDraftRow(draftPage, '草稿 A 二次保存')
+    .locator('[data-testid="open-draft"]')
+    .click()
+  await draftPage.waitForSelector('.djs-container')
+  await draftPage.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const root = modeler.get('canvas').getRootElement()
+    modeler.get('modeling').updateProperties(root, { name: '不应保存的名称' })
+  })
+  await draftPage.locator('[data-testid="back-to-drafts"]').click()
+  await draftPage.locator('.el-message-box__close').click()
+  assert(await draftPage.locator('.djs-container').isVisible(), '继续编辑操作错误关闭了编辑器')
+  await draftPage.locator('[data-testid="back-to-drafts"]').click()
+  await draftPage.getByRole('button', { name: '放弃更改', exact: true }).click()
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  assert((await findDraftRow(draftPage, '草稿 A 二次保存').count()) === 1, '放弃更改仍覆盖了草稿')
+
+  const draftBRow = findDraftRow(draftPage, '草稿 B')
+  await draftBRow.locator('[data-testid="delete-draft"]').click()
+  await draftPage.getByRole('button', { name: '取消', exact: true }).click()
+  assert((await draftPage.locator('[data-testid="draft-row"]').count()) === 2, '取消删除仍移除了草稿')
+  await draftBRow.locator('[data-testid="delete-draft"]').click()
+  await draftPage.getByRole('button', { name: '删除', exact: true }).click()
+  await draftPage.waitForFunction(
+    () => document.querySelectorAll('[data-testid="draft-row"]').length === 1,
+  )
+
+  await draftPage.locator('[data-testid="draft-import-input"]').setInputFiles({
+    name: 'missing-di.bpmn20.xml',
+    mimeType: 'application/xml',
+    buffer: Buffer.from(p0ExtensionXml),
+  })
+  await draftPage.getByText('导入失败：BPMN XML 缺少 DI 图形信息，无法在设计器中打开').waitFor()
+  assert(
+    (await draftPage.locator('[data-testid="draft-row"]').count()) === 1 &&
+      (await draftPage.locator('.djs-container').count()) === 0,
+    '缺少 DI 的 BPMN 仍创建了草稿或打开了编辑器',
+  )
+
+  const originalDraftAXml = await draftPage.evaluate(() => {
+    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
+    return (raw ? JSON.parse(raw).drafts : []).find((draft) => draft.key === 'Process_draft_a')?.xml
+  })
+  await draftPage.evaluate(() => {
+    const key = 'flowable-modeler:drafts:v1'
+    const envelope = JSON.parse(localStorage.getItem(key))
+    const draft = envelope.drafts.find((item) => item.key === 'Process_draft_a')
+    draft.xml = '<bpmn:definitions'
+    localStorage.setItem(key, JSON.stringify(envelope))
+  })
+  await draftPage.reload({ waitUntil: 'networkidle' })
+  await findDraftRow(draftPage, '草稿 A 二次保存')
+    .locator('[data-testid="draft-primary-open"]')
+    .click()
+  await draftPage.locator('[data-testid="designer-initialization-error"]').waitFor()
+  await draftPage.locator('[data-testid="return-from-load-error"]').click()
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  assert((await draftPage.locator('.djs-container').count()) === 0, '载入失败返回后未销毁编辑器')
+  await draftPage.evaluate((xml) => {
+    const key = 'flowable-modeler:drafts:v1'
+    const envelope = JSON.parse(localStorage.getItem(key))
+    const draft = envelope.drafts.find((item) => item.key === 'Process_draft_a')
+    draft.xml = xml
+    localStorage.setItem(key, JSON.stringify(envelope))
+  }, originalDraftAXml)
+
+  await draftPage.locator('[data-testid="draft-import-input"]').setInputFiles({
+    name: 'collaboration.bpmn20.xml',
+    mimeType: 'application/xml',
+    buffer: Buffer.from(collaborationXml),
+  })
+  await draftPage.waitForSelector('.djs-container')
+  await draftPage.waitForFunction(() => {
+    const backButton = document.querySelector('[data-testid="back-to-drafts"]')
+    return Boolean(window.bpmnModeler && backButton && !backButton.disabled)
+  })
+  assert(
+    await draftPage.evaluate(
+      () => window.bpmnModeler.get('canvas').getRootElement().businessObject.$type === 'bpmn:Collaboration',
+    ),
+    '协作池导入后未以 Collaboration 作为画布根元素',
+  )
+  await draftPage.locator('[data-testid="save-draft"]').click()
+  await draftPage.locator('[data-testid="back-to-drafts"]').click()
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  const storedDraftSummary = await draftPage.evaluate(() => {
+    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
+    const envelope = raw ? JSON.parse(raw) : null
+    return {
+      schemaVersion: envelope?.schemaVersion,
+      ids: envelope?.drafts?.map((draft) => draft.id) || [],
+      keys: envelope?.drafts?.map((draft) => draft.key) || [],
+    }
+  })
+  assert(storedDraftSummary.schemaVersion === 1, '草稿存储 schema 版本错误')
+  assert(new Set(storedDraftSummary.ids).size === 2, '草稿 ID 不唯一或导入未创建新草稿')
+  assert(storedDraftSummary.keys.includes('Process_draft_a'), '保存草稿在导入后丢失')
+  assert(
+    storedDraftSummary.keys.includes('Process_pool') &&
+      !storedDraftSummary.keys.includes('Collaboration_pool'),
+    '协作池保存后错误使用 Collaboration ID 覆盖了流程 Key',
+  )
+  await draftPage.waitForFunction(
+    () => !document.querySelector('.el-message, .el-notification'),
+  )
+  await draftPage.screenshot({ path: 'artifacts/ui-drafts-desktop.png', fullPage: true })
+  await draftPage.setViewportSize({ width: 390, height: 844 })
+  const populatedMobileViewport = await draftPage.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+  assert(
+    populatedMobileViewport.scrollWidth <= populatedMobileViewport.clientWidth,
+    `有数据的移动草稿列表存在横向溢出：${populatedMobileViewport.scrollWidth} > ${populatedMobileViewport.clientWidth}`,
+  )
+  assert(
+    (await draftPage.getByRole('button', { name: '导入 BPMN', exact: true }).count()) === 1 &&
+      (await draftPage.getByRole('button', { name: '新建 BPMN 流程', exact: true }).count()) === 1,
+    '移动端头部图标按钮缺少可访问名称',
+  )
+  const mobileDraftARow = findDraftRow(draftPage, '草稿 A 二次保存')
+  assert(
+    (await mobileDraftARow.getByRole('button', { name: '打开草稿 草稿 A 二次保存' }).count()) >= 1 &&
+      (await mobileDraftARow.getByRole('button', { name: '删除草稿 草稿 A 二次保存' }).count()) === 1,
+    '移动端草稿行操作缺少可访问名称',
+  )
+  await draftPage.screenshot({ path: 'artifacts/ui-drafts-mobile.png', fullPage: true })
+  await mobileDraftARow.locator('[data-testid="draft-primary-open"]').focus()
+  await draftPage.keyboard.press('Enter')
+  await draftPage.waitForSelector('.djs-container')
+  await draftPage.locator('[data-testid="back-to-drafts"]').click()
+  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
+  await draftContext.close()
+
   await page.goto(origin, { waitUntil: 'networkidle' })
+  await page.locator('[data-testid="draft-list-page"]').waitFor()
+  assert((await page.locator('.djs-container').count()) === 0, '独立模式初始页面提前挂载了编辑器')
+  assert(
+    await page.evaluate(() => !window.bpmnModeler && !window.flowableProcessModeler),
+    '草稿列表阶段提前暴露了编辑器桥',
+  )
+  await page.locator('[data-testid="create-draft"]').first().click()
+  await page
+    .locator('input[data-testid="draft-create-name"], [data-testid="draft-create-name"] input')
+    .fill('请假审批流程')
+  await page
+    .locator('input[data-testid="draft-create-key"], [data-testid="draft-create-key"] input')
+    .fill('Process_leave_request')
+  await page.locator('[data-testid="confirm-create-draft"]').click()
   await page.waitForSelector('.djs-container')
+  await page.waitForFunction(() => {
+    const saveButton = document.querySelector('[data-testid="save-draft"]')
+    return Boolean(window.bpmnModeler && saveButton && !saveButton.disabled)
+  })
 
   const initial = await page.evaluate(() => ({
     bridge: Boolean(window.bpmnModeler && window.flowableProcessModeler),
@@ -2039,10 +2346,13 @@ try {
   await jobCategoryInput.fill(unblurredDraftCategory)
   await jobCategoryInput.press('Control+s')
   await page.waitForFunction((expected) => {
-    const raw = localStorage.getItem('flowable-modeler:draft:v1')
+    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
     if (!raw) return false
     try {
-      return JSON.parse(raw).xml.includes(
+      const draft = JSON.parse(raw).drafts?.find(
+        (item) => item.key === 'Process_leave_request',
+      )
+      return draft?.xml.includes(
         `<flowable:jobCategory>${expected}</flowable:jobCategory>`,
       )
     } catch {
@@ -5308,14 +5618,14 @@ try {
   const desktopPage = await browser.newPage({ viewport: { width: 1600, height: 960 } })
   trackRuntimeErrors(desktopPage, runtimeErrors)
   await desktopPage.goto(origin, { waitUntil: 'networkidle' })
-  await desktopPage.waitForSelector('.djs-container')
+  await desktopPage.locator('[data-testid="draft-list-page"]').waitFor()
   await desktopPage.screenshot({ path: 'artifacts/ui-desktop.png', fullPage: true })
   await desktopPage.close()
 
   const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } })
   trackRuntimeErrors(mobilePage, runtimeErrors)
   await mobilePage.goto(origin, { waitUntil: 'networkidle' })
-  await mobilePage.waitForSelector('.djs-container')
+  await mobilePage.locator('[data-testid="draft-list-page"]').waitFor()
   const mobileViewport = await mobilePage.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,

@@ -12,8 +12,9 @@ namespace: http://flowable.org/bpmn
 ## 已实现
 
 - BPMN 原生建模工具栏、上下文菜单、拖拽、框选和连线
-- 新建、XML/BPMN 导入、XML/SVG/PNG 导出、SVG 预览
-- 本地草稿保存与恢复、未保存离开提示
+- Flowable UI 风格的 BPMN 草稿列表：新建、导入、搜索、四种排序、打开和删除
+- 浏览器多草稿持久化、按草稿 ID 独立保存、未保存返回/离开提示
+- XML/BPMN 导入、XML/SVG/PNG 导出、SVG 预览
 - 撤销、重做、六向元素对齐、缩放、适应画布、全屏、小地图和网格吸附
 - token simulation 流程模拟
 - Flowable/BPMN 校验与问题定位
@@ -42,7 +43,7 @@ namespace: http://flowable.org/bpmn
   - 未保存业务 JSON 草稿跨建模命令和元素切换保留
   - 异步进入 / 异步离开、两组独占作业、作业分类及 skipExpression 等高级属性
 - `window.bpmnModeler` 和 `window.flowableProcessModeler` 集成桥，可嵌入现有 Flowable 管理页面
-- iframe / `?embedded=1` 嵌入模式：隐藏本地草稿入口并跳过本地草稿恢复
+- iframe / `?embedded=1` 嵌入模式：跳过草稿列表并直接进入编辑器
 - 导入兼容提示明细，明确标出可能在再次导出时丢失的未知 XML
 
 ## 开发
@@ -60,6 +61,13 @@ npm run dev
 npm run build
 npm run preview
 ```
+
+## 本地持久化
+
+独立模式使用浏览器 `localStorage` 保存 BPMN 草稿，存储键为
+`flowable-modeler:drafts:v1`，结构为 `{ schemaVersion: 1, drafts: [...] }`。每个草稿包含
+独立 ID、流程名称与标识、描述、文件名、BPMN XML 及创建/更新时间；本项目不读取或迁移旧的
+单草稿存储键。清除当前站点的浏览器数据会同时删除这些草稿。
 
 ## 验证
 
@@ -117,7 +125,7 @@ window.flowableProcessModeler?.configureHost({
 
 这允许宿主页面加载和保存 BPMN XML，而无需通过按钮文本操作 iframe DOM。
 
-设计器在 iframe 内会自动启用嵌入模式，也可以在独立窗口使用 `?embedded=1` 强制启用。嵌入模式保留建模、导入导出、校验和视口工具，但隐藏产品页头以及“新建 / 打开 / 保存草稿”，并且不会读取本地草稿。宿主应通过 `getXML()` 获取 XML 后交给自己的持久化接口。
+设计器在 iframe 内会自动启用嵌入模式，也可以在独立窗口使用 `?embedded=1` 强制启用。嵌入模式保留建模、导入导出、校验和视口工具，但跳过草稿列表、隐藏产品页头和本地保存入口，也不会读写浏览器草稿。宿主应通过 `getXML()` 获取 XML 后交给自己的持久化接口；嵌入模式调用 `saveDraft()` 会拒绝并提示改用宿主持久化。
 
 `configureHost()` 接收同源宿主配置。`customServiceTaskTypes` 是非原生 ServiceTask 的运行时适配白名单；未声明的类型不能新建并会触发部署前错误。`selectNodeForms` 返回 `null/undefined` 表示取消，返回空数组表示清空，返回单项对象数组表示选择表单；至少需要 `code/name`，其他字段会原样保留。
 

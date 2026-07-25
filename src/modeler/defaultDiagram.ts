@@ -46,5 +46,3 @@ export const createDefaultDiagram = (
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn2:definitions>`
-
-export const DRAFT_STORAGE_KEY = 'flowable-modeler:draft:v1'

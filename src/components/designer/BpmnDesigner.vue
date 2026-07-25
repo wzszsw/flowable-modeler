@@ -18,10 +18,10 @@ import {
 import DesignerToolbar from './DesignerToolbar.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
 import flowableDescriptor from '@/modeler/flowableDescriptor'
-import { createDefaultDiagram, DRAFT_STORAGE_KEY } from '@/modeler/defaultDiagram'
-import type { FlowableHostAdapter } from '@/modeler/integration'
+import { createDefaultDiagram } from '@/modeler/defaultDiagram'
+import { isEmbeddedMode, type FlowableHostAdapter } from '@/modeler/integration'
 import { resolveHostServiceTaskTypeNames } from '@/modeler/serviceTaskTypes'
-import type { DiagramElement, ValidationProblem } from '@/modeler/types'
+import type { BpmnBusinessObject, DiagramElement, ValidationProblem } from '@/modeler/types'
 import { validateElements } from '@/modeler/validation'
 import { normalizeLegacyActivitiNamespace } from '@/modeler/xmlCompatibility'
 
@@ -83,9 +83,14 @@ type EventBusService = {
   on: (event: string, callback: (event: Record<string, unknown>) => void) => void
 }
 
-interface SavedDraft {
+interface DraftSnapshot {
   xml: string
   fileName: string
+  name: string
+  key: string
+}
+
+interface DraftPersistenceResult {
   savedAt: string
 }
 
@@ -96,7 +101,20 @@ type ImportResult = Awaited<ReturnType<NativeImportXML>>
 interface ImportDiagramOptions {
   importedFileName?: string
   markClean?: boolean
+  reportError?: boolean
 }
+
+const props = defineProps<{
+  initialXml?: string
+  initialFileName?: string
+  initialSavedAt?: string
+  persistDraft?: (snapshot: DraftSnapshot) => Promise<DraftPersistenceResult>
+}>()
+
+const emit = defineEmits<{
+  close: []
+  saved: []
+}>()
 
 type BpmnDiagramDefinition = {
   id?: string
@@ -142,14 +160,14 @@ const selectedElements = shallowRef<DiagramElement[]>([])
 const hostAdapter = shallowRef<FlowableHostAdapter | null>(null)
 const hostAdapterGeneration = ref(0)
 
-const embeddedMode =
-  window.self !== window.top || new URLSearchParams(window.location.search).get('embedded') === '1'
+const embeddedMode = isEmbeddedMode()
 
 const ready = ref(false)
 const loading = ref(true)
 const loadingText = ref('正在初始化设计器…')
+const initializationError = ref('')
 const dirty = ref(false)
-const fileName = ref('leave-request.bpmn20.xml')
+const fileName = ref(props.initialFileName || 'leave-request.bpmn20.xml')
 const lastSavedAt = ref('')
 const commandRevision = ref(0)
 const canUndo = ref(false)
@@ -180,13 +198,45 @@ const interactionLocked = computed(
   () => importPending.value || !ready.value || !importStateCoherent.value,
 )
 
+function asBusinessObject(value: unknown): BpmnBusinessObject | null {
+  if (!value || typeof value !== 'object') return null
+  const candidate = value as Partial<BpmnBusinessObject>
+  return typeof candidate.$type === 'string' ? (candidate as BpmnBusinessObject) : null
+}
+
+function resolvePrimaryProcess() {
+  const rootBusinessObject = rootElement.value?.businessObject
+  let owner: BpmnBusinessObject | null = rootBusinessObject || null
+  while (owner) {
+    if (owner.$type === 'bpmn:Process') return owner
+    owner = asBusinessObject(owner.$parent)
+  }
+
+  const participants = Array.isArray(rootBusinessObject?.participants)
+    ? rootBusinessObject.participants
+    : []
+  for (const participant of participants) {
+    const processRef = asBusinessObject(asBusinessObject(participant)?.processRef)
+    if (processRef?.$type === 'bpmn:Process') return processRef
+  }
+
+  const definitions = modeler.value?.getDefinitions() as unknown as {
+    rootElements?: unknown[]
+  } | null
+  const processes = (definitions?.rootElements || [])
+    .map(asBusinessObject)
+    .filter((element): element is BpmnBusinessObject => element?.$type === 'bpmn:Process')
+  return processes.find((process) => process.isExecutable !== false) || processes[0] || null
+}
+
 const processName = computed(() => {
   commandRevision.value
-  return String(rootElement.value?.businessObject.name || '未命名流程')
+  const process = resolvePrimaryProcess()
+  return String(process?.name || process?.id || '未命名流程')
 })
 const processId = computed(() => {
   commandRevision.value
-  return String(rootElement.value?.businessObject.id || 'Process')
+  return String(resolvePrimaryProcess()?.id || 'Process')
 })
 const selectedLabel = computed(() => {
   if (!selectedElement.value || selectedElement.value === rootElement.value) return '流程'
@@ -552,12 +602,14 @@ async function performDiagramImport(
     const recoveryMessage = recoveryError
       ? `；原流程恢复失败：${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`
       : ''
-    ElNotification({
-      title: 'BPMN 导入失败',
-      message: `${message}${recoveryMessage}`,
-      type: 'error',
-      duration: 7000,
-    })
+    if (options.reportError !== false) {
+      ElNotification({
+        title: 'BPMN 导入失败',
+        message: `${message}${recoveryMessage}`,
+        type: 'error',
+        duration: 7000,
+      })
+    }
     throw error
   } finally {
     importing = false
@@ -615,44 +667,16 @@ async function waitForQueuedImports() {
   }
 }
 
-function parseDraft(): SavedDraft | null {
-  const raw = localStorage.getItem(DRAFT_STORAGE_KEY)
-  if (!raw) return null
-  try {
-    const parsed = JSON.parse(raw) as SavedDraft
-    return parsed.xml ? parsed : null
-  } catch {
-    localStorage.removeItem(DRAFT_STORAGE_KEY)
-    return null
-  }
-}
-
 async function loadInitialDiagram() {
-  if (embeddedMode) {
+  if (props.initialXml) {
+    await importDiagram(props.initialXml, {
+      importedFileName: props.initialFileName,
+      reportError: false,
+    })
+    if (props.initialSavedAt) lastSavedAt.value = formatTime(props.initialSavedAt)
+  } else {
     await importDiagram(createDefaultDiagram())
-    return
   }
-  const draft = parseDraft()
-  if (draft) {
-    try {
-      await ElMessageBox.confirm(
-        `检测到 ${formatDateTime(draft.savedAt)} 保存的本地草稿，是否继续编辑？`,
-        '恢复本地草稿',
-        {
-          confirmButtonText: '恢复草稿',
-          cancelButtonText: '使用示例流程',
-          type: 'info',
-          distinguishCancelAndClose: true,
-        },
-      )
-      await importDiagram(draft.xml, { importedFileName: draft.fileName })
-      lastSavedAt.value = formatTime(draft.savedAt)
-      return
-    } catch {
-      // Use the example process when the recovery prompt is cancelled.
-    }
-  }
-  await importDiagram(createDefaultDiagram())
 }
 
 async function initialize() {
@@ -686,79 +710,80 @@ async function initialize() {
   if (canvasHostRef.value) resizeObserver.observe(canvasHostRef.value)
 }
 
+function handleInitializationError(error: unknown) {
+  loading.value = false
+  ready.value = false
+  initializationError.value = error instanceof Error ? error.message : '无法载入 BPMN 草稿'
+}
+
+function reloadPage() {
+  window.location.reload()
+}
+
+async function persistCurrentDraft(showSuccess = true) {
+  if (!modeler.value) return
+  assertImportStateCoherent()
+  if (!isInteractionReady()) return false
+  if (!props.persistDraft) {
+    throw new Error('嵌入模式不支持浏览器草稿保存，请通过 getXML() 交由宿主持久化')
+  }
+  try {
+    await commitActiveEditor()
+    const { xml } = await modeler.value.saveXML({ format: true, preamble: true })
+    if (!xml) throw new Error('未生成 BPMN XML')
+    const { savedAt } = await props.persistDraft({
+      xml,
+      fileName: fileName.value,
+      name: processName.value,
+      key: processId.value,
+    })
+    dirty.value = false
+    lastSavedAt.value = formatTime(savedAt)
+    emit('saved')
+    if (showSuccess) ElMessage.success('草稿已保存到本地浏览器')
+    return true
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '保存失败')
+    return false
+  }
+}
+
+async function saveDraft() {
+  await persistCurrentDraft()
+}
+
+async function requestClose() {
+  if (embeddedMode || !isInteractionReady()) return
+  await commitActiveEditor()
+  if (!dirty.value) {
+    emit('close')
+    return
+  }
+  try {
+    await ElMessageBox.confirm('当前流程有未保存更改。', '返回草稿列表', {
+      confirmButtonText: '保存并返回',
+      cancelButtonText: '放弃更改',
+      distinguishCancelAndClose: true,
+      closeOnClickModal: false,
+      type: 'warning',
+    })
+    if (await persistCurrentDraft(false)) emit('close')
+  } catch (action) {
+    if (action === 'cancel') emit('close')
+  }
+}
+
 async function confirmDiscard() {
   if (!dirty.value) return true
   try {
-    await ElMessageBox.confirm('当前流程有未保存更改，继续操作会丢失这些更改。', '放弃更改？', {
-      confirmButtonText: '继续',
+    await ElMessageBox.confirm('导入会替换当前流程，未保存更改将丢失。', '导入 BPMN', {
+      confirmButtonText: '继续导入',
       cancelButtonText: '取消',
       type: 'warning',
     })
     return true
   } catch {
     return false
-  }
-}
-
-async function createNewDiagram() {
-  if (!isInteractionReady()) return
-  if (!(await confirmDiscard())) return
-  try {
-    const result = await ElMessageBox.prompt('请输入新流程名称', '新建流程', {
-      confirmButtonText: '创建',
-      cancelButtonText: '取消',
-      inputValue: '新建审批流程',
-      inputPattern: /\S+/,
-      inputErrorMessage: '流程名称不能为空',
-    })
-    if (!isInteractionReady()) return
-    const id = `Process_${Date.now().toString(36)}`
-    await importDiagram(createDefaultDiagram(id, result.value), {
-      importedFileName: `${sanitizeFileName(result.value)}.bpmn20.xml`,
-      markClean: false,
-    })
-    lastSavedAt.value = ''
-  } catch {
-    // User cancelled the prompt.
-  }
-}
-
-async function saveDraft() {
-  if (!modeler.value) return
-  assertImportStateCoherent()
-  if (!isInteractionReady()) return
-  try {
-    await commitActiveEditor()
-    const { xml } = await modeler.value.saveXML({ format: true, preamble: true })
-    if (!xml) throw new Error('未生成 BPMN XML')
-    const now = new Date().toISOString()
-    localStorage.setItem(
-      DRAFT_STORAGE_KEY,
-      JSON.stringify({ xml, fileName: fileName.value, savedAt: now } satisfies SavedDraft),
-    )
-    dirty.value = false
-    lastSavedAt.value = formatTime(now)
-    ElMessage.success('草稿已保存到本地浏览器')
-  } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存失败')
-  }
-}
-
-async function openDraft() {
-  if (!isInteractionReady()) return
-  const draft = parseDraft()
-  if (!draft) {
-    fileInputRef.value?.click()
-    return
-  }
-  if (!(await confirmDiscard())) return
-  if (!isInteractionReady()) return
-  try {
-    await importDiagram(draft.xml, { importedFileName: draft.fileName })
-    lastSavedAt.value = formatTime(draft.savedAt)
-    ElMessage.success('已打开本地草稿')
-  } catch {
-    // importDiagram already reported the parsing failure.
   }
 }
 
@@ -777,7 +802,7 @@ async function handleFileChange(event: Event) {
   const xml = await file.text()
   if (!isInteractionReady()) return
   try {
-    await importDiagram(xml, { importedFileName: file.name })
+    await importDiagram(xml, { importedFileName: file.name, markClean: false })
     lastSavedAt.value = ''
     ElMessage.success(`已导入 ${file.name}`)
   } catch {
@@ -1032,21 +1057,11 @@ function formatTime(value: string) {
   }).format(new Date(value))
 }
 
-function formatDateTime(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    hour12: false,
-  }).format(new Date(value))
-}
-
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('beforeunload', handleBeforeUnload)
   document.addEventListener('fullscreenchange', onFullscreenChange)
-  void initialize()
+  void initialize().catch(handleInitializationError)
 })
 
 onBeforeUnmount(() => {
@@ -1121,8 +1136,7 @@ defineExpose({
       :simulation-active="simulationActive"
       :problem-count="problems.length"
       :embedded="embeddedMode"
-      @new="createNewDiagram"
-      @open="openDraft"
+      @back="requestClose"
       @save="saveDraft"
       @import="chooseImportFile"
       @export-xml="exportXml"
@@ -1141,7 +1155,33 @@ defineExpose({
       @align="alignSelection"
     />
 
+    <section
+      v-if="initializationError"
+      class="designer-initialization-error"
+      data-testid="designer-initialization-error"
+      role="alert"
+    >
+      <el-result
+        icon="error"
+        title="无法打开 BPMN 草稿"
+        :sub-title="initializationError"
+      >
+        <template #extra>
+          <el-button
+            v-if="!embeddedMode"
+            type="primary"
+            data-testid="return-from-load-error"
+            @click="emit('close')"
+          >
+            返回草稿列表
+          </el-button>
+          <el-button v-else type="primary" @click="reloadPage">重新加载</el-button>
+        </template>
+      </el-result>
+    </section>
+
     <main
+      v-else
       class="designer-main"
       :class="{ 'panel-open': propertyPanelVisible, 'is-importing': importPending }"
       :inert="interactionLocked"
@@ -1458,6 +1498,15 @@ defineExpose({
   display: flex;
   min-height: 0;
   flex: 1;
+}
+
+.designer-initialization-error {
+  display: grid;
+  min-height: 0;
+  flex: 1;
+  place-items: center;
+  padding: 24px;
+  background: #f7f8fb;
 }
 
 .canvas-host {
