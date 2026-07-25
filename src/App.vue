@@ -1,12 +1,17 @@
 <script setup lang="ts">
-import { onMounted, shallowRef, ref } from 'vue'
+import { onMounted, provide, shallowRef, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 
-import LoginView from '@/components/auth/LoginView.vue'
-import BpmnDesigner from '@/components/designer/BpmnDesigner.vue'
-import ProcessModelList from '@/components/models/ProcessModelList.vue'
 import { parseBpmnMetadata } from '@/modeler/bpmnMetadata'
 import { isEmbeddedMode } from '@/modeler/integration'
+import {
+  modelerApplicationKey,
+  type CreateModelInput,
+  type ImportModelInput,
+  type ModelerApplication,
+  type ModelSnapshot,
+} from '@/modeler/modelerApplication'
 import {
   ModelerApi,
   ModelerApiError,
@@ -15,27 +20,11 @@ import {
   type ProcessModelQuery,
 } from '@/modeler/modelerApi'
 import { bpmnXmlToOryxJson, oryxJsonToBpmnXml } from '@/modeler/oryxConverter'
-
-interface ModelSnapshot {
-  xml: string
-  fileName: string
-  name: string
-  key: string
-  description: string
-}
-
-interface CreateModelInput {
-  name: string
-  key: string
-  description: string
-}
-
-interface ImportModelInput extends CreateModelInput {
-  xml: string
-  fileName: string
-}
+import { ROUTE_NAMES } from '@/routes'
 
 const embeddedMode = isEmbeddedMode()
+const route = useRoute()
+const router = useRouter()
 const api = shallowRef<ModelerApi | null>(null)
 const authenticated = ref(false)
 const authenticating = ref(false)
@@ -64,6 +53,49 @@ class SessionChangedError extends Error {
 const pendingOperations = new Set<symbol>()
 let authGeneration = 0
 let listRequest = 0
+let editorRequest = 0
+
+function currentModelId() {
+  const value = route.params.modelId
+  return typeof value === 'string' ? value : ''
+}
+
+function isProcessEditorRoute(modelId?: string) {
+  return (
+    route.name === ROUTE_NAMES.processEditor &&
+    (!modelId || currentModelId() === modelId)
+  )
+}
+
+function clearActiveModel() {
+  editorRequest += 1
+  activeModel.value = null
+  activeXml.value = ''
+}
+
+function redirectAfterLogin() {
+  const redirect = route.query.redirect
+  if (typeof redirect !== 'string' || !redirect.startsWith('/') || redirect.startsWith('//')) {
+    return { name: ROUTE_NAMES.processes }
+  }
+  const resolved = router.resolve(redirect)
+  if (
+    resolved.name !== ROUTE_NAMES.processes &&
+    resolved.name !== ROUTE_NAMES.processEditor
+  ) {
+    return { name: ROUTE_NAMES.processes }
+  }
+  return redirect
+}
+
+async function navigateToLogin(preserveEditorRoute = false) {
+  if (route.name === ROUTE_NAMES.login) return
+  const redirect = preserveEditorRoute && isProcessEditorRoute() ? route.fullPath : undefined
+  await router.replace({
+    name: ROUTE_NAMES.login,
+    query: redirect ? { redirect } : undefined,
+  })
+}
 
 function requireSession(): SessionContext {
   const client = api.value
@@ -110,8 +142,7 @@ function resetSession(message = '') {
   models.value = []
   totalModels.value = 0
   listLoading.value = false
-  activeModel.value = null
-  activeXml.value = ''
+  clearActiveModel()
   sessionRestoring.value = false
   loginError.value = message
 }
@@ -197,8 +228,7 @@ async function logout() {
   models.value = []
   totalModels.value = 0
   listLoading.value = false
-  activeModel.value = null
-  activeXml.value = ''
+  clearActiveModel()
   loginError.value = ''
 
   try {
@@ -231,8 +261,9 @@ async function loadModels(query: ProcessModelQuery = currentQuery.value) {
   }
 }
 
-async function openModel(id: string) {
+async function loadModelForRoute(id: string) {
   const context = requireSession()
+  const request = ++editorRequest
   const operation = beginOperation()
   try {
     const [model, editorDocument] = await Promise.all([
@@ -240,8 +271,14 @@ async function openModel(id: string) {
       context.client.getEditorModel(id),
     ])
     assertCurrentSession(context)
+    if (request !== editorRequest || !isProcessEditorRoute(id)) {
+      throw new SessionChangedError()
+    }
     const xml = await oryxJsonToBpmnXml(editorDocument.model)
     assertCurrentSession(context)
+    if (request !== editorRequest || !isProcessEditorRoute(id)) {
+      throw new SessionChangedError()
+    }
     activeModel.value = {
       ...model,
       name: editorDocument.name,
@@ -251,8 +288,12 @@ async function openModel(id: string) {
       lastUpdatedBy: editorDocument.lastUpdatedBy,
     }
     activeXml.value = xml
+    return true
   } catch (error) {
-    handleSessionError(error, context, '无法打开流程模型')
+    if (request === editorRequest) {
+      handleSessionError(error, context, '无法打开流程模型')
+    }
+    return false
   } finally {
     finishOperation(operation)
   }
@@ -264,7 +305,7 @@ async function createModel(input: CreateModelInput) {
   try {
     const created = await context.client.createModel(input)
     assertCurrentSession(context)
-    await openModel(created.id)
+    await router.push({ name: ROUTE_NAMES.processEditor, params: { modelId: created.id } })
   } catch (error) {
     handleSessionError(error, context, '创建流程模型失败')
   } finally {
@@ -298,6 +339,7 @@ async function importModel(input: ImportModelInput) {
     assertCurrentSession(context)
     activeModel.value = saved
     activeXml.value = xml
+    await router.push({ name: ROUTE_NAMES.processEditor, params: { modelId: saved.id } })
     ElMessage.success(`已导入 ${input.fileName}`)
   } catch (error) {
     if (created) {
@@ -395,11 +437,70 @@ async function deleteModel(id: string) {
   }
 }
 
-function closeEditor() {
-  activeModel.value = null
-  activeXml.value = ''
-  void loadModels()
+async function syncRouteState() {
+  if (embeddedMode) {
+    if (route.name !== ROUTE_NAMES.embedded) {
+      await router.replace({ name: ROUTE_NAMES.embedded })
+    }
+    return
+  }
+  if (sessionRestoring.value) return
+
+  if (!authenticated.value) {
+    await navigateToLogin(isProcessEditorRoute())
+    return
+  }
+
+  if (route.name === ROUTE_NAMES.login) {
+    await router.replace(redirectAfterLogin())
+    return
+  }
+
+  if (route.name === ROUTE_NAMES.embedded) {
+    await router.replace({ name: ROUTE_NAMES.processes })
+  }
 }
+
+const modelerApplication: ModelerApplication = {
+  authenticated,
+  authenticating,
+  sessionRestoring,
+  loginError,
+  username,
+  models,
+  totalModels,
+  listLoading,
+  activeModel,
+  activeXml,
+  login,
+  logout,
+  loadModels,
+  loadModelForRoute,
+  createModel,
+  importModel,
+  saveActiveModel,
+  deleteModel,
+  clearActiveModel,
+}
+
+provide(modelerApplicationKey, modelerApplication)
+
+watch(
+  () => [sessionRestoring.value, authenticated.value, route.name, currentModelId()] as const,
+  ([restoring, isAuthenticated, routeName], previous) => {
+    if (
+      !restoring &&
+      isAuthenticated &&
+      routeName === ROUTE_NAMES.processes &&
+      previous?.[2] === ROUTE_NAMES.processEditor
+    ) {
+      currentQuery.value = { sort: 'modifiedDesc' }
+      void loadModels(currentQuery.value)
+    }
+    void syncRouteState()
+  },
+  { immediate: true },
+)
 
 onMounted(() => {
   if (!embeddedMode) void restoreSession()
@@ -407,66 +508,5 @@ onMounted(() => {
 </script>
 
 <template>
-  <BpmnDesigner v-if="embeddedMode" />
-  <div
-    v-else-if="sessionRestoring"
-    class="session-restoring"
-    data-testid="session-restoring"
-    role="status"
-    aria-label="正在恢复登录状态"
-  >
-    <span class="session-spinner" aria-hidden="true" />
-  </div>
-  <LoginView
-    v-else-if="!authenticated"
-    :busy="authenticating"
-    :error="loginError"
-    @login="login"
-  />
-  <BpmnDesigner
-    v-else-if="activeModel"
-    :key="activeModel.id"
-    :initial-xml="activeXml"
-    :initial-file-name="`${activeModel.key}.bpmn20.xml`"
-    :initial-saved-at="activeModel.lastUpdated"
-    :persist-model="saveActiveModel"
-    @close="closeEditor"
-  />
-  <ProcessModelList
-    v-else
-    :models="models"
-    :total="totalModels"
-    :loading="listLoading"
-    :username="username"
-    @create="createModel"
-    @import="importModel"
-    @open="openModel"
-    @delete="deleteModel"
-    @query-change="loadModels"
-    @refresh="loadModels()"
-    @logout="logout"
-  />
+  <RouterView />
 </template>
-
-<style scoped>
-.session-restoring {
-  display: grid;
-  width: 100%;
-  height: 100%;
-  place-items: center;
-  background: #f4f6f8;
-}
-
-.session-spinner {
-  width: 34px;
-  height: 34px;
-  border: 3px solid #d0d5dd;
-  border-top-color: #2563eb;
-  border-radius: 50%;
-  animation: session-spin 0.8s linear infinite;
-}
-
-@keyframes session-spin {
-  to { transform: rotate(360deg); }
-}
-</style>

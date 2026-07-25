@@ -20,6 +20,7 @@ bpmn-js BPMN XML  -> 浏览器转换 -> Oryx JSON -> /modeler-app/rest
 - 退出登录调用官方 `/app/logout` 并清除该 Cookie。
 - Oryx JSON 与 BPMN XML 的转换完全在浏览器中完成，不调用后端导入转换接口。
 - 后端仍保存 Flowable 官方 Oryx JSON，列表、创建、读取、保存和删除均使用原生接口。
+- 页面由 Vue Router 管理，流程编辑器路由使用 Flowable 模型 UUID，刷新后会重新载入同一模型。
 
 打开官方 Oryx 模型时，转换器会生成 BPMN 语义和 DI；保存时再生成 Flowable 可读取的 Oryx
 shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明确拒绝，避免静默降级为普通任务。
@@ -37,6 +38,20 @@ shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明�
 - `lastUpdated` 乐观锁；冲突时由用户明确选择是否覆盖
 - 未保存返回/离开提示和保存期间操作互斥
 - iframe / `?embedded=1` 嵌入模式
+
+## 前端路由
+
+独立模式沿用 Flowable UI 的流程术语：
+
+```text
+#/login
+#/processes
+#/processes/{modelId}
+```
+
+`modelId` 直接取自模型列表响应的 `data[].id`，不使用流程 `key` 或名称。当前版本只注册 BPMN
+流程路由；不提供 DMN/CMMN 页面或兼容路由。路由使用 hash history，因此部署为 Spring Boot 静态资源后，
+刷新 `#/processes/{modelId}` 仍由 `index.html` 启动，不需要后端增加 SPA fallback。
 
 ## 后端接口
 
@@ -89,6 +104,7 @@ D:\IdeaProjects\flowable-lab\src\main\resources\static\flowable-modeler
 
 ```text
 http://127.0.0.1:8080/flowable-modeler/index.html
+http://127.0.0.1:8080/flowable-modeler/index.html#/processes/{modelId}
 ```
 
 ## 验证
@@ -102,8 +118,9 @@ npm run build
 npm run test:real-backend
 ```
 
-`test:smoke` 会使用本机 Chromium 浏览器验证登录、官方 API 契约、模型列表、创建、
-Oryx 打开与保存、冲突处理、浏览器端导入、失败回滚、删除、嵌入模式以及零浏览器存储访问。
+`test:smoke` 会使用本机 Chromium 浏览器验证登录、Vue Router 深链与编辑器刷新恢复、官方 API
+契约、模型列表、创建、Oryx 打开与保存、冲突处理、浏览器端导入、失败回滚、删除、嵌入模式以及
+零浏览器存储访问。
 
 `test:flowable` 使用本地 Flowable 6.8.1 `BpmnXMLConverter` 对测试产物做引擎级解析和
 往返检查。Flowable 源码不在默认位置时可以给 `scripts/check-flowable.ps1` 传入

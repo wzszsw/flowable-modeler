@@ -414,6 +414,38 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
+function parseHashRoute(url) {
+  const pageUrl = url instanceof URL ? url : new URL(url)
+  const routeUrl = new URL(pageUrl.hash.slice(1) || '/', pageUrl.origin)
+  return {
+    pathname: routeUrl.pathname
+      .split('/')
+      .map((segment) => decodeURIComponent(segment))
+      .join('/'),
+    query: Object.fromEntries(routeUrl.searchParams),
+  }
+}
+
+async function waitForHashRoute(page, pathname, query = {}) {
+  const expectedQuery = Object.entries(query)
+  await page.waitForURL((url) => {
+    const actual = parseHashRoute(url)
+    return (
+      actual.pathname === pathname &&
+      Object.keys(actual.query).length === expectedQuery.length &&
+      expectedQuery.every(([key, value]) => actual.query[key] === value)
+    )
+  })
+  const actual = parseHashRoute(page.url())
+  assert(
+    actual.pathname === pathname &&
+      Object.keys(actual.query).length === expectedQuery.length &&
+      expectedQuery.every(([key, value]) => actual.query[key] === value),
+    `路由错误，期望 ${JSON.stringify({ pathname, query })}，实际 ${JSON.stringify(actual)}`,
+  )
+  return actual
+}
+
 const MOCK_SESSION_COOKIE_NAME = 'FLOWABLE_REMEMBER_ME'
 const MOCK_SESSION_COOKIE_VALUE = 'mock-admin-session'
 const MOCK_SESSION_COOKIE = `${MOCK_SESSION_COOKIE_NAME}=${MOCK_SESSION_COOKIE_VALUE}`
@@ -474,7 +506,7 @@ function createMockModelerApi() {
 
   function createRecord(input) {
     sequence += 1
-    const id = `model-${sequence}`
+    const id = `00000000-0000-4000-8000-${String(sequence).padStart(12, '0')}`
     const record = {
       id,
       name: input.name,
@@ -1224,6 +1256,7 @@ try {
   await installBrowserStorageProbe(modelPage)
   await modelPage.goto(origin, { waitUntil: 'networkidle' })
   await modelPage.locator('[data-testid="login-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/login')
   assert((await modelPage.locator('.djs-container').count()) === 0, '登录前挂载了流程设计器')
   assert(
     (await modelPage.getByRole('heading', { name: '登录 Flowable Modeler', exact: true }).count()) === 1 &&
@@ -1240,6 +1273,7 @@ try {
 
   await loginToModeler(modelPage, 'admin', 'wrong-password')
   await modelPage.locator('[data-testid="login-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/login')
   await modelPage.locator('.login-error').waitFor()
   const invalidLoginMessage = (await modelPage.locator('.login-error').innerText()).trim()
   assert(
@@ -1260,6 +1294,7 @@ try {
 
   await loginToModeler(modelPage)
   await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/processes')
   assert(await modelPage.locator('[data-testid="model-list-empty"]').isVisible(), '空流程模型状态未显示')
   assert((await modelPage.locator('.djs-container').count()) === 0, '流程模型列表后台挂载了编辑器')
   const initialListRequest = modelApi.state.requests.find(
@@ -1283,6 +1318,11 @@ try {
     `创建流程模型没有使用官方 ModelRepresentation：${JSON.stringify(createModelARequest?.json)}`,
   )
   const modelAId = createModelARequest.modelId
+  assert(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-8[0-9a-f]{3}-[0-9a-f]{12}$/i.test(modelAId),
+    `模拟 Flowable 模型 ID 不是 UUID：${modelAId}`,
+  )
+  await waitForHashRoute(modelPage, `/processes/${modelAId}`)
   const modelAFirstToken = modelApi.state.models.get(modelAId).lastUpdated
   await modelPage.evaluate(() => {
     const modeler = window.bpmnModeler
@@ -1315,6 +1355,7 @@ try {
 
   await modelPage.locator('[data-testid="back-to-models"]').click()
   await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/processes')
   assert((await findModelRow(modelPage, '流程模型 A 已保存').count()) === 1, '保存后列表元数据未刷新')
 
   await createModelFromList(modelPage, '流程模型 B', 'Process_model_b')
@@ -1322,9 +1363,11 @@ try {
     (request) => request.method === 'POST' && request.path === '/models',
   )
   const modelBId = createRequests.at(-1).modelId
+  await waitForHashRoute(modelPage, `/processes/${modelBId}`)
   const modelBJsonBefore = JSON.stringify(modelApi.state.models.get(modelBId).editorJson)
   await modelPage.locator('[data-testid="back-to-models"]').click()
   await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/processes')
   assert((await modelPage.locator('[data-testid="model-row"]').count()) === 2, '多个流程模型未同时显示')
 
   const modelSearchInput = modelPage.locator(
@@ -1363,6 +1406,7 @@ try {
   ).length
   await modelPage.reload({ waitUntil: 'networkidle' })
   await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/processes')
   assert(
     modelApi.state.requests.filter(
       (request) => request.method === 'POST' && request.path === '/app/authentication',
@@ -1384,18 +1428,103 @@ try {
   await savedModelARow.locator('[data-testid="model-primary-open"]').focus()
   await modelPage.keyboard.press('Enter')
   await modelPage.waitForSelector('.djs-container')
+  const modelARouteBeforeRefresh = await waitForHashRoute(
+    modelPage,
+    `/processes/${modelAId}`,
+  )
   assert(
     await modelPage.evaluate(
       () => window.bpmnModeler.get('canvas').getRootElement().businessObject.id === 'Process_model_a',
     ),
     '按流程模型 ID 打开了错误流程',
   )
+
+  const loginRequestCountBeforeEditorRefresh = modelApi.state.requests.filter(
+    (request) => request.method === 'POST' && request.path === '/app/authentication',
+  ).length
+  const modelAEditorReadsBeforeRefresh = modelApi.state.requests.filter(
+    (request) =>
+      request.method === 'GET' && request.path === `/models/${modelAId}/editor/json`,
+  ).length
+  await modelPage.reload({ waitUntil: 'networkidle' })
+  await modelPage.waitForSelector('.djs-container')
+  await modelPage.waitForFunction(
+    () => window.bpmnModeler.get('canvas').getRootElement().businessObject.id === 'Process_model_a',
+  )
+  const modelARouteAfterRefresh = await waitForHashRoute(
+    modelPage,
+    `/processes/${modelAId}`,
+  )
+  assert(
+    modelARouteAfterRefresh.pathname === modelARouteBeforeRefresh.pathname &&
+      modelApi.state.requests.filter(
+        (request) => request.method === 'POST' && request.path === '/app/authentication',
+      ).length === loginRequestCountBeforeEditorRefresh &&
+      modelApi.state.requests.filter(
+        (request) =>
+          request.method === 'GET' && request.path === `/models/${modelAId}/editor/json`,
+      ).length === modelAEditorReadsBeforeRefresh + 1,
+    `刷新编辑器后路由 UUID 变化或重新提交了登录：${JSON.stringify({
+      before: modelARouteBeforeRefresh,
+      after: modelARouteAfterRefresh,
+    })}`,
+  )
+
+  const loginRequestCountBeforeExpiredDeepLink = modelApi.state.requests.filter(
+    (request) => request.method === 'POST' && request.path === '/app/authentication',
+  ).length
+  await modelContext.clearCookies()
+  await modelPage.reload({ waitUntil: 'networkidle' })
+  await modelPage.locator('[data-testid="login-page"]').waitFor()
+  const expiredDeepLinkRoute = parseHashRoute(modelPage.url())
+  assert(
+    expiredDeepLinkRoute.pathname === '/login' &&
+      expiredDeepLinkRoute.query.redirect === modelARouteBeforeRefresh.pathname,
+    `深链 Cookie 失效后的登录路由错误：${JSON.stringify(expiredDeepLinkRoute)}`,
+  )
+  assert(
+    modelApi.state.requests.filter(
+      (request) => request.method === 'POST' && request.path === '/app/authentication',
+    ).length === loginRequestCountBeforeExpiredDeepLink,
+    '深链 Cookie 失效后错误地自动重交登录表单',
+  )
+  await loginToModeler(modelPage)
+  await modelPage.waitForSelector('.djs-container')
+  await modelPage.waitForFunction(
+    () => window.bpmnModeler.get('canvas').getRootElement().businessObject.id === 'Process_model_a',
+  )
+  await waitForHashRoute(modelPage, `/processes/${modelAId}`)
+  assert(
+    modelApi.state.requests.filter(
+      (request) => request.method === 'POST' && request.path === '/app/authentication',
+    ).length === loginRequestCountBeforeExpiredDeepLink + 1,
+    '深链重新登录没有只提交一次认证表单',
+  )
+
+  await modelPage.evaluate(() => window.history.back())
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/processes')
+  await findModelRow(modelPage, '流程模型 A 已保存')
+    .locator('[data-testid="open-model"]')
+    .click()
+  await modelPage.waitForSelector('.djs-container')
+  await waitForHashRoute(modelPage, `/processes/${modelAId}`)
+
   const modelASecondToken = modelApi.state.models.get(modelAId).lastUpdated
   await modelPage.evaluate(() => {
     const modeler = window.bpmnModeler
     const root = modeler.get('canvas').getRootElement()
     modeler.get('modeling').updateProperties(root, { name: '流程模型 A 冲突保存' })
   })
+  await modelPage.evaluate(() => window.history.back())
+  await modelPage.getByText('当前流程有未保存更改。', { exact: true }).waitFor()
+  await modelPage.getByRole('button', { name: '继续编辑', exact: true }).click()
+  await waitForHashRoute(modelPage, `/processes/${modelAId}`)
+  assert(
+    (await modelPage.locator('.djs-container').count()) === 1 &&
+      (await modelPage.getByText('未保存', { exact: true }).isVisible()),
+    '取消浏览器 Back 后没有恢复同一编辑器及其未保存状态',
+  )
   modelApi.state.conflictNextSaveForId.add(modelAId)
   await modelPage.locator('[data-testid="save-model"]').click()
   await modelPage.getByText('其他用户', { exact: false }).waitFor()
@@ -1431,12 +1560,14 @@ try {
 
   await modelPage.locator('[data-testid="back-to-models"]').click()
   await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/processes')
   modelApi.state.failEditorJsonForId.add(modelAId)
   await findModelRow(modelPage, '流程模型 A 冲突保存')
     .locator('[data-testid="open-model"]')
     .click()
   await modelPage.locator('.el-message--error').waitFor()
   await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/processes')
   assert((await modelPage.locator('.djs-container').count()) === 0, '载入失败后仍挂载了编辑器')
   await modelPage.locator('.el-message--error').waitFor({ state: 'hidden' })
 
@@ -1695,6 +1826,7 @@ try {
   await modelPage.locator('[data-testid="logout"]').click()
   await logoutResponse
   await modelPage.locator('[data-testid="login-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/login')
   assert(
     modelApi.state.requests.some(
       (request) =>
@@ -1709,6 +1841,7 @@ try {
   )
   await modelPage.reload({ waitUntil: 'networkidle' })
   await modelPage.locator('[data-testid="login-page"]').waitFor()
+  await waitForHashRoute(modelPage, '/login')
   assert(
     (await modelPage.locator('[data-testid="process-model-list-page"]').count()) === 0 &&
       modelApi.state.requests.filter(

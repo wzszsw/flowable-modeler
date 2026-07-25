@@ -98,6 +98,7 @@ interface ModelPersistenceResult {
 type NativeImportXML = Modeler['importXML']
 type ImportTarget = Parameters<NativeImportXML>[1]
 type ImportResult = Awaited<ReturnType<NativeImportXML>>
+type LeaveDecision = 'save' | 'discard' | 'stay'
 
 interface ImportDiagramOptions {
   importedFileName?: string
@@ -183,6 +184,7 @@ const xmlDialogVisible = ref(false)
 const xmlContent = ref('')
 const previewDialogVisible = ref(false)
 const previewSvg = ref('')
+const leaveDialogVisible = ref(false)
 const problemsDrawerVisible = ref(false)
 const problems = ref<ValidationProblem[]>([])
 const importWarningsDialogVisible = ref(false)
@@ -193,6 +195,8 @@ const saving = ref(false)
 let importing = false
 let importQueue: Promise<void> = Promise.resolve()
 let savePromise: Promise<boolean> | null = null
+let leaveDecisionPromise: Promise<LeaveDecision> | null = null
+let resolveLeaveDecision: ((decision: LeaveDecision) => void) | null = null
 let nativeImportXML: NativeImportXML | null = null
 let resizeObserver: ResizeObserver | null = null
 
@@ -785,25 +789,50 @@ async function saveModel() {
   await persistCurrentModel()
 }
 
-async function requestClose() {
-  if (embeddedMode || !isInteractionReady()) return
-  await commitActiveEditor()
-  if (!dirty.value) {
-    emit('close')
-    return
+function chooseLeaveDecision(decision: LeaveDecision) {
+  const resolve = resolveLeaveDecision
+  resolveLeaveDecision = null
+  leaveDialogVisible.value = false
+  resolve?.(decision)
+}
+
+function waitForLeaveDecision() {
+  if (!leaveDecisionPromise) {
+    leaveDialogVisible.value = true
+    leaveDecisionPromise = new Promise<LeaveDecision>((resolve) => {
+      resolveLeaveDecision = resolve
+    }).finally(() => {
+      leaveDecisionPromise = null
+    })
+  }
+  return leaveDecisionPromise
+}
+
+function handleLeaveDialogClosed() {
+  if (resolveLeaveDecision) chooseLeaveDecision('stay')
+}
+
+async function confirmClose() {
+  if (embeddedMode) return false
+  if (!isInteractionReady()) {
+    ElMessage.warning('编辑器正在载入或保存，请稍后再离开')
+    return false
   }
   try {
-    await ElMessageBox.confirm('当前流程有未保存更改。', '返回流程模型', {
-      confirmButtonText: '保存并返回',
-      cancelButtonText: '放弃更改',
-      distinguishCancelAndClose: true,
-      closeOnClickModal: false,
-      type: 'warning',
-    })
-    if (await persistCurrentModel(false)) emit('close')
-  } catch (action) {
-    if (action === 'cancel') emit('close')
+    await commitActiveEditor()
+  } catch (error) {
+    ElMessage.error(error instanceof Error ? error.message : '无法提交当前编辑内容')
+    return false
   }
+  if (!dirty.value) return true
+  const decision = await waitForLeaveDecision()
+  if (decision === 'stay') return false
+  if (decision === 'discard') return true
+  return persistCurrentModel(false)
+}
+
+async function requestClose() {
+  if (await confirmClose()) emit('close')
 }
 
 async function confirmDiscard() {
@@ -1113,6 +1142,7 @@ defineExpose({
   importXML: importDiagram,
   validate: runValidation,
   saveModel,
+  confirmClose,
 })
 </script>
 
@@ -1323,6 +1353,25 @@ defineExpose({
     </el-dialog>
 
     <el-dialog
+      v-model="leaveDialogVisible"
+      title="返回流程模型"
+      width="min(460px, calc(100vw - 32px))"
+      :close-on-click-modal="false"
+      @closed="handleLeaveDialogClosed"
+    >
+      <p class="leave-dialog-message">当前流程有未保存更改。</p>
+      <template #footer>
+        <el-button @click="chooseLeaveDecision('stay')">继续编辑</el-button>
+        <el-button type="danger" plain @click="chooseLeaveDecision('discard')">
+          放弃更改
+        </el-button>
+        <el-button type="primary" @click="chooseLeaveDecision('save')">
+          保存并返回
+        </el-button>
+      </template>
+    </el-dialog>
+
+    <el-dialog
       v-model="importWarningsDialogVisible"
       title="BPMN 导入提示"
       width="min(680px, calc(100vw - 32px))"
@@ -1409,6 +1458,12 @@ defineExpose({
 .designer-shell.is-interaction-locked .panel-toggle {
   pointer-events: none;
   user-select: none;
+}
+
+.leave-dialog-message {
+  margin: 0;
+  color: #475467;
+  line-height: 1.6;
 }
 
 .designer-shell.is-interaction-locked :deep(.designer-toolbar),
