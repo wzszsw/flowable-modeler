@@ -526,6 +526,20 @@ function createMockModelerApi() {
     conflictNextSaveForId: new Set(),
     failNextSaveStatus: 0,
     failEditorJsonForId: new Set(),
+    delayedResponses: new Map(),
+  }
+
+  function delayNextResponse(method, path) {
+    let notifyStarted
+    let release
+    const started = new Promise((resolve) => {
+      notifyStarted = resolve
+    })
+    const wait = new Promise((resolve) => {
+      release = resolve
+    })
+    state.delayedResponses.set(`${method} ${path}`, { notifyStarted, wait })
+    return { started, release }
   }
 
   async function routeHandler(route) {
@@ -545,10 +559,20 @@ function createMockModelerApi() {
       authorized,
       authorization: headers.authorization || '',
       cookie: headers.cookie || '',
+      accept: headers.accept || '',
+      cacheControl: headers['cache-control'] || '',
+      pragma: headers.pragma || '',
       contentType: headers['content-type'] || '',
       body: request.postData() || '',
     }
     requests.push(event)
+
+    const delayedResponse = state.delayedResponses.get(`${event.method} ${path}`)
+    if (delayedResponse) {
+      state.delayedResponses.delete(`${event.method} ${path}`)
+      delayedResponse.notifyStarted()
+      await delayedResponse.wait
+    }
 
     const json = (status, body, headers = {}) =>
       route.fulfill({
@@ -719,7 +743,7 @@ function createMockModelerApi() {
     return json(404, { message: `Unhandled mock endpoint: ${request.method()} ${path}` })
   }
 
-  return { state, createRecord, routeHandler }
+  return { state, createRecord, delayNextResponse, routeHandler }
 }
 
 async function installMockModelerApiRoutes(target, api) {
@@ -736,6 +760,15 @@ function assertModelRequestsUseCookie(api, phase) {
   assert(
     modelRequests.every((request) => request.authorized && !request.authorization),
     `${phase}没有仅使用 Flowable 会话 Cookie：${JSON.stringify(modelRequests)}`,
+  )
+  assert(
+    modelRequests.every(
+      (request) =>
+        request.accept === 'application/json' &&
+        request.cacheControl === 'no-cache' &&
+        request.pragma === 'no-cache',
+    ),
+    `${phase}没有应用 Axios 公共请求拦截器：${JSON.stringify(modelRequests)}`,
   )
 }
 
@@ -1275,6 +1308,12 @@ try {
   await modelPage.locator('[data-testid="login-page"]').waitFor()
   await waitForHashRoute(modelPage, '/login')
   await modelPage.locator('.login-error').waitFor()
+  await modelPage.locator('.el-loading-mask.is-fullscreen').waitFor({ state: 'hidden' })
+  assert(
+    !(await modelPage.locator('#app').getAttribute('inert')) &&
+      !(await modelPage.locator('#app').getAttribute('aria-busy')),
+    '认证失败后 Axios 全局 Loading 没有恢复应用交互',
+  )
   const invalidLoginMessage = (await modelPage.locator('.login-error').innerText()).trim()
   assert(
     invalidLoginMessage.length > 0,
@@ -1425,8 +1464,46 @@ try {
   await assertNoBrowserPersistence(modelPage, '刷新恢复登录后')
 
   const savedModelARow = findModelRow(modelPage, '流程模型 A 已保存')
+  const modelReadDelay = modelApi.delayNextResponse('GET', `/models/${modelAId}`)
+  const editorReadDelay = modelApi.delayNextResponse(
+    'GET',
+    `/models/${modelAId}/editor/json`,
+  )
+  const modelReadResponse = modelPage.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname === `/modeler-app/rest/models/${modelAId}`,
+  )
+  const editorReadResponse = modelPage.waitForResponse(
+    (response) =>
+      response.request().method() === 'GET' &&
+      new URL(response.url()).pathname ===
+        `/modeler-app/rest/models/${modelAId}/editor/json`,
+  )
   await savedModelARow.locator('[data-testid="model-primary-open"]').focus()
   await modelPage.keyboard.press('Enter')
+  await Promise.all([modelReadDelay.started, editorReadDelay.started])
+  const requestLoadingMask = modelPage.locator('.el-loading-mask.is-fullscreen')
+  await requestLoadingMask.waitFor()
+  assert(
+    (await modelPage.locator('#app').getAttribute('inert')) === '' &&
+      (await modelPage.locator('#app').getAttribute('aria-busy')) === 'true',
+    'Axios 全局 Loading 没有锁定底层应用交互',
+  )
+  modelReadDelay.release()
+  await modelReadResponse
+  assert(
+    await requestLoadingMask.isVisible(),
+    '首个并行请求完成后 Axios 全局 Loading 被提前关闭',
+  )
+  editorReadDelay.release()
+  await editorReadResponse
+  await requestLoadingMask.waitFor({ state: 'hidden' })
+  assert(
+    !(await modelPage.locator('#app').getAttribute('inert')) &&
+      !(await modelPage.locator('#app').getAttribute('aria-busy')),
+    '并行请求完成后 Axios 全局 Loading 没有恢复应用交互',
+  )
   await modelPage.waitForSelector('.djs-container')
   const modelARouteBeforeRefresh = await waitForHashRoute(
     modelPage,

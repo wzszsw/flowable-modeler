@@ -9,7 +9,6 @@ import {
 } from 'vue-router'
 
 import BpmnDesigner from '@/components/designer/BpmnDesigner.vue'
-import RouteLoading from '@/components/routing/RouteLoading.vue'
 import { useModelerApplication } from '@/modeler/modelerApplication'
 import { ROUTE_NAMES } from '@/routes'
 
@@ -25,6 +24,10 @@ const modelId = computed(() => {
   const value = route.params.modelId
   return typeof value === 'string' ? value : ''
 })
+const routeModel = computed(() => {
+  const model = application.activeModel.value
+  return model?.id === modelId.value ? model : null
+})
 
 let loadGeneration = 0
 let bypassLeaveConfirmation = false
@@ -32,7 +35,7 @@ let bypassLeaveConfirmation = false
 async function loadRouteModel() {
   const generation = ++loadGeneration
   const id = modelId.value
-  if (application.sessionRestoring.value || !application.authenticated.value) return
+  if (!application.authenticated.value) return
   if (!id) {
     await router.replace({ name: ROUTE_NAMES.processes })
     return
@@ -96,11 +99,7 @@ onBeforeRouteLeave(async (_to, from) => {
 })
 
 watch(
-  () => [
-    application.sessionRestoring.value,
-    application.authenticated.value,
-    modelId.value,
-  ] as const,
+  () => [application.authenticated.value, modelId.value] as const,
   () => void loadRouteModel(),
   { immediate: true },
 )
@@ -112,20 +111,13 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <RouteLoading
-    v-if="
-      application.sessionRestoring.value ||
-      !application.authenticated.value ||
-      application.activeModel.value?.id !== modelId
-    "
-  />
   <BpmnDesigner
-    v-else
-    :key="application.activeModel.value.id"
+    v-if="routeModel"
+    :key="routeModel.id"
     ref="designerRef"
     :initial-xml="application.activeXml.value"
-    :initial-file-name="`${application.activeModel.value.key}.bpmn20.xml`"
-    :initial-saved-at="application.activeModel.value.lastUpdated"
+    :initial-file-name="`${routeModel.key}.bpmn20.xml`"
+    :initial-saved-at="routeModel.lastUpdated"
     :persist-model="application.saveActiveModel"
     @close="closeEditor"
   />

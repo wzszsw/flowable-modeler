@@ -35,10 +35,9 @@ interface ModelCreateForm {
   description: string
 }
 
-const props = defineProps<{
+defineProps<{
   models: readonly ProcessModel[]
   total: number
-  loading: boolean
   username: string
 }>()
 
@@ -122,14 +121,12 @@ function resetCreateForm() {
 }
 
 function openCreateDialog() {
-  if (props.loading) return
   resetCreateForm()
   createDialogVisible.value = true
   void nextTick(() => createFormRef.value?.clearValidate())
 }
 
 async function submitCreate() {
-  if (props.loading) return
   if (!createFormRef.value) return
   try {
     const valid = await createFormRef.value.validate()
@@ -147,7 +144,6 @@ async function submitCreate() {
 }
 
 function chooseImportFile() {
-  if (props.loading) return
   importInputRef.value?.click()
 }
 
@@ -155,7 +151,7 @@ async function handleImportFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || props.loading) return
+  if (!file) return
 
   try {
     const xml = await file.text()
@@ -172,7 +168,6 @@ async function handleImportFile(event: Event) {
 }
 
 async function confirmDelete(model: ProcessModel) {
-  if (props.loading) return
   try {
     await ElMessageBox.confirm(
       `删除后无法恢复，确定删除“${model.name}”吗？`,
@@ -208,7 +203,6 @@ async function confirmDelete(model: ProcessModel) {
             <el-button
               :icon="RefreshCw"
               circle
-              :loading="loading"
               aria-label="刷新模型"
               data-testid="refresh-models"
               @click="emit('refresh')"
@@ -217,7 +211,6 @@ async function confirmDelete(model: ProcessModel) {
           <el-button
             data-testid="import-model"
             :icon="Upload"
-            :disabled="loading"
             aria-label="导入 BPMN"
             @click="chooseImportFile"
           >
@@ -226,7 +219,6 @@ async function confirmDelete(model: ProcessModel) {
           <el-button
             type="primary"
             :icon="Plus"
-            :disabled="loading"
             data-testid="create-model"
             aria-label="新建 BPMN 流程"
             @click="openCreateDialog"
@@ -261,14 +253,12 @@ async function confirmDelete(model: ProcessModel) {
             data-testid="model-search"
             placeholder="搜索名称、标识或描述"
             aria-label="搜索流程模型"
-            :disabled="loading"
           />
           <el-select
             v-model="sortMode"
             class="sort-select"
             data-testid="model-sort"
             aria-label="模型排序方式"
-            :disabled="loading"
           >
             <template #prefix><ArrowUpDown :size="15" /></template>
             <el-option
@@ -282,7 +272,6 @@ async function confirmDelete(model: ProcessModel) {
       </div>
 
       <section
-        v-loading="loading"
         class="model-list"
         data-testid="model-list"
         aria-label="BPMN 流程模型列表"
@@ -306,7 +295,6 @@ async function confirmDelete(model: ProcessModel) {
             class="model-identity"
             data-testid="model-primary-open"
             :aria-label="`打开模型 ${model.name}`"
-            :disabled="loading"
             @click="emit('open', model.id)"
           >
             <span class="model-icon" aria-hidden="true"><FileText :size="19" /></span>
@@ -323,7 +311,6 @@ async function confirmDelete(model: ProcessModel) {
             <el-button
               text
               :icon="FolderOpen"
-              :disabled="loading"
               data-testid="open-model"
               :aria-label="`打开模型 ${model.name}`"
               @click.stop="emit('open', model.id)"
@@ -335,7 +322,6 @@ async function confirmDelete(model: ProcessModel) {
                 text
                 type="danger"
                 :icon="Trash2"
-                :disabled="loading"
                 data-testid="delete-model"
                 :aria-label="`删除模型 ${model.name}`"
                 @click.stop="confirmDelete(model)"
@@ -344,7 +330,7 @@ async function confirmDelete(model: ProcessModel) {
           </div>
         </div>
 
-        <div v-if="!loading && !models.length" class="empty-state" data-testid="model-list-empty">
+        <div v-if="!models.length" class="empty-state" data-testid="model-list-empty">
           <el-empty
             :description="searchQuery ? '没有匹配的流程模型' : '还没有 BPMN 流程模型'"
             :image-size="92"
@@ -353,7 +339,6 @@ async function confirmDelete(model: ProcessModel) {
             <div v-else class="empty-actions">
               <el-button
                 :icon="Upload"
-                :disabled="loading"
                 data-testid="empty-import-model"
                 aria-label="导入 BPMN"
                 @click="chooseImportFile"
@@ -363,7 +348,6 @@ async function confirmDelete(model: ProcessModel) {
               <el-button
                 type="primary"
                 :icon="Plus"
-                :disabled="loading"
                 aria-label="新建 BPMN 流程"
                 @click="openCreateDialog"
               >
@@ -397,7 +381,6 @@ async function confirmDelete(model: ProcessModel) {
         ref="createFormRef"
         :model="createForm"
         :rules="createRules"
-        :disabled="loading"
         label-position="top"
         @submit.prevent="submitCreate"
       >
@@ -435,7 +418,6 @@ async function confirmDelete(model: ProcessModel) {
         <el-button
           type="primary"
           data-testid="confirm-create-model"
-          :loading="loading"
           @click="submitCreate"
         >
           创建并打开

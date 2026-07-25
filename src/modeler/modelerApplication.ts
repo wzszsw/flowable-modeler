@@ -27,13 +27,10 @@ export interface ImportModelInput extends CreateModelInput {
 
 export interface ModelerApplication {
   authenticated: Ref<boolean>
-  authenticating: Ref<boolean>
-  sessionRestoring: Ref<boolean>
   loginError: Ref<string>
   username: Ref<string>
   models: Ref<ProcessModel[]>
   totalModels: Ref<number>
-  listLoading: Ref<boolean>
   activeModel: Ref<ProcessModel | null>
   activeXml: Ref<string>
   login: (credentials: ModelerCredentials) => Promise<void>

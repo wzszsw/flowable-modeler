@@ -14,6 +14,8 @@ bpmn-js BPMN XML  -> 浏览器转换 -> Oryx JSON -> /modeler-app/rest
 ```
 
 - 登录使用官方 `POST /app/authentication`，模型请求使用 `/modeler-app/rest`。
+- 浏览器端 Flowable API 请求统一使用 Axios；Cookie、公共请求头、全局 Loading 和错误转换由
+  Axios 实例及请求/响应拦截器集中处理。
 - 用户名和密码只用于登录请求，不由应用持久化或保存在 API 客户端中。
 - 不使用 localStorage、sessionStorage 或 IndexedDB。
 - 登录态由 Flowable 签发的 HttpOnly `FLOWABLE_REMEMBER_ME` Cookie 维护，刷新页面会恢复会话。

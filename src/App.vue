@@ -27,13 +27,11 @@ const route = useRoute()
 const router = useRouter()
 const api = shallowRef<ModelerApi | null>(null)
 const authenticated = ref(false)
-const authenticating = ref(false)
 const sessionRestoring = ref(!embeddedMode)
 const loginError = ref('')
 const username = ref('')
 const models = ref<ProcessModel[]>([])
 const totalModels = ref(0)
-const listLoading = ref(false)
 const activeModel = ref<ProcessModel | null>(null)
 const activeXml = ref('')
 const currentQuery = ref<ProcessModelQuery>({ sort: 'modifiedDesc' })
@@ -50,7 +48,6 @@ class SessionChangedError extends Error {
   }
 }
 
-const pendingOperations = new Set<symbol>()
 let authGeneration = 0
 let listRequest = 0
 let editorRequest = 0
@@ -115,18 +112,6 @@ function isAuthenticationError(error: unknown) {
   return error instanceof ModelerApiError && (error.status === 401 || error.status === 403)
 }
 
-function beginOperation() {
-  const token = Symbol('model-operation')
-  pendingOperations.add(token)
-  listLoading.value = true
-  return token
-}
-
-function finishOperation(token: symbol) {
-  pendingOperations.delete(token)
-  listLoading.value = pendingOperations.size > 0
-}
-
 function reportError(error: unknown, fallback: string) {
   ElMessage.error(error instanceof Error ? error.message : fallback)
 }
@@ -134,14 +119,11 @@ function reportError(error: unknown, fallback: string) {
 function resetSession(message = '') {
   authGeneration += 1
   listRequest += 1
-  pendingOperations.clear()
   api.value = null
   authenticated.value = false
-  authenticating.value = false
   username.value = ''
   models.value = []
   totalModels.value = 0
-  listLoading.value = false
   clearActiveModel()
   sessionRestoring.value = false
   loginError.value = message
@@ -163,7 +145,6 @@ function replaceModel(updated: ProcessModel) {
 
 async function login(credentials: ModelerCredentials) {
   const generation = ++authGeneration
-  authenticating.value = true
   loginError.value = ''
   const candidate = new ModelerApi()
   try {
@@ -186,8 +167,6 @@ async function login(credentials: ModelerCredentials) {
         : error instanceof Error
           ? error.message
           : '无法连接 Flowable Modeler'
-  } finally {
-    if (generation === authGeneration) authenticating.value = false
   }
 }
 
@@ -216,18 +195,15 @@ async function restoreSession() {
 
 async function logout() {
   const client = api.value
-  if (!client || authenticating.value) return
+  if (!client) return
 
   const generation = ++authGeneration
   listRequest += 1
-  pendingOperations.clear()
   api.value = null
   authenticated.value = false
-  authenticating.value = true
   username.value = ''
   models.value = []
   totalModels.value = 0
-  listLoading.value = false
   clearActiveModel()
   loginError.value = ''
 
@@ -237,8 +213,6 @@ async function logout() {
     if (generation === authGeneration) {
       loginError.value = error instanceof Error ? error.message : '退出登录失败'
     }
-  } finally {
-    if (generation === authGeneration) authenticating.value = false
   }
 }
 
@@ -246,7 +220,6 @@ async function loadModels(query: ProcessModelQuery = currentQuery.value) {
   const context = requireSession()
   currentQuery.value = { ...query }
   const request = ++listRequest
-  const operation = beginOperation()
   try {
     const result = await context.client.listModels(query)
     assertCurrentSession(context)
@@ -256,15 +229,12 @@ async function loadModels(query: ProcessModelQuery = currentQuery.value) {
   } catch (error) {
     if (request !== listRequest) return
     handleSessionError(error, context, '加载流程模型失败')
-  } finally {
-    finishOperation(operation)
   }
 }
 
 async function loadModelForRoute(id: string) {
   const context = requireSession()
   const request = ++editorRequest
-  const operation = beginOperation()
   try {
     const [model, editorDocument] = await Promise.all([
       context.client.getModel(id),
@@ -294,28 +264,22 @@ async function loadModelForRoute(id: string) {
       handleSessionError(error, context, '无法打开流程模型')
     }
     return false
-  } finally {
-    finishOperation(operation)
   }
 }
 
 async function createModel(input: CreateModelInput) {
   const context = requireSession()
-  const operation = beginOperation()
   try {
     const created = await context.client.createModel(input)
     assertCurrentSession(context)
     await router.push({ name: ROUTE_NAMES.processEditor, params: { modelId: created.id } })
   } catch (error) {
     handleSessionError(error, context, '创建流程模型失败')
-  } finally {
-    finishOperation(operation)
   }
 }
 
 async function importModel(input: ImportModelInput) {
   const context = requireSession()
-  const operation = beginOperation()
   let created: ProcessModel | null = null
   try {
     const metadata = parseBpmnMetadata(input.xml)
@@ -352,8 +316,6 @@ async function importModel(input: ImportModelInput) {
       }
     }
     handleSessionError(error, context, '导入流程模型失败')
-  } finally {
-    finishOperation(operation)
   }
 }
 
@@ -423,7 +385,6 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
 
 async function deleteModel(id: string) {
   const context = requireSession()
-  const operation = beginOperation()
   try {
     await context.client.deleteModel(id)
     assertCurrentSession(context)
@@ -432,8 +393,6 @@ async function deleteModel(id: string) {
     ElMessage.success('流程模型已删除')
   } catch (error) {
     handleSessionError(error, context, '删除流程模型失败')
-  } finally {
-    finishOperation(operation)
   }
 }
 
@@ -463,13 +422,10 @@ async function syncRouteState() {
 
 const modelerApplication: ModelerApplication = {
   authenticated,
-  authenticating,
-  sessionRestoring,
   loginError,
   username,
   models,
   totalModels,
-  listLoading,
   activeModel,
   activeXml,
   login,

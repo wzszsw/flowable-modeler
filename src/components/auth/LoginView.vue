@@ -9,7 +9,6 @@ interface LoginForm {
 }
 
 defineProps<{
-  busy: boolean
   error: string
 }>()
 
@@ -95,7 +94,6 @@ async function submit() {
           class="login-submit"
           type="primary"
           native-type="submit"
-          :loading="busy"
           data-testid="login-submit"
         >
           登录

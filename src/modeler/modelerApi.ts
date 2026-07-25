@@ -1,3 +1,7 @@
+import { createModelerHttpClient } from './modelerHttpClient'
+
+export { ModelerApiError } from './modelerHttpClient'
+
 export const BPMN_MODEL_TYPE = 0
 
 export type ModelSort = 'modifiedDesc' | 'modifiedAsc' | 'nameAsc' | 'nameDesc'
@@ -64,23 +68,8 @@ export interface SaveEditorModelInput {
   conflictResolveAction?: 'overwrite' | 'newVersion'
 }
 
-type Fetcher = typeof fetch
-
-const MODELER_REST_BASE = '/modeler-app/rest'
 const AUTHENTICATION_URL = '/app/authentication'
 const LOGOUT_URL = '/app/logout'
-
-export class ModelerApiError extends Error {
-  readonly status: number
-  readonly details: unknown
-
-  constructor(message: string, status: number, details?: unknown) {
-    super(message)
-    this.name = 'ModelerApiError'
-    this.status = status
-    this.details = details
-  }
-}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -143,29 +132,8 @@ function parseAccount(value: unknown): ModelerAccount {
   }
 }
 
-async function responseError(response: Response) {
-  const body = await response.text()
-  let details: unknown = body
-  let message = body.trim()
-  if (body) {
-    try {
-      details = JSON.parse(body) as unknown
-      const record = asRecord(details)
-      message = optionalString(record.message) || optionalString(record.error) || message
-    } catch {
-      // Preserve a plain-text error response.
-    }
-  }
-  if (!message || message.startsWith('<!DOCTYPE') || message.startsWith('<html')) {
-    message = `Flowable 请求失败（HTTP ${response.status}）`
-  }
-  return new ModelerApiError(message, response.status, details)
-}
-
 export class ModelerApi {
-  constructor(
-    private readonly fetcher: Fetcher = globalThis.fetch.bind(globalThis),
-  ) {}
+  private readonly http = createModelerHttpClient()
 
   async authenticate(credentials: ModelerCredentials) {
     const body = new URLSearchParams({
@@ -174,49 +142,24 @@ export class ModelerApi {
       _spring_security_remember_me: 'true',
       submit: 'Login',
     })
-    const response = await this.fetcher(AUTHENTICATION_URL, {
-      method: 'POST',
+    await this.http.post(AUTHENTICATION_URL, body, {
+      baseURL: '/',
       headers: {
-        Accept: 'application/json',
         'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
       },
-      body,
-      credentials: 'same-origin',
-      cache: 'no-store',
     })
-    if (!response.ok) throw await responseError(response)
   }
 
   async getAccount() {
-    const response = await this.request('/account')
-    return parseAccount(await response.json())
+    const response = await this.http.get('/account')
+    return parseAccount(response.data)
   }
 
   async logout() {
-    const response = await this.fetcher(LOGOUT_URL, {
-      method: 'POST',
-      headers: { Accept: 'application/json' },
-      credentials: 'same-origin',
-      cache: 'no-store',
-      redirect: 'manual',
+    await this.http.post(LOGOUT_URL, undefined, {
+      baseURL: '/',
+      validateStatus: (status) => (status >= 200 && status < 300) || status === 401,
     })
-    if (response.type !== 'opaqueredirect' && !response.ok && response.status !== 401) {
-      throw await responseError(response)
-    }
-  }
-
-  private async request(path: string, init: RequestInit = {}) {
-    const headers = new Headers(init.headers)
-    headers.set('Accept', 'application/json')
-
-    const response = await this.fetcher(`${MODELER_REST_BASE}${path}`, {
-      ...init,
-      headers,
-      credentials: 'same-origin',
-      cache: 'no-store',
-    })
-    if (!response.ok) throw await responseError(response)
-    return response
   }
 
   async listModels(query: ProcessModelQuery = {}): Promise<ProcessModelListResult> {
@@ -228,8 +171,8 @@ export class ModelerApi {
     const filterText = query.filterText?.trim()
     if (filterText) parameters.set('filterText', filterText)
 
-    const response = await this.request(`/models?${parameters}`)
-    const result = asRecord(await response.json())
+    const response = await this.http.get('/models', { params: parameters })
+    const result = asRecord(response.data)
     const data = Array.isArray(result.data) ? result.data.map(parseProcessModel) : []
     return {
       size: typeof result.size === 'number' ? result.size : data.length,
@@ -240,27 +183,23 @@ export class ModelerApi {
   }
 
   async createModel(input: CreateProcessModelInput) {
-    const response = await this.request('/models', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        name: input.name,
-        key: input.key,
-        description: input.description || '',
-        modelType: BPMN_MODEL_TYPE,
-      }),
+    const response = await this.http.post('/models', {
+      name: input.name,
+      key: input.key,
+      description: input.description || '',
+      modelType: BPMN_MODEL_TYPE,
     })
-    return parseProcessModel(await response.json())
+    return parseProcessModel(response.data)
   }
 
   async getModel(id: string) {
-    const response = await this.request(`/models/${encodeURIComponent(id)}`)
-    return parseProcessModel(await response.json())
+    const response = await this.http.get(`/models/${encodeURIComponent(id)}`)
+    return parseProcessModel(response.data)
   }
 
   async getEditorModel(id: string) {
-    const response = await this.request(`/models/${encodeURIComponent(id)}/editor/json`)
-    return parseEditorDocument(await response.json())
+    const response = await this.http.get(`/models/${encodeURIComponent(id)}/editor/json`)
+    return parseEditorDocument(response.data)
   }
 
   async saveEditorModel(id: string, input: SaveEditorModelInput) {
@@ -276,15 +215,13 @@ export class ModelerApi {
       body.set('conflictResolveAction', input.conflictResolveAction)
     }
 
-    const response = await this.request(`/models/${encodeURIComponent(id)}/editor/json`, {
-      method: 'POST',
+    const response = await this.http.post(`/models/${encodeURIComponent(id)}/editor/json`, body, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
-      body,
     })
-    return parseProcessModel(await response.json())
+    return parseProcessModel(response.data)
   }
 
   async deleteModel(id: string) {
-    await this.request(`/models/${encodeURIComponent(id)}`, { method: 'DELETE' })
+    await this.http.delete(`/models/${encodeURIComponent(id)}`)
   }
 }
