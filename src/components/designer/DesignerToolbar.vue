@@ -34,6 +34,7 @@ defineProps<{
   simulationActive: boolean
   problemCount: number
   embedded: boolean
+  saving: boolean
 }>()
 
 const emit = defineEmits<{
@@ -77,18 +78,19 @@ const alignments: Array<{
         text
         :icon="Back"
         :disabled="!ready"
-        data-testid="back-to-drafts"
+        data-testid="back-to-models"
         @click="emit('back')"
       >
-        返回草稿
+        返回模型
       </el-button>
       <el-button
         type="primary"
-        :disabled="!ready"
-        data-testid="save-draft"
+        :disabled="!ready || saving"
+        :loading="saving"
+        data-testid="save-model"
         @click="emit('save')"
       >
-        保存草稿
+        保存模型
       </el-button>
 
       <span class="toolbar-divider" />

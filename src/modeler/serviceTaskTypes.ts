@@ -16,8 +16,6 @@ export const FLOWABLE_BPMN_SERVICE_TASK_TYPES = [
 
 export const FLOWABLE_LEGACY_SERVICE_TASK_TYPES = ['external'] as const
 
-const outOfScopeServiceTaskTypes = new Set(['case'])
-
 const nativeServiceTaskTypes = new Set<string>([
   ...FLOWABLE_BPMN_SERVICE_TASK_TYPES,
   ...FLOWABLE_LEGACY_SERVICE_TASK_TYPES,
@@ -51,10 +49,6 @@ export function isFlowableServiceTaskType(type: string) {
   return nativeServiceTaskTypes.has(type.trim())
 }
 
-export function isOutOfScopeServiceTaskType(type: string) {
-  return outOfScopeServiceTaskTypes.has(type.trim())
-}
-
 export function resolveHostServiceTaskTypes(
   adapter: FlowableHostAdapter | null | undefined,
 ): ResolvedHostServiceTaskType[] {
@@ -68,7 +62,6 @@ export function resolveHostServiceTaskTypes(
     if (
       !type ||
       nativeServiceTaskTypes.has(type) ||
-      outOfScopeServiceTaskTypes.has(type) ||
       seen.has(type)
     ) {
       continue

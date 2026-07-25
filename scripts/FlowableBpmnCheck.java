@@ -378,11 +378,6 @@ public final class FlowableBpmnCheck {
         if (process == null) {
             throw new IllegalStateException(phase + ": P2 BPMN process was not parsed");
         }
-        if (process.findFlowElementsOfType(ServiceTask.class).stream()
-                .anyMatch(task -> ServiceTask.CASE_TASK.equals(task.getType()))) {
-            throw new IllegalStateException(phase + ": CMMN case ServiceTask leaked into the BPMN-only fixture");
-        }
-
         FlowElement expressionElement = process.getFlowElement("Task_expression", true);
         if (!(expressionElement instanceof ServiceTask expressionTask)
                 || !ImplementationType.IMPLEMENTATION_TYPE_EXPRESSION.equals(expressionTask.getImplementationType())

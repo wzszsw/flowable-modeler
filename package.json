@@ -11,12 +11,14 @@
     "type-check": "vue-tsc --build",
     "test:moddle": "node --experimental-strip-types scripts/moddle-roundtrip.mjs",
     "test:smoke": "npm run test:moddle && npm run build-only && node scripts/smoke.mjs",
+    "test:real-backend": "node scripts/real-backend-smoke.mjs",
     "test:flowable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-flowable.ps1"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
     "bpmn-js": "^18.22.0",
     "bpmn-js-token-simulation": "^0.40.0",
+    "bpmn-moddle": "^10.0.0",
     "diagram-js-grid": "^2.0.1",
     "diagram-js-minimap": "^5.4.0",
     "element-plus": "^2.14.3",

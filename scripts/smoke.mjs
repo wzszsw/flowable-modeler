@@ -19,30 +19,66 @@ const collaborationXml = `<?xml version="1.0" encoding="UTF-8"?>
   targetNamespace="http://flowable.org/processdef">
   <bpmn:process id="Process_pool" name="池内流程" isExecutable="true">
     <bpmn:startEvent id="Start_pool">
-      <bpmn:outgoing>Flow_pool</bpmn:outgoing>
+      <bpmn:outgoing>Flow_start_subprocess</bpmn:outgoing>
     </bpmn:startEvent>
+    <bpmn:subProcess id="SubProcess_collapsed" name="折叠处理">
+      <bpmn:incoming>Flow_start_subprocess</bpmn:incoming>
+      <bpmn:outgoing>Flow_subprocess_end</bpmn:outgoing>
+      <bpmn:task id="Task_nested" name="内部任务" />
+    </bpmn:subProcess>
     <bpmn:endEvent id="End_pool">
-      <bpmn:incoming>Flow_pool</bpmn:incoming>
+      <bpmn:incoming>Flow_subprocess_end</bpmn:incoming>
     </bpmn:endEvent>
-    <bpmn:sequenceFlow id="Flow_pool" sourceRef="Start_pool" targetRef="End_pool" />
+    <bpmn:sequenceFlow id="Flow_start_subprocess" sourceRef="Start_pool" targetRef="SubProcess_collapsed" />
+    <bpmn:sequenceFlow id="Flow_subprocess_end" sourceRef="SubProcess_collapsed" targetRef="End_pool" />
+    <bpmn:textAnnotation id="Annotation_pool">
+      <bpmn:text>流程备注</bpmn:text>
+    </bpmn:textAnnotation>
+    <bpmn:association id="Association_pool_note" sourceRef="Start_pool" targetRef="Annotation_pool" />
   </bpmn:process>
   <bpmn:collaboration id="Collaboration_pool" name="协作池">
     <bpmn:participant id="Participant_pool" name="业务池" processRef="Process_pool" />
+    <bpmn:participant id="Participant_black_box" name="外部参与方" />
+    <bpmn:messageFlow id="MessageFlow_black_box" sourceRef="Participant_black_box" targetRef="Participant_pool" />
   </bpmn:collaboration>
   <bpmndi:BPMNDiagram id="BPMNDiagram_pool">
     <bpmndi:BPMNPlane id="BPMNPlane_pool" bpmnElement="Collaboration_pool">
       <bpmndi:BPMNShape id="Participant_pool_di" bpmnElement="Participant_pool" isHorizontal="true">
-        <dc:Bounds x="100" y="100" width="600" height="200" />
+        <dc:Bounds x="100" y="100" width="700" height="260" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Participant_black_box_di" bpmnElement="Participant_black_box" isHorizontal="true">
+        <dc:Bounds x="100" y="430" width="700" height="130" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="Start_pool_di" bpmnElement="Start_pool">
-        <dc:Bounds x="200" y="182" width="36" height="36" />
+        <dc:Bounds x="190" y="210" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SubProcess_collapsed_di" bpmnElement="SubProcess_collapsed" isExpanded="false">
+        <dc:Bounds x="300" y="160" width="220" height="140" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_nested_di" bpmnElement="Task_nested">
+        <dc:Bounds x="335" y="195" width="100" height="80" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="End_pool_di" bpmnElement="End_pool">
-        <dc:Bounds x="520" y="182" width="36" height="36" />
+        <dc:Bounds x="650" y="210" width="36" height="36" />
       </bpmndi:BPMNShape>
-      <bpmndi:BPMNEdge id="Flow_pool_di" bpmnElement="Flow_pool">
-        <di:waypoint x="236" y="200" />
-        <di:waypoint x="520" y="200" />
+      <bpmndi:BPMNShape id="Annotation_pool_di" bpmnElement="Annotation_pool">
+        <dc:Bounds x="180" y="300" width="120" height="45" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_start_subprocess_di" bpmnElement="Flow_start_subprocess">
+        <di:waypoint x="226" y="228" />
+        <di:waypoint x="300" y="228" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_subprocess_end_di" bpmnElement="Flow_subprocess_end">
+        <di:waypoint x="520" y="228" />
+        <di:waypoint x="650" y="228" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Association_pool_note_di" bpmnElement="Association_pool_note">
+        <di:waypoint x="208" y="246" />
+        <di:waypoint x="208" y="300" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="MessageFlow_black_box_di" bpmnElement="MessageFlow_black_box">
+        <di:waypoint x="450" y="430" />
+        <di:waypoint x="450" y="360" />
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
@@ -378,37 +414,337 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-async function createDraftFromList(page, name, key, description = '') {
-  await page.locator('[data-testid="create-draft"]').click()
+const EXPECTED_BASIC_AUTHORIZATION = `Basic ${Buffer.from('admin:test').toString('base64')}`
+
+function createDefaultOryxModel(name, key, description = '') {
+  return {
+    id: 'canvas',
+    resourceId: 'canvas',
+    stencilset: { namespace: 'http://b3mn.org/stencilset/bpmn2.0#' },
+    properties: {
+      process_id: key,
+      name,
+      ...(description ? { documentation: description } : {}),
+    },
+    childShapes: [
+      {
+        bounds: {
+          lowerRight: { x: 130, y: 193 },
+          upperLeft: { x: 100, y: 163 },
+        },
+        childShapes: [],
+        dockers: [],
+        outgoing: [],
+        resourceId: 'startEvent1',
+        stencil: { id: 'StartNoneEvent' },
+      },
+    ],
+  }
+}
+
+function createMockModelerApi() {
+  let sequence = 0
+  let timestamp = Date.parse('2026-07-26T00:00:00.000Z')
+  const models = new Map()
+  const requests = []
+
+  function nextTimestamp() {
+    timestamp += 1000
+    return new Date(timestamp).toISOString()
+  }
+
+  function toRepresentation(record) {
+    return {
+      id: record.id,
+      name: record.name,
+      key: record.key,
+      description: record.description,
+      createdBy: 'admin',
+      lastUpdatedBy: 'admin',
+      lastUpdated: record.lastUpdated,
+      latestVersion: true,
+      version: record.version,
+      comment: '',
+      modelType: 0,
+      tenantId: '',
+    }
+  }
+
+  function createRecord(input) {
+    sequence += 1
+    const id = `model-${sequence}`
+    const record = {
+      id,
+      name: input.name,
+      key: input.key,
+      description: input.description || '',
+      lastUpdated: nextTimestamp(),
+      version: 1,
+      editorJson: createDefaultOryxModel(input.name, input.key, input.description),
+    }
+    models.set(id, record)
+    return record
+  }
+
+  const state = {
+    models,
+    requests,
+    conflictNextSaveForId: new Set(),
+    failNextSaveStatus: 0,
+    failEditorJsonForId: new Set(),
+  }
+
+  async function routeHandler(route) {
+    const request = route.request()
+    const url = new URL(request.url())
+    const path = url.pathname.replace(/^\/api\/editor/, '')
+    const authorized = request.headers().authorization === EXPECTED_BASIC_AUTHORIZATION
+    const event = {
+      method: request.method(),
+      path,
+      query: Object.fromEntries(url.searchParams),
+      authorized,
+      contentType: request.headers()['content-type'] || '',
+      body: request.postData() || '',
+    }
+    requests.push(event)
+
+    const json = (status, body, headers = {}) =>
+      route.fulfill({
+        status,
+        contentType: 'application/json; charset=utf-8',
+        headers,
+        body: JSON.stringify(body),
+      })
+
+    if (!authorized) {
+      return json(401, { message: 'Bad credentials', messageKey: 'GENERAL.ERROR.UNAUTHORIZED' })
+    }
+
+    if (path === '/import-process-model') {
+      return json(501, { message: 'The browser must perform BPMN/Oryx conversion' })
+    }
+
+    if (path === '/models' && request.method() === 'GET') {
+      const filterText = (url.searchParams.get('filterText') || '').trim().toLocaleLowerCase()
+      const sort = url.searchParams.get('sort') || 'modifiedDesc'
+      let data = [...models.values()].filter((record) =>
+        filterText
+          ? [record.name, record.key, record.description].some((value) =>
+              value.toLocaleLowerCase().includes(filterText),
+            )
+          : true,
+      )
+      data.sort((left, right) => {
+        if (sort === 'modifiedAsc') return Date.parse(left.lastUpdated) - Date.parse(right.lastUpdated)
+        if (sort === 'nameAsc') return left.name.localeCompare(right.name, 'zh-CN')
+        if (sort === 'nameDesc') return right.name.localeCompare(left.name, 'zh-CN')
+        return Date.parse(right.lastUpdated) - Date.parse(left.lastUpdated)
+      })
+      const representations = data.map(toRepresentation)
+      return json(200, {
+        size: representations.length,
+        total: representations.length,
+        start: 0,
+        data: representations,
+      })
+    }
+
+    if (path === '/models' && request.method() === 'POST') {
+      let input
+      try {
+        input = request.postDataJSON()
+      } catch {
+        return json(400, { message: 'Expected a JSON model representation' })
+      }
+      if (!input?.name || !input?.key || input.modelType !== 0) {
+        return json(400, { message: 'name, key and modelType 0 are required' })
+      }
+      const record = createRecord(input)
+      event.json = input
+      event.modelId = record.id
+      return json(200, toRepresentation(record))
+    }
+
+    const editorMatch = path.match(/^\/models\/([^/]+)\/editor\/json$/)
+    if (editorMatch) {
+      const id = decodeURIComponent(editorMatch[1])
+      const record = models.get(id)
+      if (!record) return json(404, { message: `Model not found: ${id}` })
+
+      if (request.method() === 'GET') {
+        if (state.failEditorJsonForId.delete(id)) {
+          return json(500, { message: 'Could not read editor JSON' })
+        }
+        return json(200, {
+          modelId: id,
+          name: record.name,
+          key: record.key,
+          description: record.description,
+          lastUpdated: record.lastUpdated,
+          lastUpdatedBy: 'admin',
+          model: structuredClone(record.editorJson),
+        })
+      }
+
+      if (request.method() === 'POST') {
+        const form = new URLSearchParams(request.postData() || '')
+        event.form = Object.fromEntries(form)
+        if (!event.contentType.startsWith('application/x-www-form-urlencoded')) {
+          return json(415, { message: 'Expected form-urlencoded editor payload' })
+        }
+        if (!form.get('lastUpdated') || !form.get('json_xml')) {
+          return json(400, { message: 'lastUpdated and json_xml are required' })
+        }
+        if (state.failNextSaveStatus) {
+          const status = state.failNextSaveStatus
+          state.failNextSaveStatus = 0
+          return json(status, { message: 'Forced editor save failure' })
+        }
+        if (
+          state.conflictNextSaveForId.delete(id) &&
+          !['overwrite', 'newVersion'].includes(form.get('conflictResolveAction'))
+        ) {
+          return json(409, {
+            message: 'Process model was updated in the meantime',
+            messageKey: 'GENERAL.ERROR.BAD-REQUEST',
+            customData: { userFullName: 'other-user', newVersionAllowed: true },
+          })
+        }
+        try {
+          record.editorJson = JSON.parse(form.get('json_xml'))
+        } catch {
+          return json(400, { message: 'json_xml is not valid JSON' })
+        }
+        record.name = form.get('name') || record.name
+        record.key = form.get('key') || record.key
+        record.description = form.get('description') || ''
+        if (form.get('conflictResolveAction') === 'newVersion' || form.get('newversion') === 'true') {
+          record.version += 1
+        }
+        record.lastUpdated = nextTimestamp()
+        return json(200, toRepresentation(record))
+      }
+    }
+
+    const modelMatch = path.match(/^\/models\/([^/]+)$/)
+    if (modelMatch) {
+      const id = decodeURIComponent(modelMatch[1])
+      const record = models.get(id)
+      if (!record) return json(404, { message: `Model not found: ${id}` })
+      if (request.method() === 'GET') return json(200, toRepresentation(record))
+      if (request.method() === 'DELETE') {
+        models.delete(id)
+        return route.fulfill({ status: 200, body: '' })
+      }
+    }
+
+    return json(404, { message: `Unhandled mock endpoint: ${request.method()} ${path}` })
+  }
+
+  return { state, createRecord, routeHandler }
+}
+
+async function installBrowserStorageProbe(page) {
+  await page.addInitScript(() => {
+    window.__browserStorageAccesses = []
+    for (const operation of ['getItem', 'setItem', 'removeItem', 'clear']) {
+      const original = Storage.prototype[operation]
+      Storage.prototype[operation] = function monitoredStorageOperation(...args) {
+        window.__browserStorageAccesses.push({
+          operation,
+          storage: this === window.localStorage ? 'localStorage' : 'sessionStorage',
+          key: args.length ? String(args[0]) : '',
+        })
+        return original.apply(this, args)
+      }
+    }
+    const originalOpen = IDBFactory.prototype.open
+    IDBFactory.prototype.open = function monitoredOpen(name, ...args) {
+      window.__browserStorageAccesses.push({
+        operation: 'open',
+        storage: 'indexedDB',
+        key: String(name),
+      })
+      return originalOpen.call(this, name, ...args)
+    }
+  })
+}
+
+async function assertNoBrowserPersistence(page, phase) {
+  const snapshot = await page.evaluate(() => ({
+    accesses: window.__browserStorageAccesses || [],
+    localKeys: Object.keys(window.localStorage),
+    sessionKeys: Object.keys(window.sessionStorage),
+  }))
+  assert(
+    snapshot.accesses.length === 0 &&
+      snapshot.localKeys.length === 0 &&
+      snapshot.sessionKeys.length === 0,
+    `${phase}写入了浏览器持久化存储：${JSON.stringify(snapshot)}`,
+  )
+}
+
+async function loginToModeler(page, username = 'admin', password = 'test') {
+  await page.locator('[data-testid="login-page"]').waitFor()
   await page
-    .locator('input[data-testid="draft-create-name"], [data-testid="draft-create-name"] input')
+    .locator('input[data-testid="login-username"], [data-testid="login-username"] input')
+    .fill(username)
+  await page
+    .locator('input[data-testid="login-password"], [data-testid="login-password"] input')
+    .fill(password)
+  await page.locator('[data-testid="login-submit"]').click()
+}
+
+async function createModelFromList(page, name, key, description = '') {
+  await page.locator('[data-testid="create-model"]').click()
+  await page
+    .locator('input[data-testid="model-create-name"], [data-testid="model-create-name"] input')
     .fill(name)
   await page
-    .locator('input[data-testid="draft-create-key"], [data-testid="draft-create-key"] input')
+    .locator('input[data-testid="model-create-key"], [data-testid="model-create-key"] input')
     .fill(key)
   await page
     .locator(
-      'textarea[data-testid="draft-create-description"], [data-testid="draft-create-description"] textarea',
+      'textarea[data-testid="model-create-description"], [data-testid="model-create-description"] textarea',
     )
     .fill(description)
-  await page.locator('[data-testid="confirm-create-draft"]').click()
-  await page.waitForSelector('.djs-container')
+  await page.locator('[data-testid="confirm-create-model"]').click()
+  const canvas = page.locator('.djs-container')
+  const createError = page.locator('.el-message--error')
+  await Promise.race([
+    canvas.waitFor(),
+    createError.waitFor().then(async () => {
+      throw new Error(`创建流程模型后未进入编辑器：${await createError.innerText()}`)
+    }),
+  ])
   await page.waitForFunction(() => {
-    const saveButton = document.querySelector('[data-testid="save-draft"]')
+    const saveButton = document.querySelector('[data-testid="save-model"]')
     return Boolean(window.bpmnModeler && saveButton && !saveButton.disabled)
   })
 }
 
-function findDraftRow(page, name) {
-  return page.locator('[data-testid="draft-row"]').filter({
-    has: page.locator('[data-testid="draft-title"]', { hasText: name }),
+function findModelRow(page, name) {
+  return page.locator('[data-testid="model-row"]').filter({
+    has: page.locator('[data-testid="model-title"]', { hasText: name }),
   })
 }
 
-function trackRuntimeErrors(page, runtimeErrors) {
+function trackRuntimeErrors(page, runtimeErrors, expectedApiErrorStatuses = new Set()) {
   page.on('pageerror', (error) => runtimeErrors.push(error.message))
   page.on('console', (message) => {
-    if (message.type() === 'error') runtimeErrors.push(message.text())
+    if (message.type() !== 'error') return
+    const text = message.text()
+    const statusMatch = text.match(/status of (\d+)/)
+    const sourceUrl = message.location().url
+    if (
+      statusMatch &&
+      expectedApiErrorStatuses.has(Number(statusMatch[1])) &&
+      sourceUrl.includes('/api/editor/')
+    ) {
+      return
+    }
+    runtimeErrors.push(text)
   })
 }
 
@@ -711,6 +1047,9 @@ try {
   const page = await browser.newPage({ viewport: { width: 1600, height: 960 } })
   const runtimeErrors = []
   trackRuntimeErrors(page, runtimeErrors)
+  const mainModelApi = createMockModelerApi()
+  await page.route('**/api/editor/**', mainModelApi.routeHandler)
+  await installBrowserStorageProbe(page)
 
   const embeddedPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
   trackRuntimeErrors(embeddedPage, runtimeErrors)
@@ -737,15 +1076,16 @@ try {
   assert(!embeddedReadySnapshot.loading, 'flowable-modeler-ready 触发时仍显示加载状态')
   assert(await embeddedPage.locator('.designer-shell.is-embedded').isVisible(), '嵌入模式标记未生效')
   assert(
-    (await embeddedPage.locator('[data-testid="draft-list-page"]').count()) === 0,
-    '嵌入模式错误显示了草稿列表',
+    (await embeddedPage.locator('[data-testid="process-model-list-page"]').count()) === 0,
+    '嵌入模式错误显示了流程模型列表',
   )
   assert(await embeddedPage.locator('.bpmn-toolbar').isVisible(), '嵌入模式未保留 BPMN 工具栏')
   assert((await embeddedPage.locator('.designer-header').count()) === 0, '嵌入模式仍显示设计器页头')
   assert(
-    (await embeddedPage.getByRole('button', { name: '保存草稿', exact: true }).count()) === 0,
-    '嵌入模式仍显示保存草稿按钮',
+    (await embeddedPage.getByRole('button', { name: '保存模型', exact: true }).count()) === 0,
+    '嵌入模式仍显示保存模型按钮',
   )
+  const defaultDiagramXml = await embeddedPage.evaluate(() => window.flowableProcessModeler.getXML())
   await embeddedPage.close()
 
   const iframeHostPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
@@ -814,246 +1154,472 @@ try {
   assert(crossRealmHostCalls.select.length === 1, '父窗口未收到可克隆的表单选择上下文')
   await iframeHostPage.close()
 
-  const draftContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
-  const draftPage = await draftContext.newPage()
-  trackRuntimeErrors(draftPage, runtimeErrors)
-  await draftPage.goto(origin, { waitUntil: 'networkidle' })
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  assert(await draftPage.locator('[data-testid="draft-list-empty"]').isVisible(), '空草稿状态未显示')
-  assert((await draftPage.locator('.djs-container').count()) === 0, '草稿列表后台挂载了编辑器')
-
-  await createDraftFromList(draftPage, '草稿 A', 'Process_draft_a', '用于多草稿隔离回归')
-  await draftPage.evaluate(() => {
-    const modeler = window.bpmnModeler
-    const root = modeler.get('canvas').getRootElement()
-    modeler.get('modeling').updateProperties(root, { name: '草稿 A 已保存' })
-  })
-  await draftPage.locator('[data-testid="save-draft"]').click()
-  await draftPage.waitForFunction(() => {
-    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
-    const drafts = raw ? JSON.parse(raw).drafts : []
-    return drafts?.some(
-      (draft) => draft.key === 'Process_draft_a' && draft.name === '草稿 A 已保存',
-    )
-  })
-  await draftPage.locator('[data-testid="back-to-drafts"]').click()
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  assert((await findDraftRow(draftPage, '草稿 A 已保存').count()) === 1, '保存后列表元数据未刷新')
-
-  await createDraftFromList(draftPage, '草稿 B', 'Process_draft_b')
-  await draftPage.locator('[data-testid="back-to-drafts"]').click()
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  assert((await draftPage.locator('[data-testid="draft-row"]').count()) === 2, '多草稿未同时保留')
-
-  const draftSearchInput = draftPage.locator(
-    'input[data-testid="draft-search"], [data-testid="draft-search"] input',
-  )
-  await draftSearchInput.fill('Process_draft_b')
-  assert((await draftPage.locator('[data-testid="draft-row"]').count()) === 1, '草稿搜索未过滤列表')
-  assert((await findDraftRow(draftPage, '草稿 B').count()) === 1, '草稿搜索返回了错误记录')
-  await draftSearchInput.clear()
-  await draftPage.locator('[data-testid="draft-sort"]').click()
-  await draftPage.getByRole('option', { name: '名称 A-Z', exact: true }).click()
-  const sortedDraftTitles = await draftPage.locator('[data-testid="draft-title"]').allTextContents()
+  const modelApi = createMockModelerApi()
+  const modelContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  await modelContext.route('**/api/editor/**', modelApi.routeHandler)
+  const modelPage = await modelContext.newPage()
+  trackRuntimeErrors(modelPage, runtimeErrors, new Set([401, 409, 500]))
+  await installBrowserStorageProbe(modelPage)
+  await modelPage.goto(origin, { waitUntil: 'networkidle' })
+  await modelPage.locator('[data-testid="login-page"]').waitFor()
+  assert((await modelPage.locator('.djs-container').count()) === 0, '登录前挂载了流程设计器')
   assert(
-    JSON.stringify(sortedDraftTitles) === JSON.stringify(['草稿 A 已保存', '草稿 B']),
-    `草稿名称排序错误：${JSON.stringify(sortedDraftTitles)}`,
+    (await modelPage.getByRole('heading', { name: '登录 Flowable Modeler', exact: true }).count()) === 1 &&
+      (await modelPage
+        .locator('input[data-testid="login-username"], [data-testid="login-username"] input')
+        .getAttribute('autocomplete')) ===
+        'username' &&
+      (await modelPage
+        .locator('input[data-testid="login-password"], [data-testid="login-password"] input')
+        .getAttribute('autocomplete')) ===
+        'current-password',
+    '登录页没有提供 Flowable Modeler 标识或标准凭据输入语义',
   )
 
-  await draftPage.reload({ waitUntil: 'networkidle' })
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  assert((await draftPage.locator('[data-testid="draft-row"]').count()) === 2, '刷新后草稿列表未持久化')
-  const draftBXmlBefore = await draftPage.evaluate(() => {
-    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
-    return (raw ? JSON.parse(raw).drafts : []).find((draft) => draft.key === 'Process_draft_b')?.xml
-  })
-  const savedDraftARow = findDraftRow(draftPage, '草稿 A 已保存')
-  await savedDraftARow.locator('[data-testid="draft-primary-open"]').focus()
-  await draftPage.keyboard.press('Enter')
-  await draftPage.waitForSelector('.djs-container')
+  await loginToModeler(modelPage, 'admin', 'wrong-password')
+  await modelPage.locator('[data-testid="login-page"]').waitFor()
+  await modelPage.locator('.login-error').waitFor()
+  const invalidLoginMessage = (await modelPage.locator('.login-error').innerText()).trim()
   assert(
-    await draftPage.evaluate(
-      () => window.bpmnModeler.get('canvas').getRootElement().businessObject.id === 'Process_draft_a',
+    invalidLoginMessage.length > 0,
+    '无效凭据没有显示登录错误',
+  )
+  assert(
+    modelApi.state.requests.some(
+      (request) => request.method === 'GET' && request.path === '/models' && !request.authorized,
     ),
-    '按草稿 ID 打开了错误流程',
+    `无效凭据没有触发 HTTP Basic 401 校验（${invalidLoginMessage}）：${JSON.stringify(modelApi.state.requests)}`,
   )
-  await draftPage.evaluate(() => {
-    const modeler = window.bpmnModeler
-    const root = modeler.get('canvas').getRootElement()
-    modeler.get('modeling').updateProperties(root, { name: '草稿 A 二次保存' })
-  })
-  await draftPage.locator('[data-testid="save-draft"]').click()
-  await draftPage.locator('[data-testid="back-to-drafts"]').click()
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  const isolationSnapshot = await draftPage.evaluate(() => {
-    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
-    const drafts = raw ? JSON.parse(raw).drafts : []
-    return {
-      a: drafts.find((draft) => draft.key === 'Process_draft_a'),
-      b: drafts.find((draft) => draft.key === 'Process_draft_b'),
-    }
-  })
+
+  await loginToModeler(modelPage)
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  assert(await modelPage.locator('[data-testid="model-list-empty"]').isVisible(), '空流程模型状态未显示')
+  assert((await modelPage.locator('.djs-container').count()) === 0, '流程模型列表后台挂载了编辑器')
+  const initialListRequest = modelApi.state.requests.find(
+    (request) => request.method === 'GET' && request.path === '/models' && request.authorized,
+  )
   assert(
-    isolationSnapshot.a?.name === '草稿 A 二次保存' &&
-      isolationSnapshot.a?.xml.includes('name="草稿 A 二次保存"'),
-    '同时存在多个草稿时未更新活动草稿',
+    initialListRequest?.query.modelType === '0' && initialListRequest?.query.sort === 'modifiedDesc',
+    `初始流程模型查询参数错误：${JSON.stringify(initialListRequest?.query)}`,
   )
-  assert(isolationSnapshot.b?.xml === draftBXmlBefore, '保存草稿 A 覆盖了草稿 B 的 XML')
 
-  await findDraftRow(draftPage, '草稿 A 二次保存')
-    .locator('[data-testid="open-draft"]')
-    .click()
-  await draftPage.waitForSelector('.djs-container')
-  await draftPage.evaluate(() => {
+  await createModelFromList(modelPage, '流程模型 A', 'Process_model_a', '用于多模型隔离回归')
+  const createModelARequest = modelApi.state.requests.find(
+    (request) => request.method === 'POST' && request.path === '/models',
+  )
+  assert(
+    createModelARequest?.json?.name === '流程模型 A' &&
+      createModelARequest?.json?.key === 'Process_model_a' &&
+      createModelARequest?.json?.description === '用于多模型隔离回归' &&
+      createModelARequest?.json?.modelType === 0,
+    `创建流程模型没有使用官方 ModelRepresentation：${JSON.stringify(createModelARequest?.json)}`,
+  )
+  const modelAId = createModelARequest.modelId
+  const modelAFirstToken = modelApi.state.models.get(modelAId).lastUpdated
+  await modelPage.evaluate(() => {
     const modeler = window.bpmnModeler
     const root = modeler.get('canvas').getRootElement()
-    modeler.get('modeling').updateProperties(root, { name: '不应保存的名称' })
+    modeler.get('modeling').updateProperties(root, { name: '流程模型 A 已保存' })
   })
-  await draftPage.locator('[data-testid="back-to-drafts"]').click()
-  await draftPage.locator('.el-message-box__close').click()
-  assert(await draftPage.locator('.djs-container').isVisible(), '继续编辑操作错误关闭了编辑器')
-  await draftPage.locator('[data-testid="back-to-drafts"]').click()
-  await draftPage.getByRole('button', { name: '放弃更改', exact: true }).click()
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  assert((await findDraftRow(draftPage, '草稿 A 二次保存').count()) === 1, '放弃更改仍覆盖了草稿')
+  const modelAFirstSaveResponse = modelPage.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `/api/editor/models/${modelAId}/editor/json`,
+  )
+  await modelPage.locator('[data-testid="save-model"]').click()
+  await modelAFirstSaveResponse
+  const modelASaveRequests = modelApi.state.requests.filter(
+    (request) => request.method === 'POST' && request.path === `/models/${modelAId}/editor/json`,
+  )
+  assert(modelASaveRequests.length === 1, '保存流程模型没有调用官方 editor/json API')
+  const modelAFirstSave = modelASaveRequests[0]
+  const modelAFirstSavedJson = JSON.parse(modelAFirstSave.form.json_xml)
+  assert(
+    modelAFirstSave.form.lastUpdated === modelAFirstToken &&
+      modelAFirstSave.form.newversion === 'false' &&
+      modelAFirstSave.contentType.startsWith('application/x-www-form-urlencoded') &&
+      modelAFirstSavedJson.resourceId === 'canvas' &&
+      Array.isArray(modelAFirstSavedJson.childShapes),
+    `editor/json 保存契约错误：${JSON.stringify(modelAFirstSave.form)}`,
+  )
+  assert(!modelAFirstSave.form.json_xml.trimStart().startsWith('<'), '保存请求向后端发送了 BPMN XML')
 
-  const draftBRow = findDraftRow(draftPage, '草稿 B')
-  await draftBRow.locator('[data-testid="delete-draft"]').click()
-  await draftPage.getByRole('button', { name: '取消', exact: true }).click()
-  assert((await draftPage.locator('[data-testid="draft-row"]').count()) === 2, '取消删除仍移除了草稿')
-  await draftBRow.locator('[data-testid="delete-draft"]').click()
-  await draftPage.getByRole('button', { name: '删除', exact: true }).click()
-  await draftPage.waitForFunction(
-    () => document.querySelectorAll('[data-testid="draft-row"]').length === 1,
+  await modelPage.locator('[data-testid="back-to-models"]').click()
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  assert((await findModelRow(modelPage, '流程模型 A 已保存').count()) === 1, '保存后列表元数据未刷新')
+
+  await createModelFromList(modelPage, '流程模型 B', 'Process_model_b')
+  const createRequests = modelApi.state.requests.filter(
+    (request) => request.method === 'POST' && request.path === '/models',
+  )
+  const modelBId = createRequests.at(-1).modelId
+  const modelBJsonBefore = JSON.stringify(modelApi.state.models.get(modelBId).editorJson)
+  await modelPage.locator('[data-testid="back-to-models"]').click()
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  assert((await modelPage.locator('[data-testid="model-row"]').count()) === 2, '多个流程模型未同时显示')
+
+  const modelSearchInput = modelPage.locator(
+    'input[data-testid="model-search"], [data-testid="model-search"] input',
+  )
+  await modelSearchInput.fill('Process_model_b')
+  await modelPage.waitForFunction(() => document.querySelectorAll('[data-testid="model-row"]').length === 1)
+  assert((await findModelRow(modelPage, '流程模型 B').count()) === 1, '流程模型搜索返回了错误记录')
+  const searchRequest = [...modelApi.state.requests]
+    .reverse()
+    .find((request) => request.method === 'GET' && request.path === '/models' && request.query.filterText)
+  assert(
+    searchRequest?.query.filterText === 'Process_model_b' && searchRequest?.query.modelType === '0',
+    `流程模型搜索没有使用 filterText/modelType：${JSON.stringify(searchRequest?.query)}`,
+  )
+  await modelSearchInput.clear()
+  await modelPage.locator('[data-testid="model-sort"]').click()
+  await modelPage.getByRole('option', { name: '名称 A-Z', exact: true }).click()
+  await modelPage.waitForFunction(() => document.querySelectorAll('[data-testid="model-row"]').length === 2)
+  const sortedModelTitles = await modelPage.locator('[data-testid="model-title"]').allTextContents()
+  assert(
+    JSON.stringify(sortedModelTitles) === JSON.stringify(['流程模型 A 已保存', '流程模型 B']),
+    `流程模型名称排序错误：${JSON.stringify(sortedModelTitles)}`,
+  )
+  const sortRequest = [...modelApi.state.requests]
+    .reverse()
+    .find((request) => request.method === 'GET' && request.path === '/models')
+  assert(sortRequest?.query.sort === 'nameAsc', `流程模型排序参数错误：${JSON.stringify(sortRequest?.query)}`)
+
+  await assertNoBrowserPersistence(modelPage, '流程模型创建和查询后')
+  await modelPage.reload({ waitUntil: 'networkidle' })
+  await modelPage.locator('[data-testid="login-page"]').waitFor()
+  assert(
+    (await modelPage.locator('[data-testid="process-model-list-page"]').count()) === 0,
+    '刷新后错误地从浏览器存储恢复了登录态',
+  )
+  await assertNoBrowserPersistence(modelPage, '刷新登录页后')
+  await loginToModeler(modelPage)
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  assert((await modelPage.locator('[data-testid="model-row"]').count()) === 2, '刷新后未从后端重新加载流程模型')
+
+  const savedModelARow = findModelRow(modelPage, '流程模型 A 已保存')
+  await savedModelARow.locator('[data-testid="model-primary-open"]').focus()
+  await modelPage.keyboard.press('Enter')
+  await modelPage.waitForSelector('.djs-container')
+  assert(
+    await modelPage.evaluate(
+      () => window.bpmnModeler.get('canvas').getRootElement().businessObject.id === 'Process_model_a',
+    ),
+    '按流程模型 ID 打开了错误流程',
+  )
+  const modelASecondToken = modelApi.state.models.get(modelAId).lastUpdated
+  await modelPage.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const root = modeler.get('canvas').getRootElement()
+    modeler.get('modeling').updateProperties(root, { name: '流程模型 A 冲突保存' })
+  })
+  modelApi.state.conflictNextSaveForId.add(modelAId)
+  await modelPage.locator('[data-testid="save-model"]').click()
+  await modelPage.getByText('其他用户', { exact: false }).waitFor()
+  assert(
+    modelApi.state.models.get(modelAId).name === '流程模型 A 已保存' &&
+      (await modelPage.getByText('未保存', { exact: true }).isVisible()),
+    'HTTP 409 后覆盖了后端模型或错误清除了脏状态',
+  )
+  const overwriteResponse = modelPage.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `/api/editor/models/${modelAId}/editor/json`,
+  )
+  await modelPage.getByRole('button', { name: '覆盖保存', exact: true }).click()
+  await overwriteResponse
+  const modelAConflictSaves = modelApi.state.requests.filter(
+    (request) => request.method === 'POST' && request.path === `/models/${modelAId}/editor/json`,
+  )
+  assert(
+    modelAConflictSaves.length === 3 &&
+      modelAConflictSaves[1].form.lastUpdated === modelASecondToken &&
+      !modelAConflictSaves[1].form.conflictResolveAction &&
+      modelAConflictSaves[2].form.conflictResolveAction === 'overwrite' &&
+      modelAConflictSaves[2].form.lastUpdated === modelASecondToken,
+    `并发覆盖请求契约错误：${JSON.stringify(modelAConflictSaves.map((request) => request.form))}`,
+  )
+  assert(
+    modelApi.state.models.get(modelAId).name === '流程模型 A 冲突保存' &&
+      JSON.stringify(modelApi.state.models.get(modelBId).editorJson) === modelBJsonBefore,
+    '保存活动流程模型时覆盖了其他模型',
   )
 
-  await draftPage.locator('[data-testid="draft-import-input"]').setInputFiles({
+  await modelPage.locator('[data-testid="back-to-models"]').click()
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  modelApi.state.failEditorJsonForId.add(modelAId)
+  await findModelRow(modelPage, '流程模型 A 冲突保存')
+    .locator('[data-testid="open-model"]')
+    .click()
+  await modelPage.locator('.el-message--error').waitFor()
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  assert((await modelPage.locator('.djs-container').count()) === 0, '载入失败后仍挂载了编辑器')
+  await modelPage.locator('.el-message--error').waitFor({ state: 'hidden' })
+
+  const modelBRow = findModelRow(modelPage, '流程模型 B')
+  await modelBRow.locator('[data-testid="delete-model"]').click()
+  await modelPage.getByRole('button', { name: '取消', exact: true }).click()
+  assert(modelApi.state.models.has(modelBId), '取消删除仍移除了流程模型')
+  await modelBRow.locator('[data-testid="delete-model"]').click()
+  await modelPage.getByRole('button', { name: '删除', exact: true }).click()
+  await modelPage.waitForFunction(() => document.querySelectorAll('[data-testid="model-row"]').length === 1)
+  assert(
+    !modelApi.state.models.has(modelBId) &&
+      modelApi.state.requests.some(
+        (request) => request.method === 'DELETE' && request.path === `/models/${modelBId}`,
+      ),
+    '删除流程模型没有调用官方 DELETE API',
+  )
+
+  const countBeforeInvalidImport = modelApi.state.models.size
+  await modelPage.locator('[data-testid="model-import-input"]').setInputFiles({
     name: 'missing-di.bpmn20.xml',
     mimeType: 'application/xml',
     buffer: Buffer.from(p0ExtensionXml),
   })
-  await draftPage.getByText('导入失败：BPMN XML 缺少 DI 图形信息，无法在设计器中打开').waitFor()
+  await modelPage.locator('.el-message--error').waitFor()
   assert(
-    (await draftPage.locator('[data-testid="draft-row"]').count()) === 1 &&
-      (await draftPage.locator('.djs-container').count()) === 0,
-    '缺少 DI 的 BPMN 仍创建了草稿或打开了编辑器',
+    modelApi.state.models.size === countBeforeInvalidImport &&
+      (await modelPage.locator('.djs-container').count()) === 0,
+    '缺少 DI 的 BPMN 仍创建了流程模型或打开了编辑器',
   )
+  await modelPage.locator('.el-message--error').waitFor({ state: 'hidden' })
 
-  const originalDraftAXml = await draftPage.evaluate(() => {
-    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
-    return (raw ? JSON.parse(raw).drafts : []).find((draft) => draft.key === 'Process_draft_a')?.xml
-  })
-  await draftPage.evaluate(() => {
-    const key = 'flowable-modeler:drafts:v1'
-    const envelope = JSON.parse(localStorage.getItem(key))
-    const draft = envelope.drafts.find((item) => item.key === 'Process_draft_a')
-    draft.xml = '<bpmn:definitions'
-    localStorage.setItem(key, JSON.stringify(envelope))
-  })
-  await draftPage.reload({ waitUntil: 'networkidle' })
-  await findDraftRow(draftPage, '草稿 A 二次保存')
-    .locator('[data-testid="draft-primary-open"]')
-    .click()
-  await draftPage.locator('[data-testid="designer-initialization-error"]').waitFor()
-  await draftPage.locator('[data-testid="return-from-load-error"]').click()
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  assert((await draftPage.locator('.djs-container').count()) === 0, '载入失败返回后未销毁编辑器')
-  await draftPage.evaluate((xml) => {
-    const key = 'flowable-modeler:drafts:v1'
-    const envelope = JSON.parse(localStorage.getItem(key))
-    const draft = envelope.drafts.find((item) => item.key === 'Process_draft_a')
-    draft.xml = xml
-    localStorage.setItem(key, JSON.stringify(envelope))
-  }, originalDraftAXml)
-
-  await draftPage.locator('[data-testid="draft-import-input"]').setInputFiles({
+  const importRequestStart = modelApi.state.requests.length
+  await modelPage.locator('[data-testid="model-import-input"]').setInputFiles({
     name: 'collaboration.bpmn20.xml',
     mimeType: 'application/xml',
     buffer: Buffer.from(collaborationXml),
   })
-  await draftPage.waitForSelector('.djs-container')
-  await draftPage.waitForFunction(() => {
-    const backButton = document.querySelector('[data-testid="back-to-drafts"]')
+  await modelPage.waitForSelector('.djs-container')
+  await modelPage.waitForFunction(() => {
+    const backButton = document.querySelector('[data-testid="back-to-models"]')
     return Boolean(window.bpmnModeler && backButton && !backButton.disabled)
   })
   assert(
-    await draftPage.evaluate(
+    await modelPage.evaluate(
       () => window.bpmnModeler.get('canvas').getRootElement().businessObject.$type === 'bpmn:Collaboration',
     ),
     '协作池导入后未以 Collaboration 作为画布根元素',
   )
-  await draftPage.locator('[data-testid="save-draft"]').click()
-  await draftPage.locator('[data-testid="back-to-drafts"]').click()
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  const storedDraftSummary = await draftPage.evaluate(() => {
-    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
-    const envelope = raw ? JSON.parse(raw) : null
+  const importRequests = modelApi.state.requests.slice(importRequestStart)
+  const importedCreate = importRequests.find(
+    (request) => request.method === 'POST' && request.path === '/models',
+  )
+  const importedSave = importRequests.find(
+    (request) =>
+      request.method === 'POST' && request.path === `/models/${importedCreate?.modelId}/editor/json`,
+  )
+  assert(
+    importedCreate?.json?.key === 'Process_pool' &&
+      importedCreate?.json?.modelType === 0 &&
+      importedSave?.form?.lastUpdated &&
+      importedSave?.form?.newversion === 'false',
+    `浏览器导入没有使用 create + editor/json 契约：${JSON.stringify(importRequests)}`,
+  )
+  const importedOryx = JSON.parse(importedSave.form.json_xml)
+  assert(
+    importedOryx.resourceId === 'canvas' &&
+      importedOryx.properties?.process_id === 'Process_pool' &&
+      Array.isArray(importedOryx.childShapes) &&
+      importedOryx.childShapes.length > 0 &&
+      !importedSave.form.json_xml.trimStart().startsWith('<'),
+    '导入没有在浏览器中把 BPMN 转换为 Flowable Oryx JSON',
+  )
+  const importedShapes = []
+  const collectImportedShapes = (shapes) => {
+    for (const shape of shapes || []) {
+      importedShapes.push(shape)
+      collectImportedShapes(shape.childShapes)
+    }
+  }
+  collectImportedShapes(importedOryx.childShapes)
+  const whiteBoxPool = importedShapes.find(
+    (shape) => shape.resourceId === 'Participant_pool',
+  )
+  const blackBoxPool = importedShapes.find(
+    (shape) => shape.resourceId === 'Participant_black_box',
+  )
+  const fallbackLane = importedShapes.find(
+    (shape) => shape.resourceId === 'Lane_flowable_unassigned_Process_pool',
+  )
+  const collapsedSubProcess = importedShapes.find(
+    (shape) => shape.resourceId === 'SubProcess_collapsed',
+  )
+  const nestedTask = importedShapes.find((shape) => shape.resourceId === 'Task_nested')
+  const startShape = importedShapes.find((shape) => shape.resourceId === 'Start_pool')
+  const associationShape = importedShapes.find(
+    (shape) => shape.resourceId === 'Association_pool_note',
+  )
+  const messageFlowShape = importedShapes.find(
+    (shape) => shape.resourceId === 'MessageFlow_black_box',
+  )
+  const startOutgoing = new Set(startShape?.outgoing?.map((outgoing) => outgoing.resourceId))
+  assert(
+    whiteBoxPool?.properties?.process_id === 'Process_pool' &&
+      whiteBoxPool.childShapes?.length === 1 &&
+      fallbackLane?.stencil?.id === 'Lane' &&
+      fallbackLane.childShapes?.some((shape) => shape.resourceId === 'Start_pool'),
+    '无 Lane 的 Pool 没有生成 Flowable 6.8.1 可读取的兜底 Lane',
+  )
+  assert(
+    blackBoxPool?.stencil?.id === 'Pool' &&
+      !blackBoxPool.properties?.process_id &&
+      blackBoxPool.childShapes?.length === 0 &&
+      blackBoxPool.outgoing?.some(
+        (outgoing) => outgoing.resourceId === 'MessageFlow_black_box',
+      ),
+    '黑盒 Participant 或其 MessageFlow outgoing 在前端转换中丢失',
+  )
+  assert(
+    collapsedSubProcess?.stencil?.id === 'CollapsedSubProcess' &&
+      nestedTask?.bounds?.upperLeft?.x === 335 &&
+      nestedTask?.bounds?.upperLeft?.y === 195,
+    '折叠子流程未按 DI isExpanded=false 输出，或其子元素坐标被错误相对化',
+  )
+  assert(
+    startOutgoing.has('Flow_start_subprocess') &&
+      startOutgoing.has('Association_pool_note') &&
+      associationShape?.target?.resourceId === 'Annotation_pool' &&
+      messageFlowShape?.target?.resourceId === 'Participant_pool',
+    'SequenceFlow、Association 或 MessageFlow 的 source/target/outgoing 不完整',
+  )
+  assert(
+    !modelApi.state.requests.some((request) => request.path === '/import-process-model'),
+    '导入错误调用了后端 import-process-model 转换接口',
+  )
+
+  const importedRecord = modelApi.state.models.get(importedCreate.modelId)
+  delete importedRecord.editorJson.flowableModelerBpmn20Xml
+  delete importedRecord.editorJson.flowableModelerOryxFingerprint
+  delete importedRecord.editorJson.flowableModelerConverterVersion
+  await modelPage.locator('[data-testid="back-to-models"]').click()
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await findModelRow(modelPage, '池内流程').locator('[data-testid="open-model"]').click()
+  await modelPage.waitForSelector('.djs-container')
+  await modelPage.waitForFunction(() => {
+    const backButton = document.querySelector('[data-testid="back-to-models"]')
+    return Boolean(window.bpmnModeler && backButton && !backButton.disabled)
+  })
+  const reconstructedCollaboration = await modelPage.evaluate(() => {
+    const definitions = window.bpmnModeler.getDefinitions()
+    const process = definitions.rootElements.find((element) => element.id === 'Process_pool')
+    const collaboration = definitions.rootElements.find(
+      (element) => element.$type === 'bpmn:Collaboration',
+    )
+    const blackBox = collaboration?.participants?.find(
+      (participant) => participant.id === 'Participant_black_box',
+    )
+    const lane = process?.laneSets?.flatMap((laneSet) => laneSet.lanes || []).find(
+      (candidate) => candidate.id === 'Lane_flowable_unassigned_Process_pool',
+    )
+    const collapsed = process?.flowElements?.find(
+      (element) => element.id === 'SubProcess_collapsed',
+    )
+    const planeElements = definitions.diagrams?.[0]?.plane?.planeElement || []
+    const collapsedDi = planeElements.find(
+      (element) => element.bpmnElement?.id === 'SubProcess_collapsed',
+    )
     return {
-      schemaVersion: envelope?.schemaVersion,
-      ids: envelope?.drafts?.map((draft) => draft.id) || [],
-      keys: envelope?.drafts?.map((draft) => draft.key) || [],
+      rootType: window.bpmnModeler.get('canvas').getRootElement().businessObject.$type,
+      blackBoxHasProcess: Boolean(blackBox?.processRef),
+      laneFlowNodeIds: lane?.flowNodeRef?.map((element) => element.id) || [],
+      nestedTaskId: collapsed?.flowElements?.[0]?.id,
+      collapsedExpanded: collapsedDi?.isExpanded,
     }
   })
-  assert(storedDraftSummary.schemaVersion === 1, '草稿存储 schema 版本错误')
-  assert(new Set(storedDraftSummary.ids).size === 2, '草稿 ID 不唯一或导入未创建新草稿')
-  assert(storedDraftSummary.keys.includes('Process_draft_a'), '保存草稿在导入后丢失')
   assert(
-    storedDraftSummary.keys.includes('Process_pool') &&
-      !storedDraftSummary.keys.includes('Collaboration_pool'),
-    '协作池保存后错误使用 Collaboration ID 覆盖了流程 Key',
+    reconstructedCollaboration.rootType === 'bpmn:Collaboration' &&
+      !reconstructedCollaboration.blackBoxHasProcess &&
+      reconstructedCollaboration.laneFlowNodeIds.includes('Start_pool') &&
+      !reconstructedCollaboration.laneFlowNodeIds.includes('Task_nested') &&
+      reconstructedCollaboration.nestedTaskId === 'Task_nested' &&
+      reconstructedCollaboration.collapsedExpanded === false,
+    `浏览器未能从纯 Oryx JSON 重建协作 BPMN：${JSON.stringify(reconstructedCollaboration)}`,
   )
-  await draftPage.waitForFunction(
-    () => !document.querySelector('.el-message, .el-notification'),
+  await modelPage.locator('[data-testid="back-to-models"]').click()
+  await modelPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  const modelCountBeforeFailedImport = modelApi.state.models.size
+  const failedImportRequestStart = modelApi.state.requests.length
+  modelApi.state.failNextSaveStatus = 500
+  await modelPage.locator('[data-testid="model-import-input"]').setInputFiles({
+    name: 'collaboration-save-failure.bpmn20.xml',
+    mimeType: 'application/xml',
+    buffer: Buffer.from(
+      collaborationXml
+        .replaceAll('Process_pool', 'Process_failed_import')
+        .replaceAll('Collaboration_pool', 'Collaboration_failed_import'),
+    ),
+  })
+  await modelPage.getByText('Forced editor save failure', { exact: false }).waitFor()
+  await modelPage.waitForFunction(
+    (expected) => document.querySelectorAll('[data-testid="model-row"]').length === expected,
+    modelCountBeforeFailedImport,
   )
-  await draftPage.screenshot({ path: 'artifacts/ui-drafts-desktop.png', fullPage: true })
-  await draftPage.setViewportSize({ width: 390, height: 844 })
-  const populatedMobileViewport = await draftPage.evaluate(() => ({
+  const failedImportRequests = modelApi.state.requests.slice(failedImportRequestStart)
+  const failedImportCreate = failedImportRequests.find(
+    (request) => request.method === 'POST' && request.path === '/models',
+  )
+  assert(
+    failedImportCreate &&
+      failedImportRequests.some(
+        (request) =>
+          request.method === 'POST' &&
+          request.path === `/models/${failedImportCreate.modelId}/editor/json`,
+      ) &&
+      failedImportRequests.some(
+        (request) =>
+          request.method === 'DELETE' && request.path === `/models/${failedImportCreate.modelId}`,
+      ) &&
+      modelApi.state.models.size === modelCountBeforeFailedImport,
+    `导入保存失败后没有尽力清理新模型：${JSON.stringify(failedImportRequests)}`,
+  )
+
+  await modelPage.waitForFunction(() => !document.querySelector('.el-message, .el-notification'))
+  await modelPage.screenshot({ path: 'artifacts/ui-models-desktop.png', fullPage: true })
+  await modelPage.setViewportSize({ width: 390, height: 844 })
+  const populatedMobileViewport = await modelPage.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,
   }))
   assert(
     populatedMobileViewport.scrollWidth <= populatedMobileViewport.clientWidth,
-    `有数据的移动草稿列表存在横向溢出：${populatedMobileViewport.scrollWidth} > ${populatedMobileViewport.clientWidth}`,
+    `有数据的移动流程模型列表存在横向溢出：${populatedMobileViewport.scrollWidth} > ${populatedMobileViewport.clientWidth}`,
   )
   assert(
-    (await draftPage.getByRole('button', { name: '导入 BPMN', exact: true }).count()) === 1 &&
-      (await draftPage.getByRole('button', { name: '新建 BPMN 流程', exact: true }).count()) === 1,
+    (await modelPage.getByRole('button', { name: '导入 BPMN', exact: true }).count()) === 1 &&
+      (await modelPage.getByRole('button', { name: '新建 BPMN 流程', exact: true }).count()) === 1,
     '移动端头部图标按钮缺少可访问名称',
   )
-  const mobileDraftARow = findDraftRow(draftPage, '草稿 A 二次保存')
+  const mobileModelARow = findModelRow(modelPage, '流程模型 A 冲突保存')
   assert(
-    (await mobileDraftARow.getByRole('button', { name: '打开草稿 草稿 A 二次保存' }).count()) >= 1 &&
-      (await mobileDraftARow.getByRole('button', { name: '删除草稿 草稿 A 二次保存' }).count()) === 1,
-    '移动端草稿行操作缺少可访问名称',
+    (await mobileModelARow.getByRole('button', { name: '打开模型 流程模型 A 冲突保存' }).count()) >= 1 &&
+      (await mobileModelARow.getByRole('button', { name: '删除模型 流程模型 A 冲突保存' }).count()) === 1,
+    '移动端流程模型行操作缺少可访问名称',
   )
-  await draftPage.screenshot({ path: 'artifacts/ui-drafts-mobile.png', fullPage: true })
-  await mobileDraftARow.locator('[data-testid="draft-primary-open"]').focus()
-  await draftPage.keyboard.press('Enter')
-  await draftPage.waitForSelector('.djs-container')
-  await draftPage.locator('[data-testid="back-to-drafts"]').click()
-  await draftPage.locator('[data-testid="draft-list-page"]').waitFor()
-  await draftContext.close()
+  await modelPage.screenshot({ path: 'artifacts/ui-models-mobile.png', fullPage: true })
+  await assertNoBrowserPersistence(modelPage, '流程模型完整 API 回归后')
+  await modelContext.close()
 
   await page.goto(origin, { waitUntil: 'networkidle' })
-  await page.locator('[data-testid="draft-list-page"]').waitFor()
+  await loginToModeler(page)
+  await page.locator('[data-testid="process-model-list-page"]').waitFor()
   assert((await page.locator('.djs-container').count()) === 0, '独立模式初始页面提前挂载了编辑器')
   assert(
     await page.evaluate(() => !window.bpmnModeler && !window.flowableProcessModeler),
-    '草稿列表阶段提前暴露了编辑器桥',
+    '流程模型列表阶段提前暴露了编辑器桥',
   )
-  await page.locator('[data-testid="create-draft"]').first().click()
-  await page
-    .locator('input[data-testid="draft-create-name"], [data-testid="draft-create-name"] input')
-    .fill('请假审批流程')
-  await page
-    .locator('input[data-testid="draft-create-key"], [data-testid="draft-create-key"] input')
-    .fill('Process_leave_request')
-  await page.locator('[data-testid="confirm-create-draft"]').click()
-  await page.waitForSelector('.djs-container')
-  await page.waitForFunction(() => {
-    const saveButton = document.querySelector('[data-testid="save-draft"]')
-    return Boolean(window.bpmnModeler && saveButton && !saveButton.disabled)
-  })
+  await createModelFromList(page, '请假审批流程', 'Process_leave_request')
+  const mainModelId = mainModelApi.state.requests.find(
+    (request) => request.method === 'POST' && request.path === '/models',
+  ).modelId
+  await page.evaluate(
+    (xml) => window.flowableProcessModeler.importXML(xml, 'default-smoke.bpmn20.xml'),
+    defaultDiagramXml,
+  )
+  await page.waitForFunction(
+    () => Boolean(window.bpmnModeler.get('elementRegistry').get('UserTask_approve')),
+  )
 
   const initial = await page.evaluate(() => ({
     bridge: Boolean(window.bpmnModeler && window.flowableProcessModeler),
@@ -1237,7 +1803,7 @@ try {
   const nodeFormJsonTab = formSection.getByRole('tab', { name: '高级 JSON', exact: true })
   await nodeFormJsonTab.click()
   await nodeFormInput.waitFor({ state: 'visible' })
-  const unsavedNodeFormJson = '[{"code":"unsavedForm","name":"未保存草稿"}]'
+  const unsavedNodeFormJson = '[{"code":"unsavedForm","name":"未提交输入"}]'
   await nodeFormInput.fill(unsavedNodeFormJson)
 
   const freeApprovalSection = page.locator('.el-collapse-item').filter({
@@ -1269,7 +1835,7 @@ try {
   await page.locator('[data-testid="save-next-user-json"]').click()
   assert(
     (await nodeFormInput.inputValue()) === unsavedNodeFormJson,
-    '保存其他业务扩展时覆盖了未保存的 NodeFormExp 草稿',
+    '保存其他业务扩展时覆盖了未提交的 NodeFormExp 输入',
   )
 
   const seededNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
@@ -1361,7 +1927,7 @@ try {
   await nodeFormInput.waitFor({ state: 'visible' })
   assert(
     (await nodeFormInput.inputValue()) === unsavedNodeFormJson,
-    '切换元素后未恢复 NodeFormExp 草稿',
+    '切换元素后未恢复 NodeFormExp 未提交输入',
   )
 
   const nodeFormJson = '[{"code":"leaveForm","name":"请假申请表","tenant":"default"}]'
@@ -1455,9 +2021,9 @@ try {
   await selectNodeFormsButton.click()
   await page.waitForFunction(() => typeof window.__resolveStaleNodeFormSelection === 'function')
 
-  const nodeFormDraftJson = '[{"code":"draftOnlyForm","name":"未提交表单草稿"}]'
+  const pendingNodeFormJson = '[{"code":"pendingForm","name":"未提交表单输入"}]'
   await nodeFormJsonTab.click()
-  await nodeFormInput.fill(nodeFormDraftJson)
+  await nodeFormInput.fill(pendingNodeFormJson)
   await page.evaluate(
     ({ selectedForm, staleForm }) => {
       window.__nodeFormHostCalls = { select: [] }
@@ -1481,10 +2047,11 @@ try {
     const extension = (task.extensionElements?.values || []).find(
       (value) => value.$type === 'flowable:NodeFormExp',
     )
-    const draftElement = document.querySelector('[data-testid="node-form-exp-json"]')
+    const pendingInputElement = document.querySelector('[data-testid="node-form-exp-json"]')
     return {
       committed: extension?.body ? JSON.parse(extension.body) : [],
-      draft: draftElement?.value ?? draftElement?.querySelector('textarea')?.value,
+      pendingInput:
+        pendingInputElement?.value ?? pendingInputElement?.querySelector('textarea')?.value,
     }
   })
   assert(
@@ -1492,8 +2059,8 @@ try {
     '旧宿主适配器的异步结果覆盖了已提交 NodeFormExp',
   )
   assert(
-    stateAfterStaleSelection.draft === nodeFormDraftJson,
-    '旧宿主适配器的异步结果覆盖了未提交 NodeFormExp 草稿',
+    stateAfterStaleSelection.pendingInput === pendingNodeFormJson,
+    '旧宿主适配器的异步结果覆盖了未提交 NodeFormExp 输入',
   )
 
   await nodeFormSelectionTab.click()
@@ -1659,13 +2226,13 @@ try {
       await new Promise((resolve) => setTimeout(resolve, 20))
       const loadingDuringImport = Boolean(document.querySelector('.canvas-loading'))
       const designerMain = document.querySelector('.designer-main')
-      const saveDraftButton = [...document.querySelectorAll('button')].find(
-        (button) => button.textContent?.trim() === '保存草稿',
+      const saveModelButton = [...document.querySelectorAll('button')].find(
+        (button) => button.textContent?.trim() === '保存模型',
       )
       const mainInertDuringImport = Boolean(designerMain?.inert)
       const mainHasInertAttributeDuringImport = Boolean(designerMain?.hasAttribute('inert'))
       const mainBusyDuringImport = designerMain?.getAttribute('aria-busy')
-      const toolbarLockedDuringImport = Boolean(saveDraftButton?.disabled)
+      const toolbarLockedDuringImport = Boolean(saveModelButton?.disabled)
       const results = await Promise.all([staleImport, latestImport])
       return {
         loadingDuringImport,
@@ -1962,7 +2529,7 @@ try {
         const shell = document.querySelector('.designer-shell')
         const main = document.querySelector('.designer-main')
         const saveButton = [...document.querySelectorAll('button')].find(
-          (button) => button.textContent?.trim() === '保存草稿',
+          (button) => button.textContent?.trim() === '保存模型',
         )
         return {
           shellLocked: Boolean(shell?.classList.contains('is-interaction-locked')),
@@ -2001,9 +2568,9 @@ try {
         operationErrors.validate = error?.message || String(error)
       }
       try {
-        await bridge.saveDraft()
+        await bridge.saveModel()
       } catch (error) {
-        operationErrors.saveDraft = error?.message || String(error)
+        operationErrors.saveModel = error?.message || String(error)
       }
 
       const lockedAfterMalformed = readLockSnapshot()
@@ -2055,7 +2622,7 @@ try {
       `${phase} 未保持不可操作锁：${JSON.stringify(lock)}`,
     )
   }
-  for (const operation of ['getXML', 'validate', 'saveDraft']) {
+  for (const operation of ['getXML', 'validate', 'saveModel']) {
     assert(
       incoherentImportState.operationErrors[operation]?.includes('导入恢复失败'),
       `不一致状态下 ${operation} 没有拒绝：${JSON.stringify(incoherentImportState.operationErrors)}`,
@@ -2342,23 +2909,25 @@ try {
     '宿主 getXML 没有提交仍聚焦的作业分类输入',
   )
 
-  const unblurredDraftCategory = 'ctrl-save-category'
-  await jobCategoryInput.fill(unblurredDraftCategory)
+  const unblurredModelCategory = 'ctrl-save-category'
+  await jobCategoryInput.fill(unblurredModelCategory)
+  const keyboardSaveResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === 'POST' &&
+      new URL(response.url()).pathname === `/api/editor/models/${mainModelId}/editor/json`,
+  )
   await jobCategoryInput.press('Control+s')
-  await page.waitForFunction((expected) => {
-    const raw = localStorage.getItem('flowable-modeler:drafts:v1')
-    if (!raw) return false
-    try {
-      const draft = JSON.parse(raw).drafts?.find(
-        (item) => item.key === 'Process_leave_request',
-      )
-      return draft?.xml.includes(
-        `<flowable:jobCategory>${expected}</flowable:jobCategory>`,
-      )
-    } catch {
-      return false
-    }
-  }, unblurredDraftCategory)
+  await keyboardSaveResponse
+  const keyboardSaveRequest = [...mainModelApi.state.requests]
+    .reverse()
+    .find(
+      (request) =>
+        request.method === 'POST' && request.path === `/models/${mainModelId}/editor/json`,
+    )
+  assert(
+    keyboardSaveRequest?.form?.json_xml?.includes(unblurredModelCategory),
+    'Ctrl+S 没有把仍聚焦的作业分类输入转换到 Oryx JSON 保存请求',
+  )
 
   await jobCategoryInput.fill(jobCategoryExpression)
   const restoredJobCategoryXml = await page.evaluate(() =>
@@ -2928,7 +3497,6 @@ try {
     '服务编排（SC）',
     '消息队列',
     '抄送任务',
-    'CMMN 案例任务',
   ]) {
     assert(
       !unconfiguredServiceTaskOptions.includes(label),
@@ -5615,17 +6183,30 @@ try {
   mkdirSync('artifacts', { recursive: true })
   writeFileSync('artifacts/custom-extensions-roundtrip.bpmn20.xml', secondCustomXml, 'utf8')
 
+  const screenshotApi = createMockModelerApi()
+  screenshotApi.createRecord({
+    name: '请假审批流程',
+    key: 'Process_leave_request',
+    description: '浏览器验证模型',
+  })
   const desktopPage = await browser.newPage({ viewport: { width: 1600, height: 960 } })
   trackRuntimeErrors(desktopPage, runtimeErrors)
+  await desktopPage.route('**/api/editor/**', screenshotApi.routeHandler)
+  await installBrowserStorageProbe(desktopPage)
   await desktopPage.goto(origin, { waitUntil: 'networkidle' })
-  await desktopPage.locator('[data-testid="draft-list-page"]').waitFor()
+  await loginToModeler(desktopPage)
+  await desktopPage.locator('[data-testid="process-model-list-page"]').waitFor()
   await desktopPage.screenshot({ path: 'artifacts/ui-desktop.png', fullPage: true })
+  await assertNoBrowserPersistence(desktopPage, '桌面流程模型列表截图前')
   await desktopPage.close()
 
   const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } })
   trackRuntimeErrors(mobilePage, runtimeErrors)
+  await mobilePage.route('**/api/editor/**', screenshotApi.routeHandler)
+  await installBrowserStorageProbe(mobilePage)
   await mobilePage.goto(origin, { waitUntil: 'networkidle' })
-  await mobilePage.locator('[data-testid="draft-list-page"]').waitFor()
+  await loginToModeler(mobilePage)
+  await mobilePage.locator('[data-testid="process-model-list-page"]').waitFor()
   const mobileViewport = await mobilePage.evaluate(() => ({
     scrollWidth: document.documentElement.scrollWidth,
     clientWidth: document.documentElement.clientWidth,
@@ -5635,8 +6216,10 @@ try {
     `移动端存在横向溢出：${mobileViewport.scrollWidth} > ${mobileViewport.clientWidth}`,
   )
   await mobilePage.screenshot({ path: 'artifacts/ui-mobile.png', fullPage: true })
+  await assertNoBrowserPersistence(mobilePage, '移动流程模型列表截图前')
   await mobilePage.close()
 
+  await assertNoBrowserPersistence(page, '设计器完整回归后')
   assert(runtimeErrors.length === 0, `浏览器运行时错误：\n${runtimeErrors.join('\n')}`)
 
   console.log(

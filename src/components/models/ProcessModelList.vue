@@ -1,49 +1,55 @@
 <script setup lang="ts">
-import { computed, nextTick, reactive, ref } from 'vue'
+import { nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowUpDown,
   FileText,
   FolderOpen,
+  LogOut,
   Plus,
+  RefreshCw,
   Search,
   Trash2,
   Upload,
   Workflow,
 } from 'lucide-vue-next'
 
-import { parseBpmnMetadata } from '@/modeler/draftRepository'
-import type { BpmnDraft } from '@/modeler/draftRepository'
+import { parseBpmnMetadata } from '@/modeler/bpmnMetadata'
+import type { ModelSort, ProcessModel, ProcessModelQuery } from '@/modeler/modelerApi'
 
-type SortMode = 'updated-desc' | 'updated-asc' | 'name-asc' | 'name-desc'
-
-interface DraftCreatePayload {
+interface ModelCreatePayload {
   name: string
   key: string
   description: string
 }
 
-interface DraftImportPayload extends DraftCreatePayload {
+interface ModelImportPayload extends ModelCreatePayload {
   xml: string
   fileName: string
 }
 
-interface DraftCreateForm {
+interface ModelCreateForm {
   name: string
   key: string
   description: string
 }
 
 const props = defineProps<{
-  drafts: readonly BpmnDraft[]
+  models: readonly ProcessModel[]
+  total: number
+  loading: boolean
+  username: string
 }>()
 
 const emit = defineEmits<{
-  create: [draft: DraftCreatePayload]
-  import: [draft: DraftImportPayload]
+  create: [model: ModelCreatePayload]
+  import: [model: ModelImportPayload]
   open: [id: string]
   delete: [id: string]
+  queryChange: [query: ProcessModelQuery]
+  refresh: []
+  logout: []
 }>()
 
 const DEFAULT_NAME = '请假审批流程'
@@ -51,17 +57,17 @@ const DEFAULT_KEY = 'Process_leave_request'
 const PROCESS_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
 
 const searchQuery = ref('')
-const sortMode = ref<SortMode>('updated-desc')
+const sortMode = ref<ModelSort>('modifiedDesc')
 const createDialogVisible = ref(false)
 const createFormRef = ref<FormInstance>()
 const importInputRef = ref<HTMLInputElement>()
-const createForm = reactive<DraftCreateForm>({
+const createForm = reactive<ModelCreateForm>({
   name: DEFAULT_NAME,
   key: DEFAULT_KEY,
   description: '',
 })
 
-const createRules: FormRules<DraftCreateForm> = {
+const createRules: FormRules<ModelCreateForm> = {
   name: [{ required: true, whitespace: true, message: '请输入流程名称', trigger: 'blur' }],
   key: [
     { required: true, whitespace: true, message: '请输入流程标识', trigger: 'blur' },
@@ -73,37 +79,26 @@ const createRules: FormRules<DraftCreateForm> = {
   ],
 }
 
-const sortOptions: Array<{ value: SortMode; label: string }> = [
-  { value: 'updated-desc', label: '最近修改' },
-  { value: 'updated-asc', label: '最早修改' },
-  { value: 'name-asc', label: '名称 A-Z' },
-  { value: 'name-desc', label: '名称 Z-A' },
+const sortOptions: Array<{ value: ModelSort; label: string }> = [
+  { value: 'modifiedDesc', label: '最近修改' },
+  { value: 'modifiedAsc', label: '最早修改' },
+  { value: 'nameAsc', label: '名称 A-Z' },
+  { value: 'nameDesc', label: '名称 Z-A' },
 ]
 
-const visibleDrafts = computed(() => {
-  const query = searchQuery.value.trim().toLocaleLowerCase()
-  const drafts = query
-    ? props.drafts.filter((draft) =>
-        [draft.name, draft.key, draft.description, draft.fileName].some((value) =>
-          value.toLocaleLowerCase().includes(query),
-        ),
-      )
-    : [...props.drafts]
+let searchTimer: ReturnType<typeof setTimeout> | undefined
 
-  return drafts.sort((left, right) => {
-    if (sortMode.value === 'updated-desc') {
-      return Date.parse(right.updatedAt) - Date.parse(left.updatedAt)
-    }
-    if (sortMode.value === 'updated-asc') {
-      return Date.parse(left.updatedAt) - Date.parse(right.updatedAt)
-    }
-    const comparison = left.name.localeCompare(right.name, 'zh-CN', {
-      numeric: true,
-      sensitivity: 'base',
-    })
-    return sortMode.value === 'name-asc' ? comparison : -comparison
-  })
+function currentQuery(): ProcessModelQuery {
+  return { filterText: searchQuery.value.trim(), sort: sortMode.value }
+}
+
+watch(searchQuery, () => {
+  if (searchTimer) clearTimeout(searchTimer)
+  searchTimer = setTimeout(() => emit('queryChange', currentQuery()), 250)
 })
+
+watch(sortMode, () => emit('queryChange', currentQuery()))
+onBeforeUnmount(() => searchTimer && clearTimeout(searchTimer))
 
 const dateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
   year: 'numeric',
@@ -127,12 +122,14 @@ function resetCreateForm() {
 }
 
 function openCreateDialog() {
+  if (props.loading) return
   resetCreateForm()
   createDialogVisible.value = true
   void nextTick(() => createFormRef.value?.clearValidate())
 }
 
 async function submitCreate() {
+  if (props.loading) return
   if (!createFormRef.value) return
   try {
     const valid = await createFormRef.value.validate()
@@ -150,6 +147,7 @@ async function submitCreate() {
 }
 
 function chooseImportFile() {
+  if (props.loading) return
   importInputRef.value?.click()
 }
 
@@ -157,7 +155,7 @@ async function handleImportFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file) return
+  if (!file || props.loading) return
 
   try {
     const xml = await file.text()
@@ -173,11 +171,12 @@ async function handleImportFile(event: Event) {
   }
 }
 
-async function confirmDelete(draft: BpmnDraft) {
+async function confirmDelete(model: ProcessModel) {
+  if (props.loading) return
   try {
     await ElMessageBox.confirm(
-      `删除后无法恢复，确定删除“${draft.name}”吗？`,
-      '删除草稿',
+      `删除后无法恢复，确定删除“${model.name}”吗？`,
+      '删除流程模型',
       {
         type: 'warning',
         confirmButtonText: '删除',
@@ -188,12 +187,12 @@ async function confirmDelete(draft: BpmnDraft) {
   } catch {
     return
   }
-  emit('delete', draft.id)
+  emit('delete', model.id)
 }
 </script>
 
 <template>
-  <div class="draft-list-page" data-testid="draft-list-page">
+  <div class="model-list-page" data-testid="process-model-list-page">
     <header class="page-header">
       <div class="header-inner">
         <div class="brand-block">
@@ -204,9 +203,21 @@ async function confirmDelete(draft: BpmnDraft) {
           </span>
         </div>
         <div class="header-actions">
+          <span class="signed-in-user" :title="username">{{ username }}</span>
+          <el-tooltip content="刷新模型" placement="bottom">
+            <el-button
+              :icon="RefreshCw"
+              circle
+              :loading="loading"
+              aria-label="刷新模型"
+              data-testid="refresh-models"
+              @click="emit('refresh')"
+            />
+          </el-tooltip>
           <el-button
-            data-testid="import-draft"
+            data-testid="import-model"
             :icon="Upload"
+            :disabled="loading"
             aria-label="导入 BPMN"
             @click="chooseImportFile"
           >
@@ -215,12 +226,22 @@ async function confirmDelete(draft: BpmnDraft) {
           <el-button
             type="primary"
             :icon="Plus"
-            data-testid="create-draft"
+            :disabled="loading"
+            data-testid="create-model"
             aria-label="新建 BPMN 流程"
             @click="openCreateDialog"
           >
             新建流程
           </el-button>
+          <el-tooltip content="退出登录" placement="bottom">
+            <el-button
+              :icon="LogOut"
+              circle
+              aria-label="退出登录"
+              data-testid="logout"
+              @click="emit('logout')"
+            />
+          </el-tooltip>
         </div>
       </div>
     </header>
@@ -228,8 +249,8 @@ async function confirmDelete(draft: BpmnDraft) {
     <main class="page-main">
       <div class="list-heading">
         <div>
-          <h1>流程草稿</h1>
-          <p>{{ drafts.length }} 个 BPMN 模型</p>
+          <h1>流程模型</h1>
+          <p>{{ total }} 个 BPMN 模型</p>
         </div>
         <div class="list-controls">
           <el-input
@@ -237,15 +258,17 @@ async function confirmDelete(draft: BpmnDraft) {
             class="search-input"
             :prefix-icon="Search"
             clearable
-            data-testid="draft-search"
+            data-testid="model-search"
             placeholder="搜索名称、标识或描述"
-            aria-label="搜索流程草稿"
+            aria-label="搜索流程模型"
+            :disabled="loading"
           />
           <el-select
             v-model="sortMode"
             class="sort-select"
-            data-testid="draft-sort"
-            aria-label="草稿排序方式"
+            data-testid="model-sort"
+            aria-label="模型排序方式"
+            :disabled="loading"
           >
             <template #prefix><ArrowUpDown :size="15" /></template>
             <el-option
@@ -258,8 +281,13 @@ async function confirmDelete(draft: BpmnDraft) {
         </div>
       </div>
 
-      <section class="draft-list" data-testid="draft-list" aria-label="BPMN 草稿列表">
-        <div v-if="visibleDrafts.length" class="table-heading" aria-hidden="true">
+      <section
+        v-loading="loading"
+        class="model-list"
+        data-testid="model-list"
+        aria-label="BPMN 流程模型列表"
+      >
+        <div v-if="models.length" class="table-heading" aria-hidden="true">
           <span>名称</span>
           <span>流程标识</span>
           <span>修改时间</span>
@@ -267,62 +295,66 @@ async function confirmDelete(draft: BpmnDraft) {
         </div>
 
         <div
-          v-for="draft in visibleDrafts"
-          :key="draft.id"
-          class="draft-row"
-          data-testid="draft-row"
-          :data-draft-id="draft.id"
+          v-for="model in models"
+          :key="model.id"
+          class="model-row"
+          data-testid="model-row"
+          :data-model-id="model.id"
         >
           <button
             type="button"
-            class="draft-identity"
-            data-testid="draft-primary-open"
-            :aria-label="`打开草稿 ${draft.name}`"
-            @click="emit('open', draft.id)"
+            class="model-identity"
+            data-testid="model-primary-open"
+            :aria-label="`打开模型 ${model.name}`"
+            :disabled="loading"
+            @click="emit('open', model.id)"
           >
-            <span class="draft-icon" aria-hidden="true"><FileText :size="19" /></span>
-            <span class="draft-copy">
-              <strong data-testid="draft-title">{{ draft.name }}</strong>
-              <span>{{ draft.description || draft.fileName }}</span>
+            <span class="model-icon" aria-hidden="true"><FileText :size="19" /></span>
+            <span class="model-copy">
+              <strong data-testid="model-title">{{ model.name }}</strong>
+              <span>{{ model.description || `版本 ${model.version}` }}</span>
             </span>
           </button>
-          <code class="draft-key">{{ draft.key }}</code>
-          <time :datetime="draft.updatedAt" data-testid="draft-updated-at">
-            {{ formatDateTime(draft.updatedAt) }}
+          <code class="model-key">{{ model.key }}</code>
+          <time :datetime="model.lastUpdated" data-testid="model-updated-at">
+            {{ formatDateTime(model.lastUpdated) }}
           </time>
           <div class="row-actions">
             <el-button
               text
               :icon="FolderOpen"
-              data-testid="open-draft"
-              :aria-label="`打开草稿 ${draft.name}`"
-              @click.stop="emit('open', draft.id)"
+              :disabled="loading"
+              data-testid="open-model"
+              :aria-label="`打开模型 ${model.name}`"
+              @click.stop="emit('open', model.id)"
             >
               打开
             </el-button>
-            <el-tooltip content="删除草稿" placement="top">
+            <el-tooltip content="删除模型" placement="top">
               <el-button
                 text
                 type="danger"
                 :icon="Trash2"
-                data-testid="delete-draft"
-                :aria-label="`删除草稿 ${draft.name}`"
-                @click.stop="confirmDelete(draft)"
+                :disabled="loading"
+                data-testid="delete-model"
+                :aria-label="`删除模型 ${model.name}`"
+                @click.stop="confirmDelete(model)"
               />
             </el-tooltip>
           </div>
         </div>
 
-        <div v-if="!visibleDrafts.length" class="empty-state" data-testid="draft-list-empty">
+        <div v-if="!loading && !models.length" class="empty-state" data-testid="model-list-empty">
           <el-empty
-            :description="drafts.length ? '没有匹配的流程草稿' : '还没有 BPMN 草稿'"
+            :description="searchQuery ? '没有匹配的流程模型' : '还没有 BPMN 流程模型'"
             :image-size="92"
           >
-            <el-button v-if="drafts.length" @click="searchQuery = ''">清除搜索</el-button>
+            <el-button v-if="searchQuery" @click="searchQuery = ''">清除搜索</el-button>
             <div v-else class="empty-actions">
               <el-button
                 :icon="Upload"
-                data-testid="empty-import-draft"
+                :disabled="loading"
+                data-testid="empty-import-model"
                 aria-label="导入 BPMN"
                 @click="chooseImportFile"
               >
@@ -331,6 +363,7 @@ async function confirmDelete(draft: BpmnDraft) {
               <el-button
                 type="primary"
                 :icon="Plus"
+                :disabled="loading"
                 aria-label="新建 BPMN 流程"
                 @click="openCreateDialog"
               >
@@ -347,16 +380,16 @@ async function confirmDelete(draft: BpmnDraft) {
       class="visually-hidden"
       type="file"
       accept=".bpmn,.xml,.bpmn20.xml,application/xml,text/xml"
-      data-testid="draft-import-input"
+      data-testid="model-import-input"
       @change="handleImportFile"
     />
 
     <el-dialog
       v-model="createDialogVisible"
-      class="draft-create-dialog"
+      class="model-create-dialog"
       width="min(520px, calc(100vw - 32px))"
       title="新建 BPMN 流程"
-      data-testid="draft-create-dialog"
+      data-testid="model-create-dialog"
       :teleported="false"
       @closed="resetCreateForm"
     >
@@ -364,13 +397,14 @@ async function confirmDelete(draft: BpmnDraft) {
         ref="createFormRef"
         :model="createForm"
         :rules="createRules"
+        :disabled="loading"
         label-position="top"
         @submit.prevent="submitCreate"
       >
         <el-form-item label="流程名称" prop="name">
           <el-input
             v-model="createForm.name"
-            data-testid="draft-create-name"
+            data-testid="model-create-name"
             maxlength="120"
             show-word-limit
             autocomplete="off"
@@ -379,7 +413,7 @@ async function confirmDelete(draft: BpmnDraft) {
         <el-form-item label="流程标识" prop="key">
           <el-input
             v-model="createForm.key"
-            data-testid="draft-create-key"
+            data-testid="model-create-key"
             maxlength="120"
             autocomplete="off"
           />
@@ -392,7 +426,7 @@ async function confirmDelete(draft: BpmnDraft) {
             maxlength="500"
             show-word-limit
             resize="none"
-            data-testid="draft-create-description"
+            data-testid="model-create-description"
           />
         </el-form-item>
       </el-form>
@@ -400,7 +434,8 @@ async function confirmDelete(draft: BpmnDraft) {
         <el-button @click="createDialogVisible = false">取消</el-button>
         <el-button
           type="primary"
-          data-testid="confirm-create-draft"
+          data-testid="confirm-create-model"
+          :loading="loading"
           @click="submitCreate"
         >
           创建并打开
@@ -411,7 +446,7 @@ async function confirmDelete(draft: BpmnDraft) {
 </template>
 
 <style scoped>
-.draft-list-page {
+.model-list-page {
   width: 100%;
   height: 100%;
   overflow: auto;
@@ -477,6 +512,15 @@ async function confirmDelete(draft: BpmnDraft) {
   gap: 8px;
 }
 
+.signed-in-user {
+  overflow: hidden;
+  max-width: 140px;
+  color: #667085;
+  font-size: 12px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .header-actions :deep(.el-button + .el-button),
 .row-actions :deep(.el-button + .el-button) {
   margin-left: 0;
@@ -527,7 +571,9 @@ async function confirmDelete(draft: BpmnDraft) {
   flex: 0 0 146px;
 }
 
-.draft-list {
+.model-list {
+  position: relative;
+  min-height: 180px;
   overflow: hidden;
   border: 1px solid #e4e7ec;
   border-radius: 7px;
@@ -535,7 +581,7 @@ async function confirmDelete(draft: BpmnDraft) {
 }
 
 .table-heading,
-.draft-row {
+.model-row {
   display: grid;
   grid-template-columns: minmax(260px, 1.6fr) minmax(170px, 0.9fr) 180px 132px;
   align-items: center;
@@ -552,21 +598,21 @@ async function confirmDelete(draft: BpmnDraft) {
   font-weight: 600;
 }
 
-.draft-row {
+.model-row {
   min-height: 78px;
   padding: 12px 18px;
   border-bottom: 1px solid #eaecf0;
 }
 
-.draft-row:last-child {
+.model-row:last-child {
   border-bottom: 0;
 }
 
-.draft-row:hover {
+.model-row:hover {
   background: #f7faff;
 }
 
-.draft-identity {
+.model-identity {
   display: flex;
   width: 100%;
   min-width: 0;
@@ -580,13 +626,13 @@ async function confirmDelete(draft: BpmnDraft) {
   cursor: pointer;
 }
 
-.draft-identity:focus-visible {
+.model-identity:focus-visible {
   border-radius: 4px;
   outline: 2px solid #84adff;
   outline-offset: 4px;
 }
 
-.draft-icon {
+.model-icon {
   display: grid;
   width: 38px;
   height: 38px;
@@ -598,32 +644,32 @@ async function confirmDelete(draft: BpmnDraft) {
   background: #eff4ff;
 }
 
-.draft-copy {
+.model-copy {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 4px;
 }
 
-.draft-copy strong,
-.draft-copy span {
+.model-copy strong,
+.model-copy span {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.draft-copy strong {
+.model-copy strong {
   color: #1d2939;
   font-size: 14px;
   font-weight: 600;
 }
 
-.draft-copy span {
+.model-copy span {
   color: #98a2b3;
   font-size: 12px;
 }
 
-.draft-key {
+.model-key {
   overflow: hidden;
   color: #475467;
   font-family: "JetBrains Mono", Consolas, monospace;
@@ -632,7 +678,7 @@ async function confirmDelete(draft: BpmnDraft) {
   white-space: nowrap;
 }
 
-.draft-row time {
+.model-row time {
   color: #667085;
   font-size: 12px;
   white-space: nowrap;
@@ -673,7 +719,7 @@ async function confirmDelete(draft: BpmnDraft) {
   white-space: nowrap;
 }
 
-.draft-create-dialog :deep(.el-form-item:last-child) {
+.model-create-dialog :deep(.el-form-item:last-child) {
   margin-bottom: 0;
 }
 
@@ -701,22 +747,22 @@ async function confirmDelete(draft: BpmnDraft) {
     display: none;
   }
 
-  .draft-row {
+  .model-row {
     grid-template-columns: minmax(0, 1fr) auto;
     min-height: 96px;
     row-gap: 10px;
   }
 
-  .draft-identity {
+  .model-identity {
     grid-column: 1 / -1;
   }
 
-  .draft-key {
+  .model-key {
     grid-column: 1;
     padding-left: 50px;
   }
 
-  .draft-row time {
+  .model-row time {
     display: none;
   }
 
@@ -729,12 +775,21 @@ async function confirmDelete(draft: BpmnDraft) {
 @media (max-width: 560px) {
   .header-inner {
     min-height: 58px;
+    gap: 8px;
   }
 
   .brand-mark {
-    width: 34px;
-    height: 34px;
-    flex-basis: 34px;
+    width: 32px;
+    height: 32px;
+    flex-basis: 32px;
+  }
+
+  .brand-block {
+    gap: 7px;
+  }
+
+  .brand-title {
+    font-size: 13px;
   }
 
   .brand-subtitle {
@@ -743,6 +798,14 @@ async function confirmDelete(draft: BpmnDraft) {
 
   .header-actions :deep(.el-button) {
     padding-inline: 10px;
+  }
+
+  .header-actions {
+    gap: 4px;
+  }
+
+  .signed-in-user {
+    display: none;
   }
 
   .header-actions :deep(.el-button span) {
@@ -761,12 +824,12 @@ async function confirmDelete(draft: BpmnDraft) {
     flex-basis: auto;
   }
 
-  .draft-row {
+  .model-row {
     padding-inline: 13px;
     column-gap: 8px;
   }
 
-  .draft-key {
+  .model-key {
     padding-left: 50px;
   }
 

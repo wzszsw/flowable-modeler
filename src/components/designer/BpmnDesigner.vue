@@ -83,14 +83,15 @@ type EventBusService = {
   on: (event: string, callback: (event: Record<string, unknown>) => void) => void
 }
 
-interface DraftSnapshot {
+interface ModelSnapshot {
   xml: string
   fileName: string
   name: string
   key: string
+  description: string
 }
 
-interface DraftPersistenceResult {
+interface ModelPersistenceResult {
   savedAt: string
 }
 
@@ -108,7 +109,7 @@ const props = defineProps<{
   initialXml?: string
   initialFileName?: string
   initialSavedAt?: string
-  persistDraft?: (snapshot: DraftSnapshot) => Promise<DraftPersistenceResult>
+  persistModel?: (snapshot: ModelSnapshot) => Promise<ModelPersistenceResult>
 }>()
 
 const emit = defineEmits<{
@@ -187,15 +188,17 @@ const problems = ref<ValidationProblem[]>([])
 const importWarningsDialogVisible = ref(false)
 const pendingImportCount = ref(0)
 const importStateCoherent = ref(true)
+const saving = ref(false)
 
 let importing = false
 let importQueue: Promise<void> = Promise.resolve()
+let savePromise: Promise<boolean> | null = null
 let nativeImportXML: NativeImportXML | null = null
 let resizeObserver: ResizeObserver | null = null
 
 const importPending = computed(() => pendingImportCount.value > 0)
 const interactionLocked = computed(
-  () => importPending.value || !ready.value || !importStateCoherent.value,
+  () => saving.value || importPending.value || !ready.value || !importStateCoherent.value,
 )
 
 function asBusinessObject(value: unknown): BpmnBusinessObject | null {
@@ -238,6 +241,12 @@ const processId = computed(() => {
   commandRevision.value
   return String(resolvePrimaryProcess()?.id || 'Process')
 })
+const processDescription = computed(() => {
+  commandRevision.value
+  const documentation = resolvePrimaryProcess()?.documentation
+  if (!Array.isArray(documentation)) return ''
+  return String(documentation[0]?.text || '').trim()
+})
 const selectedLabel = computed(() => {
   if (!selectedElement.value || selectedElement.value === rootElement.value) return '流程'
   return String(
@@ -248,6 +257,7 @@ const errorCount = computed(() => problems.value.filter((item) => item.level ===
 const warningCount = computed(() => problems.value.filter((item) => item.level === 'warning').length)
 const savedStatus = computed(() => {
   if (importPending.value) return '正在载入流程'
+  if (saving.value) return '正在保存模型'
   if (dirty.value) return '有未保存更改'
   if (lastSavedAt.value) return `已保存 ${lastSavedAt.value}`
   return '已就绪'
@@ -272,7 +282,7 @@ function setModelerKeyboardEnabled(instance: Modeler, enabled: boolean) {
 }
 
 function isInteractionReady() {
-  return ready.value && !importPending.value && importStateCoherent.value
+  return ready.value && !saving.value && !importPending.value && importStateCoherent.value
 }
 
 function assertImportStateCoherent() {
@@ -526,7 +536,7 @@ function exposeIntegrationBridge(instance: Modeler) {
       runValidation(false)
       return [...problems.value]
     },
-    saveDraft,
+    saveModel,
     configureHost: (adapter) => {
       hostAdapterGeneration.value += 1
       hostAdapter.value = adapter ? markRaw(adapter) : null
@@ -713,43 +723,66 @@ async function initialize() {
 function handleInitializationError(error: unknown) {
   loading.value = false
   ready.value = false
-  initializationError.value = error instanceof Error ? error.message : '无法载入 BPMN 草稿'
+  initializationError.value = error instanceof Error ? error.message : '无法载入 BPMN 流程模型'
 }
 
 function reloadPage() {
   window.location.reload()
 }
 
-async function persistCurrentDraft(showSuccess = true) {
-  if (!modeler.value) return
+async function performModelSave(showSuccess: boolean) {
+  if (!modeler.value) return false
   assertImportStateCoherent()
-  if (!isInteractionReady()) return false
-  if (!props.persistDraft) {
-    throw new Error('嵌入模式不支持浏览器草稿保存，请通过 getXML() 交由宿主持久化')
+  if (!props.persistModel) {
+    throw new Error('嵌入模式不支持直接保存，请通过 getXML() 交由宿主持久化')
   }
+  const instance = modeler.value
+  saving.value = true
+  setModelerKeyboardEnabled(instance, false)
   try {
     await commitActiveEditor()
-    const { xml } = await modeler.value.saveXML({ format: true, preamble: true })
+    const savedRevision = commandRevision.value
+    const { xml } = await instance.saveXML({ format: true, preamble: true })
     if (!xml) throw new Error('未生成 BPMN XML')
-    const { savedAt } = await props.persistDraft({
+    const { savedAt } = await props.persistModel({
       xml,
       fileName: fileName.value,
       name: processName.value,
       key: processId.value,
+      description: processDescription.value,
     })
-    dirty.value = false
+    dirty.value = commandRevision.value !== savedRevision
     lastSavedAt.value = formatTime(savedAt)
     emit('saved')
-    if (showSuccess) ElMessage.success('草稿已保存到本地浏览器')
+    if (showSuccess) {
+      ElMessage.success(dirty.value ? '当前快照已保存，仍有后续更改' : '流程模型已保存')
+    }
     return true
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : '保存失败')
     return false
+  } finally {
+    saving.value = false
+    if (modeler.value === instance && ready.value && !importPending.value) {
+      setModelerKeyboardEnabled(instance, true)
+    }
   }
 }
 
-async function saveDraft() {
-  await persistCurrentDraft()
+function persistCurrentModel(showSuccess = true) {
+  if (savePromise) return savePromise
+  if (!modeler.value) return Promise.resolve(false)
+  assertImportStateCoherent()
+  if (!isInteractionReady()) return Promise.resolve(false)
+  const operation = performModelSave(showSuccess)
+  savePromise = operation.finally(() => {
+    savePromise = null
+  })
+  return savePromise
+}
+
+async function saveModel() {
+  await persistCurrentModel()
 }
 
 async function requestClose() {
@@ -760,14 +793,14 @@ async function requestClose() {
     return
   }
   try {
-    await ElMessageBox.confirm('当前流程有未保存更改。', '返回草稿列表', {
+    await ElMessageBox.confirm('当前流程有未保存更改。', '返回流程模型', {
       confirmButtonText: '保存并返回',
       cancelButtonText: '放弃更改',
       distinguishCancelAndClose: true,
       closeOnClickModal: false,
       type: 'warning',
     })
-    if (await persistCurrentDraft(false)) emit('close')
+    if (await persistCurrentModel(false)) emit('close')
   } catch (action) {
     if (action === 'cancel') emit('close')
   }
@@ -1011,7 +1044,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
   }
   if (event.key.toLowerCase() === 's') {
     event.preventDefault()
-    if (isInteractionReady()) void saveDraft()
+    if (isInteractionReady()) void saveModel()
   }
   if (event.key.toLowerCase() === 'o') {
     event.preventDefault()
@@ -1079,7 +1112,7 @@ defineExpose({
   getXML: getXml,
   importXML: importDiagram,
   validate: runValidation,
-  saveDraft,
+  saveModel,
 })
 </script>
 
@@ -1093,7 +1126,7 @@ defineExpose({
       'is-importing': importPending,
       'is-interaction-locked': interactionLocked,
     }"
-    :aria-busy="importPending"
+    :aria-busy="importPending || saving"
   >
     <header v-if="!embeddedMode" class="designer-header">
       <div class="brand-block">
@@ -1106,7 +1139,7 @@ defineExpose({
         </div>
         <div>
           <div class="brand-title">Flowable Modeler</div>
-          <div class="brand-subtitle">BPMN 2.0 · Engine 6.8.1.36</div>
+          <div class="brand-subtitle">BPMN 2.0 · Engine 6.8.1</div>
         </div>
       </div>
 
@@ -1123,13 +1156,14 @@ defineExpose({
         <div class="status-dot" :class="{ dirty }" />
         <div>
           <div class="text-xs font-500 text-gray-600">{{ savedStatus }}</div>
-          <div class="mt-1 text-[11px] text-gray-400">Ctrl+S 保存草稿</div>
+          <div class="mt-1 text-[11px] text-gray-400">Ctrl+S 保存模型</div>
         </div>
       </div>
     </header>
 
     <DesignerToolbar
-      :ready="ready"
+      :ready="ready && !saving"
+      :saving="saving"
       :can-undo="canUndo"
       :can-redo="canRedo"
       :zoom="zoom"
@@ -1137,7 +1171,7 @@ defineExpose({
       :problem-count="problems.length"
       :embedded="embeddedMode"
       @back="requestClose"
-      @save="saveDraft"
+      @save="saveModel"
       @import="chooseImportFile"
       @export-xml="exportXml"
       @export-svg="exportSvg"
@@ -1163,7 +1197,7 @@ defineExpose({
     >
       <el-result
         icon="error"
-        title="无法打开 BPMN 草稿"
+        title="无法打开 BPMN 流程模型"
         :sub-title="initializationError"
       >
         <template #extra>
@@ -1173,7 +1207,7 @@ defineExpose({
             data-testid="return-from-load-error"
             @click="emit('close')"
           >
-            返回草稿列表
+            返回流程模型
           </el-button>
           <el-button v-else type="primary" @click="reloadPage">重新加载</el-button>
         </template>

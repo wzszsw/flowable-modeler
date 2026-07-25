@@ -4,10 +4,7 @@ import type {
   DiagramElement,
   ValidationProblem,
 } from './types'
-import {
-  isFlowableServiceTaskType,
-  isOutOfScopeServiceTaskType,
-} from './serviceTaskTypes'
+import { isFlowableServiceTaskType } from './serviceTaskTypes'
 
 const START_EVENT = 'bpmn:StartEvent'
 const END_EVENT = 'bpmn:EndEvent'
@@ -210,9 +207,7 @@ export function validateElements(
       }
 
       const normalizedType = typeof serviceTaskType === 'string' ? serviceTaskType.trim() : ''
-      if (normalizedType && isOutOfScopeServiceTaskType(normalizedType)) {
-        add(element, 'error', '服务任务类型 case 依赖 CMMN，不在当前 BPMN-only 范围内')
-      } else if (
+      if (
         normalizedType &&
         !isFlowableServiceTaskType(normalizedType) &&
         !allowedServiceTaskTypes.has(normalizedType)
