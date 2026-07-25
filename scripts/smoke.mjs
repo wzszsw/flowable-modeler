@@ -1,0 +1,5352 @@
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+
+import { chromium } from 'playwright-core'
+
+const port = 4174
+const origin = `http://127.0.0.1:${port}`
+const p0ExtensionXml = readFileSync(
+  'scripts/fixtures/flowable-p0-extensions.bpmn20.xml',
+  'utf8',
+)
+
+const customExtensionXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+  xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:flowable="http://flowable.org/bpmn"
+  id="Definitions_custom_extensions"
+  targetNamespace="http://flowable.org/processdef">
+  <bpmn:message id="Message_custom" name="业务消息" />
+  <bpmn:message id="Message_hidden" name="无图消息" />
+  <bpmn:signal id="Signal_custom" name="业务信号" flowable:scope="global" />
+  <bpmn:error id="Error_custom" name="业务错误" errorCode="BUSINESS_ERROR" flowable:errorMessage="业务处理失败" />
+  <bpmn:process id="Process_custom_extensions" name="自定义扩展往返" isExecutable="true">
+    <bpmn:extensionElements>
+      <flowable:ProcessNameExp>businessName</flowable:ProcessNameExp>
+    </bpmn:extensionElements>
+    <bpmn:startEvent id="StartEvent_custom">
+      <bpmn:outgoing>Flow_start_task</bpmn:outgoing>
+      <bpmn:messageEventDefinition id="MessageEventDefinition_custom" messageRef="Message_custom" />
+    </bpmn:startEvent>
+    <bpmn:userTask id="UserTask_custom" name="业务审批">
+      <bpmn:extensionElements>
+        <flowable:AssigneeType>static</flowable:AssigneeType>
+        <flowable:StaticAssigneeVariables>{"users":[{"id":"u-001","name":"张三"}],"expression":"approvalUsers"}</flowable:StaticAssigneeVariables>
+        <flowable:IdmAssignee>{"id":"leader","name":"部门负责人"}</flowable:IdmAssignee>
+        <flowable:IdmCandidateUsers>[{"id":"u-002","name":"李四"}]</flowable:IdmCandidateUsers>
+        <flowable:IdmCandidateGroups>[{"id":"g-001","name":"财务组"}]</flowable:IdmCandidateGroups>
+        <flowable:NextSequenceFlow>{"mode":"free"}</flowable:NextSequenceFlow>
+        <flowable:NextUser>{"variable":"nextApprover"}</flowable:NextUser>
+        <flowable:ModelBpmnExtension>{"version":1}</flowable:ModelBpmnExtension>
+        <flowable:NodeFormExp>{"amount":"3","comment":"2"}</flowable:NodeFormExp>
+        <flowable:MultiInstanceVariables>{"collection":"participants"}</flowable:MultiInstanceVariables>
+        <flowable:properties>
+          <flowable:property id="Property_fixture" name="fixtureProperty" value="fixture-value" />
+        </flowable:properties>
+        <flowable:formData businessKey="\${businessKey}">
+          <flowable:formField id="amount" label="金额" type="long" defaultValue="0">
+            <flowable:properties>
+              <flowable:property id="prop_min" name="min" value="1" />
+            </flowable:properties>
+            <flowable:validation>
+              <flowable:constraint name="min" config="1" />
+            </flowable:validation>
+          </flowable:formField>
+        </flowable:formData>
+        <flowable:mapException
+          errorCode="ORDER_ERROR"
+          includeChildExceptions="true"
+          rootCause="java.lang.RuntimeException">java.lang.IllegalStateException</flowable:mapException>
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_start_task</bpmn:incoming>
+      <bpmn:outgoing>Flow_task_message</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="ErrorBoundary_custom" attachedToRef="UserTask_custom">
+      <bpmn:errorEventDefinition
+        id="ErrorEventDefinition_custom"
+        flowable:errorVariableName="caughtErrorCode" />
+    </bpmn:boundaryEvent>
+    <bpmn:intermediateCatchEvent id="MessageCatch_custom" name="动态消息">
+      <bpmn:incoming>Flow_task_message</bpmn:incoming>
+      <bpmn:outgoing>Flow_message_signal</bpmn:outgoing>
+      <bpmn:messageEventDefinition
+        id="MessageEventDefinition_expression"
+        flowable:messageExpression="\${dynamicMessage}" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:intermediateCatchEvent id="SignalCatch_custom" name="动态信号">
+      <bpmn:incoming>Flow_message_signal</bpmn:incoming>
+      <bpmn:outgoing>Flow_signal_end</bpmn:outgoing>
+      <bpmn:signalEventDefinition
+        id="SignalEventDefinition_expression"
+        flowable:signalExpression="\${dynamicSignal}" />
+    </bpmn:intermediateCatchEvent>
+    <bpmn:endEvent id="EndEvent_custom">
+      <bpmn:incoming>Flow_signal_end</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_start_task" sourceRef="StartEvent_custom" targetRef="UserTask_custom" />
+    <bpmn:sequenceFlow id="Flow_task_message" sourceRef="UserTask_custom" targetRef="MessageCatch_custom" />
+    <bpmn:sequenceFlow id="Flow_message_signal" sourceRef="MessageCatch_custom" targetRef="SignalCatch_custom" />
+    <bpmn:sequenceFlow id="Flow_signal_end" sourceRef="SignalCatch_custom" targetRef="EndEvent_custom" />
+  </bpmn:process>
+  <bpmn:process id="Process_without_di" name="无图流程" isExecutable="true">
+    <bpmn:receiveTask id="ReceiveTask_hidden" messageRef="Message_hidden" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_custom">
+    <bpmndi:BPMNPlane id="BPMNPlane_custom" bpmnElement="Process_custom_extensions">
+      <bpmndi:BPMNShape id="StartEvent_custom_di" bpmnElement="StartEvent_custom">
+        <dc:Bounds x="160" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="UserTask_custom_di" bpmnElement="UserTask_custom">
+        <dc:Bounds x="250" y="160" width="110" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="ErrorBoundary_custom_di" bpmnElement="ErrorBoundary_custom">
+        <dc:Bounds x="317" y="222" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="MessageCatch_custom_di" bpmnElement="MessageCatch_custom">
+        <dc:Bounds x="420" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="SignalCatch_custom_di" bpmnElement="SignalCatch_custom">
+        <dc:Bounds x="510" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="EndEvent_custom_di" bpmnElement="EndEvent_custom">
+        <dc:Bounds x="600" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_start_task_di" bpmnElement="Flow_start_task">
+        <di:waypoint x="196" y="200" />
+        <di:waypoint x="250" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_task_message_di" bpmnElement="Flow_task_message">
+        <di:waypoint x="360" y="200" />
+        <di:waypoint x="420" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_message_signal_di" bpmnElement="Flow_message_signal">
+        <di:waypoint x="456" y="200" />
+        <di:waypoint x="510" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_signal_end_di" bpmnElement="Flow_signal_end">
+        <di:waypoint x="546" y="200" />
+        <di:waypoint x="600" y="200" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`
+
+const multiInstanceTimerPreservationXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
+  xmlns:dc="http://www.omg.org/spec/DD/20100524/DC"
+  xmlns:di="http://www.omg.org/spec/DD/20100524/DI"
+  xmlns:flowable="http://flowable.org/bpmn"
+  id="Definitions_edit_preservation"
+  targetNamespace="http://flowable.org/test">
+  <bpmn:process id="Process_edit_preservation" name="原位编辑回归" isExecutable="true"
+    flowable:isEagerExecutionFetching="false"
+    flowable:enableEagerExecutionTreeFetching="true">
+    <bpmn:startEvent id="Start_edit_preservation">
+      <bpmn:outgoing>Flow_edit_start_handler</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="Task_multi_handler" name="处理器多实例">
+      <bpmn:incoming>Flow_edit_start_handler</bpmn:incoming>
+      <bpmn:outgoing>Flow_edit_handler_cardinality</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false"
+        flowable:elementVariable="item"
+        flowable:elementIndexVariable="itemIndex"
+        flowable:noWaitStatesAsyncLeave="true">
+        <bpmn:extensionElements>
+          <flowable:collection flowable:delegateExpression="\${collectionHandler}">
+            <flowable:expression>\${items}</flowable:expression>
+          </flowable:collection>
+          <flowable:variableAggregation target="reviews"
+            delegateExpression="\${variableAggregator}"
+            storeAsTransientVariable="true"
+            createOverviewVariable="true">
+            <bpmn:variable source="approved" target="value" />
+          </flowable:variableAggregation>
+        </bpmn:extensionElements>
+        <bpmn:completionCondition>\${nrOfCompletedInstances &gt; 0}</bpmn:completionCondition>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:boundaryEvent id="Boundary_timer_cycle" name="周期超时"
+      attachedToRef="Task_multi_handler" cancelActivity="false">
+      <bpmn:timerEventDefinition id="TimerDefinition_cycle"
+        flowable:businessCalendarName="workCalendar">
+        <bpmn:timeCycle flowable:endDate="\${cycleEnd}">R3/PT10M</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:boundaryEvent>
+    <bpmn:userTask id="Task_multi_cardinality" name="基数多实例">
+      <bpmn:incoming>Flow_edit_handler_cardinality</bpmn:incoming>
+      <bpmn:outgoing>Flow_edit_cardinality_service</bpmn:outgoing>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="true"
+        flowable:noWaitStatesAsyncLeave="true">
+        <bpmn:extensionElements>
+          <flowable:variableAggregation target="cardinalityReviews">
+            <bpmn:variable source="approved" target="value" />
+          </flowable:variableAggregation>
+        </bpmn:extensionElements>
+        <bpmn:loopCardinality>\${itemCount}</bpmn:loopCardinality>
+        <bpmn:completionCondition>\${nrOfCompletedInstances &gt;= 2}</bpmn:completionCondition>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:userTask id="Task_multi_string_handler" name="字符串处理器多实例">
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false"
+        flowable:elementVariable="stringItem"
+        flowable:noWaitStatesAsyncLeave="true">
+        <bpmn:extensionElements>
+          <flowable:collection flowable:class="com.example.StringCollectionHandler">
+            <flowable:string>seed-handler-input</flowable:string>
+          </flowable:collection>
+        </bpmn:extensionElements>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+    <bpmn:serviceTask id="Task_expression_preservation" name="表达式服务"
+      flowable:expression="\${calculationService.calculate(execution)}"
+      flowable:resultVariable="legacyCalculationResult"
+      flowable:useLocalScopeForResultVariable="true"
+      flowable:storeResultVariableAsTransient="true">
+      <bpmn:extensionElements>
+        <flowable:executionListener event="start" type="script">
+          <flowable:script language="groovy" resultVariable="listenerResult">return 'original'</flowable:script>
+        </flowable:executionListener>
+        <flowable:executionListener event="end"
+          delegateExpression="\${transactionListener}"
+          onTransaction="committed"
+          customPropertiesResolverDelegateExpression="\${listenerPropertiesResolver}" />
+      </bpmn:extensionElements>
+      <bpmn:incoming>Flow_edit_cardinality_service</bpmn:incoming>
+      <bpmn:outgoing>Flow_edit_service_end</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="End_edit_preservation">
+      <bpmn:incoming>Flow_edit_service_end</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_edit_start_handler"
+      sourceRef="Start_edit_preservation" targetRef="Task_multi_handler" />
+    <bpmn:sequenceFlow id="Flow_edit_handler_cardinality"
+      sourceRef="Task_multi_handler" targetRef="Task_multi_cardinality" />
+    <bpmn:sequenceFlow id="Flow_edit_cardinality_service"
+      sourceRef="Task_multi_cardinality" targetRef="Task_expression_preservation" />
+    <bpmn:sequenceFlow id="Flow_edit_service_end"
+      sourceRef="Task_expression_preservation" targetRef="End_edit_preservation" />
+  </bpmn:process>
+  <bpmndi:BPMNDiagram id="BPMNDiagram_edit_preservation">
+    <bpmndi:BPMNPlane id="BPMNPlane_edit_preservation"
+      bpmnElement="Process_edit_preservation">
+      <bpmndi:BPMNShape id="Start_edit_preservation_di"
+        bpmnElement="Start_edit_preservation">
+        <dc:Bounds x="120" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_multi_handler_di" bpmnElement="Task_multi_handler">
+        <dc:Bounds x="220" y="160" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Boundary_timer_cycle_di" bpmnElement="Boundary_timer_cycle">
+        <dc:Bounds x="292" y="222" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_multi_cardinality_di"
+        bpmnElement="Task_multi_cardinality">
+        <dc:Bounds x="420" y="160" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_multi_string_handler_di"
+        bpmnElement="Task_multi_string_handler">
+        <dc:Bounds x="420" y="300" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_expression_preservation_di"
+        bpmnElement="Task_expression_preservation">
+        <dc:Bounds x="620" y="160" width="120" height="80" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="End_edit_preservation_di"
+        bpmnElement="End_edit_preservation">
+        <dc:Bounds x="820" y="182" width="36" height="36" />
+      </bpmndi:BPMNShape>
+      <bpmndi:BPMNEdge id="Flow_edit_start_handler_di"
+        bpmnElement="Flow_edit_start_handler">
+        <di:waypoint x="156" y="200" />
+        <di:waypoint x="220" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_edit_handler_cardinality_di"
+        bpmnElement="Flow_edit_handler_cardinality">
+        <di:waypoint x="340" y="200" />
+        <di:waypoint x="420" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_edit_cardinality_service_di"
+        bpmnElement="Flow_edit_cardinality_service">
+        <di:waypoint x="540" y="200" />
+        <di:waypoint x="620" y="200" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_edit_service_end_di"
+        bpmnElement="Flow_edit_service_end">
+        <di:waypoint x="740" y="200" />
+        <di:waypoint x="820" y="200" />
+      </bpmndi:BPMNEdge>
+    </bpmndi:BPMNPlane>
+  </bpmndi:BPMNDiagram>
+</bpmn:definitions>`
+
+const browserCandidates =
+  process.platform === 'win32'
+    ? [
+        'C:/Program Files/Google/Chrome/Application/chrome.exe',
+        'C:/Program Files (x86)/Microsoft/Edge/Application/msedge.exe',
+        'C:/Program Files/Microsoft/Edge/Application/msedge.exe',
+      ]
+    : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser']
+
+const executablePath = browserCandidates.find(existsSync)
+if (!executablePath) {
+  throw new Error('未找到 Chrome/Edge/Chromium，无法运行浏览器冒烟测试')
+}
+
+const server =
+  process.platform === 'win32'
+    ? spawn(
+        process.env.ComSpec || 'cmd.exe',
+        ['/d', '/s', '/c', `npm run preview -- --host 127.0.0.1 --port ${port}`],
+        { cwd: process.cwd(), stdio: ['ignore', 'pipe', 'pipe'] },
+      )
+    : spawn('npm', ['run', 'preview', '--', '--host', '127.0.0.1', '--port', String(port)], {
+        cwd: process.cwd(),
+        stdio: ['ignore', 'pipe', 'pipe'],
+      })
+
+let serverOutput = ''
+server.stdout.on('data', (chunk) => (serverOutput += chunk.toString()))
+server.stderr.on('data', (chunk) => (serverOutput += chunk.toString()))
+
+async function waitForServer() {
+  const deadline = Date.now() + 20_000
+  while (Date.now() < deadline) {
+    try {
+      const response = await fetch(origin)
+      if (response.ok) return
+    } catch {
+      // Vite is still starting.
+    }
+    await new Promise((resolve) => setTimeout(resolve, 150))
+  }
+  throw new Error(`预览服务启动超时\n${serverOutput}`)
+}
+
+function stopServer() {
+  if (server.killed) return
+  if (process.platform === 'win32' && server.pid) {
+    spawnSync('taskkill', ['/pid', String(server.pid), '/t', '/f'], { stdio: 'ignore' })
+  } else {
+    server.kill('SIGTERM')
+  }
+}
+
+function assert(condition, message) {
+  if (!condition) throw new Error(message)
+}
+
+function trackRuntimeErrors(page, runtimeErrors) {
+  page.on('pageerror', (error) => runtimeErrors.push(error.message))
+  page.on('console', (message) => {
+    if (message.type() === 'error') runtimeErrors.push(message.text())
+  })
+}
+
+async function waitForExtensionProperty(page, elementId, expected) {
+  await page.waitForFunction(
+    ({ targetId, target }) => {
+      const element = window.bpmnModeler.get('elementRegistry').get(targetId)
+      const containers = (element?.businessObject.extensionElements?.values || []).filter(
+        (value) => value.$type === 'flowable:Properties',
+      )
+      const property = containers
+        .flatMap((container) => container.values || [])
+        .find((value) => value.id === target?.id)
+      if (!target) return containers.every((container) => !(container.values || []).length)
+      return property?.name === target.name && property?.value === target.value
+    },
+    { targetId: elementId, target: expected },
+  )
+}
+
+async function waitForHeaderStatus(page, expected) {
+  await page.waitForFunction((text) => {
+    const matches = [...document.querySelectorAll('.designer-header .el-tag__content')].filter(
+      (element) => element.textContent?.trim() === text,
+    )
+    return matches.length === 1
+  }, expected)
+}
+
+async function waitForHandlerMultiInstanceState(page, expected) {
+  await page.waitForFunction((target) => {
+    const probe = window.__handlerMultiInstanceProbe
+    const task = window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_multi_handler')?.businessObject
+    const loop = task?.loopCharacteristics
+    const values = loop?.extensionElements?.values || []
+    const collection = values.find((value) => value.$type === 'flowable:Collection')
+    const aggregation = values.find(
+      (value) => value.$type === 'flowable:VariableAggregation',
+    )
+    return Boolean(
+      probe &&
+        loop === probe.loop &&
+        loop.extensionElements === probe.extensionElements &&
+        collection === probe.collection &&
+        aggregation === probe.aggregation &&
+        aggregation.get('bpmn:variable')[0] === probe.aggregationVariable &&
+        loop.completionCondition === probe.completionCondition &&
+        loop.isSequential === target.isSequential &&
+        loop.get('flowable:noWaitStatesAsyncLeave') === true &&
+        loop.get('flowable:collection') === undefined &&
+        loop.get('flowable:elementVariable') === 'item' &&
+        loop.get('flowable:elementIndexVariable') === 'itemIndex' &&
+        collection.delegateExpression === '${collectionHandler}' &&
+        collection.expression === target.collection &&
+        aggregation.target === 'reviews' &&
+        aggregation.delegateExpression === '${variableAggregator}' &&
+        aggregation.get('bpmn:variable')[0].source === 'approved' &&
+        loop.completionCondition.body === target.completionCondition,
+    )
+  }, expected)
+}
+
+async function waitForCardinalityMultiInstanceState(page, expectedCardinality) {
+  await page.waitForFunction((target) => {
+    const probe = window.__cardinalityMultiInstanceProbe
+    const task = window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_multi_cardinality')?.businessObject
+    const loop = task?.loopCharacteristics
+    const aggregation = loop?.extensionElements?.values?.find(
+      (value) => value.$type === 'flowable:VariableAggregation',
+    )
+    return Boolean(
+      probe &&
+        loop === probe.loop &&
+        loop.extensionElements === probe.extensionElements &&
+        aggregation === probe.aggregation &&
+        loop.loopCardinality === probe.loopCardinality &&
+        loop.completionCondition === probe.completionCondition &&
+        loop.get('flowable:noWaitStatesAsyncLeave') === true &&
+        loop.loopCardinality.body === target &&
+        loop.completionCondition.body === '${nrOfCompletedInstances >= 2}',
+    )
+  }, expectedCardinality)
+}
+
+async function waitForStringHandlerMultiInstanceState(page, expectedString) {
+  await page.waitForFunction((target) => {
+    const probe = window.__stringHandlerMultiInstanceProbe
+    const task = window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_multi_string_handler')?.businessObject
+    const loop = task?.loopCharacteristics
+    const collection = loop?.extensionElements?.values?.find(
+      (value) => value.$type === 'flowable:Collection',
+    )
+    return Boolean(
+      probe &&
+        loop === probe.loop &&
+        loop.extensionElements === probe.extensionElements &&
+        collection === probe.collection &&
+        loop.get('flowable:noWaitStatesAsyncLeave') === true &&
+        loop.get('flowable:collection') === undefined &&
+        collection.class === 'com.example.StringCollectionHandler' &&
+        collection.expression === undefined &&
+        collection.string === target,
+    )
+  }, expectedString)
+}
+
+async function waitForTimerPreservationState(page, expected) {
+  await page.waitForFunction((target) => {
+    const probe = window.__timerPreservationProbe
+    const boundary = window.bpmnModeler
+      .get('elementRegistry')
+      .get('Boundary_timer_cycle')?.businessObject
+    const definition = boundary?.eventDefinitions?.[0]
+    const timeCycle = definition?.timeCycle
+    return Boolean(
+      probe &&
+        definition === probe.definition &&
+        timeCycle === probe.timeCycle &&
+        timeCycle.body === target.body &&
+        timeCycle.get('flowable:endDate') === target.endDate &&
+        definition.get('flowable:businessCalendarName') === target.businessCalendar,
+    )
+  }, expected)
+}
+
+async function readCustomStructuredSemantics(page) {
+  return page.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    const task = registry.get('UserTask_custom').businessObject
+    const extensions = task.extensionElements?.values || []
+    const propertyContainer = extensions.find((value) => value.$type === 'flowable:Properties')
+    const formData = extensions.find((value) => value.$type === 'flowable:FormData')
+    const formField = formData?.fields?.[0]
+    const mapException = extensions.find((value) => value.$type === 'flowable:MapException')
+    const messageDefinition = registry.get('MessageCatch_custom').businessObject.eventDefinitions?.[0]
+    const signalDefinition = registry.get('SignalCatch_custom').businessObject.eventDefinitions?.[0]
+    const errorDefinition = registry.get('ErrorBoundary_custom').businessObject.eventDefinitions?.[0]
+    return {
+      propertyContainer: {
+        type: propertyContainer?.$type,
+        values: (propertyContainer?.values || []).map((value) => ({
+          type: value.$type,
+          id: value.id,
+          name: value.name,
+          value: value.value,
+        })),
+      },
+      formData: {
+        type: formData?.$type,
+        businessKey: formData?.businessKey,
+        fields: (formData?.fields || []).map((field) => ({
+          type: field.$type,
+          id: field.id,
+          label: field.label,
+          fieldType: field.type,
+          defaultValue: field.defaultValue,
+          properties: {
+            type: field.properties?.$type,
+            values: (field.properties?.values || []).map((value) => ({
+              type: value.$type,
+              id: value.id,
+              name: value.name,
+              value: value.value,
+            })),
+          },
+          validation: {
+            type: field.validation?.$type,
+            constraints: (field.validation?.constraints || []).map((constraint) => ({
+              type: constraint.$type,
+              name: constraint.name,
+              config: constraint.config,
+            })),
+          },
+        })),
+      },
+      mapException: {
+        type: mapException?.$type,
+        errorCode: mapException?.errorCode,
+        includeChildExceptions: mapException?.includeChildExceptions,
+        rootCause: mapException?.rootCause,
+        className: mapException?.class,
+      },
+      eventDefinitions: {
+        message: {
+          type: messageDefinition?.$type,
+          expression: messageDefinition?.get?.('flowable:messageExpression'),
+          referenceId: messageDefinition?.messageRef?.id,
+        },
+        signal: {
+          type: signalDefinition?.$type,
+          expression: signalDefinition?.get?.('flowable:signalExpression'),
+          referenceId: signalDefinition?.signalRef?.id,
+        },
+        error: {
+          type: errorDefinition?.$type,
+          variableName: errorDefinition?.get?.('flowable:errorVariableName'),
+          referenceId: errorDefinition?.errorRef?.id,
+        },
+      },
+    }
+  })
+}
+
+function assertStructuredCustomSemantics(actual, phase) {
+  const expected = {
+    propertyContainer: {
+      type: 'flowable:Properties',
+      values: [
+        {
+          type: 'flowable:Property',
+          id: 'Property_fixture',
+          name: 'fixtureProperty',
+          value: 'fixture-value',
+        },
+      ],
+    },
+    formData: {
+      type: 'flowable:FormData',
+      businessKey: '${businessKey}',
+      fields: [
+        {
+          type: 'flowable:FormField',
+          id: 'amount',
+          label: '金额',
+          fieldType: 'long',
+          defaultValue: '0',
+          properties: {
+            type: 'flowable:Properties',
+            values: [{ type: 'flowable:Property', id: 'prop_min', name: 'min', value: '1' }],
+          },
+          validation: {
+            type: 'flowable:Validation',
+            constraints: [{ type: 'flowable:Constraint', name: 'min', config: '1' }],
+          },
+        },
+      ],
+    },
+    mapException: {
+      type: 'flowable:MapException',
+      errorCode: 'ORDER_ERROR',
+      includeChildExceptions: true,
+      rootCause: 'java.lang.RuntimeException',
+      className: 'java.lang.IllegalStateException',
+    },
+    eventDefinitions: {
+      message: {
+        type: 'bpmn:MessageEventDefinition',
+        expression: '${dynamicMessage}',
+      },
+      signal: {
+        type: 'bpmn:SignalEventDefinition',
+        expression: '${dynamicSignal}',
+      },
+      error: {
+        type: 'bpmn:ErrorEventDefinition',
+        variableName: 'caughtErrorCode',
+      },
+    },
+  }
+  assert(
+    JSON.stringify(actual) === JSON.stringify(expected),
+    `${phase}结构化扩展语义发生变化：${JSON.stringify(actual)}`,
+  )
+}
+
+function assertStructuredCustomXml(xml, phase) {
+  const expectedSnippets = [
+    '<flowable:properties>',
+    '<flowable:property id="Property_fixture" name="fixtureProperty" value="fixture-value" />',
+    '<flowable:formData businessKey="${businessKey}">',
+    '<flowable:formField id="amount" label="金额" type="long" defaultValue="0">',
+    '<flowable:property id="prop_min" name="min" value="1" />',
+    '<flowable:validation>',
+    '<flowable:constraint name="min" config="1" />',
+    'flowable:errorVariableName="caughtErrorCode"',
+    'flowable:messageExpression="${dynamicMessage}"',
+    'flowable:signalExpression="${dynamicSignal}"',
+  ]
+  for (const snippet of expectedSnippets) {
+    assert(xml.includes(snippet), `${phase}丢失 XML 片段：${snippet}`)
+  }
+  assert(
+    /<flowable:mapException\b[^>]*\berrorCode="ORDER_ERROR"[^>]*\bincludeChildExceptions="true"[^>]*\brootCause="java\.lang\.RuntimeException"[^>]*>java\.lang\.IllegalStateException<\/flowable:mapException>/.test(
+      xml,
+    ),
+    `${phase}未完整保留 flowable:mapException`,
+  )
+}
+
+let browser
+try {
+  await waitForServer()
+  browser = await chromium.launch({ headless: true, executablePath })
+  const page = await browser.newPage({ viewport: { width: 1600, height: 960 } })
+  const runtimeErrors = []
+  trackRuntimeErrors(page, runtimeErrors)
+
+  const embeddedPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  trackRuntimeErrors(embeddedPage, runtimeErrors)
+  await embeddedPage.addInitScript(() => {
+    window.__flowableReadySnapshots = []
+    window.addEventListener('flowable-modeler-ready', () => {
+      window.__flowableReadySnapshots.push({
+        rootId: window.bpmnModeler?.get('canvas').getRootElement().businessObject.id,
+        loading: Boolean(document.querySelector('.canvas-loading')),
+      })
+    })
+  })
+  await embeddedPage.goto(`${origin}/?embedded=1`, { waitUntil: 'networkidle' })
+  assert(await embeddedPage.title() === 'Flowable Modeler', '浏览器标题未更新为项目名称')
+  await embeddedPage.waitForSelector('.djs-container')
+  await embeddedPage.waitForFunction(() => window.__flowableReadySnapshots.length === 1)
+  const embeddedReadySnapshot = await embeddedPage.evaluate(
+    () => window.__flowableReadySnapshots[0],
+  )
+  assert(
+    embeddedReadySnapshot.rootId === 'Process_leave_request',
+    'flowable-modeler-ready 在初始流程导入完成前触发',
+  )
+  assert(!embeddedReadySnapshot.loading, 'flowable-modeler-ready 触发时仍显示加载状态')
+  assert(await embeddedPage.locator('.designer-shell.is-embedded').isVisible(), '嵌入模式标记未生效')
+  assert(await embeddedPage.locator('.bpmn-toolbar').isVisible(), '嵌入模式未保留 BPMN 工具栏')
+  assert((await embeddedPage.locator('.designer-header').count()) === 0, '嵌入模式仍显示设计器页头')
+  assert(
+    (await embeddedPage.getByRole('button', { name: '保存草稿', exact: true }).count()) === 0,
+    '嵌入模式仍显示保存草稿按钮',
+  )
+  await embeddedPage.close()
+
+  const iframeHostPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  trackRuntimeErrors(iframeHostPage, runtimeErrors)
+  await iframeHostPage.route(`${origin}/host-shell`, (route) =>
+    route.fulfill({
+      contentType: 'text/html; charset=utf-8',
+      body: `<!doctype html><html><body style="margin:0"><iframe title="Flowable host" src="${origin}/?embedded=1" style="width:100vw;height:100vh;border:0"></iframe></body></html>`,
+    }),
+  )
+  await iframeHostPage.goto(`${origin}/host-shell`, { waitUntil: 'networkidle' })
+  const hostedDesignerFrame = iframeHostPage.frames().find((frame) => frame !== iframeHostPage.mainFrame())
+  assert(hostedDesignerFrame, '宿主页中的设计器 iframe 未加载')
+  await hostedDesignerFrame.waitForSelector('.djs-container')
+  await hostedDesignerFrame.waitForFunction(() => Boolean(window.flowableProcessModeler))
+  await iframeHostPage.evaluate(() => {
+    const childWindow = document.querySelector('iframe').contentWindow
+    window.__crossRealmHostCalls = { select: [] }
+    const clone = (value) => structuredClone(value)
+    childWindow.flowableProcessModeler.configureHost({
+      selectNodeForms(context) {
+        window.__crossRealmHostCalls.select.push(clone(context))
+        return [
+          {
+            id: undefined,
+            code: 'crossRealmForm',
+            name: '跨窗口表单',
+            title: null,
+            categoryCode: undefined,
+            categoryName: null,
+            hostMetadata: {
+              source: 'parent-window',
+              routing: { tenant: 'cross-realm' },
+            },
+          },
+        ]
+      },
+    })
+  })
+  await hostedDesignerFrame.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    window.bpmnModeler.get('selection').select(registry.get('UserTask_approve'))
+  })
+  const hostedFormSection = hostedDesignerFrame.locator('.el-collapse-item').filter({
+    has: hostedDesignerFrame.locator('.el-collapse-item__header', { hasText: '表单配置' }),
+  })
+  await hostedFormSection.locator('.el-collapse-item__header').click()
+  await hostedFormSection.locator('[data-testid="select-node-forms-from-host"]').click()
+  await hostedDesignerFrame.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const extension = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:NodeFormExp',
+    )
+    return extension?.body?.includes('crossRealmForm')
+  })
+  const hostedNodeFormXml = await hostedDesignerFrame.evaluate(() =>
+    window.flowableProcessModeler.getXML(),
+  )
+  assert(hostedNodeFormXml.includes('crossRealmForm'), '父窗口表单选择结果未写入 iframe BPMN')
+  assert(hostedNodeFormXml.includes('parent-window'), '跨窗口未知表单字段未保留')
+  assert(!hostedNodeFormXml.includes('"title"'), '跨窗口空可选表单字段未被省略')
+
+  const crossRealmHostCalls = await iframeHostPage.evaluate(() =>
+    structuredClone(window.__crossRealmHostCalls),
+  )
+  assert(crossRealmHostCalls.select.length === 1, '父窗口未收到可克隆的表单选择上下文')
+  await iframeHostPage.close()
+
+  await page.goto(origin, { waitUntil: 'networkidle' })
+  await page.waitForSelector('.djs-container')
+
+  const initial = await page.evaluate(() => ({
+    bridge: Boolean(window.bpmnModeler && window.flowableProcessModeler),
+    elements: document.querySelectorAll('.djs-element').length,
+    palette: document.querySelectorAll('.djs-palette .entry').length,
+    loading: Boolean(document.querySelector('.canvas-loading')),
+  }))
+  assert(initial.bridge, '集成桥未暴露')
+  assert(initial.elements >= 5, '默认 BPMN 流程未渲染')
+  assert(initial.palette >= 10, 'BPMN palette 未加载')
+  assert(!initial.loading, '设计器一直停留在加载状态')
+
+  const alignmentBefore = await page.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    const elements = [registry.get('StartEvent_apply'), registry.get('UserTask_approve')]
+    window.bpmnModeler.get('selection').select(elements)
+    return elements.map(({ id, x, y }) => ({ id, x, y }))
+  })
+  await page.waitForFunction(() => window.bpmnModeler.get('selection').get().length === 2)
+  await page.getByRole('button', { name: '对齐所选元素' }).click()
+  await page.getByRole('menuitem', { name: '顶部对齐', exact: true }).click()
+  await page.waitForFunction(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    return registry.get('StartEvent_apply').y === registry.get('UserTask_approve').y
+  })
+  const alignmentAfter = await page.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    return ['StartEvent_apply', 'UserTask_approve'].map((id) => {
+      const { x, y } = registry.get(id)
+      return { id, x, y }
+    })
+  })
+  assert(
+    alignmentAfter.some((element, index) => element.y !== alignmentBefore[index].y),
+    '顶部对齐没有改变所选元素坐标',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(
+    (expected) => {
+      const registry = window.bpmnModeler.get('elementRegistry')
+      return expected.every(({ id, x, y }) => {
+        const element = registry.get(id)
+        return element.x === x && element.y === y
+      })
+    },
+    alignmentBefore,
+  )
+
+  await page.evaluate(() => window.bpmnModeler.get('selection').select(null))
+  await page.locator('[data-testid="add-global-message"]').click()
+  await page.locator('[data-testid="global-definition-id"]').fill('Message_order_created')
+  await page.locator('[data-testid="global-definition-name"]').fill('订单已创建')
+  await page.locator('[data-testid="save-global-definition"]').click()
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .getDefinitions()
+      .rootElements.some((value) => value.$type === 'bpmn:Message' && value.id === 'Message_order_created'),
+  )
+  const messageClaimedAfterAdd = await page.evaluate(() => {
+    const message = window.bpmnModeler
+      .getDefinitions()
+      .rootElements.find((value) => value.id === 'Message_order_created')
+    return window.bpmnModeler.get('moddle').ids.assigned('Message_order_created') === message
+  })
+  assert(messageClaimedAfterAdd, '新增全局消息后没有注册 moddle ID')
+
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  const messageAfterUndo = await page.evaluate(() => ({
+    exists: window.bpmnModeler
+      .getDefinitions()
+      .rootElements.some((value) => value.$type === 'bpmn:Message' && value.id === 'Message_order_created'),
+    claimed: Boolean(window.bpmnModeler.get('moddle').ids.assigned('Message_order_created')),
+  }))
+  assert(!messageAfterUndo.exists, '全局消息定义撤销失败')
+  assert(!messageAfterUndo.claimed, '撤销新增全局消息后仍占用 moddle ID')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const message = window.bpmnModeler
+      .getDefinitions()
+      .rootElements.find((value) => value.id === 'Message_order_created')
+    return window.bpmnModeler.get('moddle').ids.assigned('Message_order_created') === message
+  })
+
+  const createdMessageRow = page.locator('.list-item').filter({ hasText: 'Message_order_created' })
+  await createdMessageRow.locator('button').first().click()
+  await page.locator('[data-testid="global-definition-id"]').fill('Message_order_renamed')
+  await page.locator('[data-testid="save-global-definition"]').click()
+  await page.waitForFunction(() => {
+    const message = window.bpmnModeler
+      .getDefinitions()
+      .rootElements.find((value) => value.id === 'Message_order_renamed')
+    const ids = window.bpmnModeler.get('moddle').ids
+    return message && ids.assigned('Message_order_renamed') === message && !ids.assigned('Message_order_created')
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const message = window.bpmnModeler
+      .getDefinitions()
+      .rootElements.find((value) => value.id === 'Message_order_created')
+    const ids = window.bpmnModeler.get('moddle').ids
+    return message && ids.assigned('Message_order_created') === message && !ids.assigned('Message_order_renamed')
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+
+  const renamedMessageRow = page.locator('.list-item').filter({ hasText: 'Message_order_renamed' })
+  await renamedMessageRow.locator('button').last().click()
+  await page.locator('.el-message-box:visible').getByRole('button', { name: '取消' }).click()
+  await page.locator('.el-message-box').waitFor({ state: 'hidden' })
+  assert(await renamedMessageRow.isVisible(), '取消删除后全局消息被移除')
+
+  await renamedMessageRow.locator('button').last().click()
+  await page.locator('.el-message-box:visible').getByRole('button', { name: '确定' }).click()
+  await page.waitForFunction(() => {
+    const definitions = window.bpmnModeler.getDefinitions()
+    return (
+      !definitions.rootElements.some((value) => value.id === 'Message_order_renamed') &&
+      !window.bpmnModeler.get('moddle').ids.assigned('Message_order_renamed')
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const message = window.bpmnModeler
+      .getDefinitions()
+      .rootElements.find((value) => value.id === 'Message_order_renamed')
+    return window.bpmnModeler.get('moddle').ids.assigned('Message_order_renamed') === message
+  })
+
+  await page.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    window.bpmnModeler.get('selection').select(registry.get('UserTask_approve'))
+  })
+
+  const idInput = page
+    .locator('.el-form-item')
+    .filter({ has: page.locator('.el-form-item__label', { hasText: '标识（ID）' }) })
+    .first()
+    .locator('input')
+  await idInput.fill('Message_order_renamed')
+  await idInput.press('Tab')
+  assert((await idInput.inputValue()) === 'UserTask_approve', '普通元素接受了全局定义占用的 ID')
+
+  const assigneeInput = page
+    .locator('.el-form-item')
+    .filter({ has: page.locator('.el-form-item__label', { hasText: '办理人' }) })
+    .first()
+    .locator('input')
+  await assigneeInput.fill('${manager}')
+  await assigneeInput.press('Tab')
+
+  const xml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(xml.includes('xmlns:flowable="http://flowable.org/bpmn"'), 'Flowable namespace 不正确')
+  assert(xml.includes('flowable:assignee="${manager}"'), '用户任务办理人未写回 XML')
+
+  await page.locator('[data-testid="assignment-mode"] .el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: '静态分配 static' })
+    .click()
+
+  const staticAssignmentJson = '[{"name":"A&B","tabKey":"user","value":"manager"}]'
+  await page.locator('[data-testid="static-assignee-json"]').fill(staticAssignmentJson)
+  await page.locator('[data-testid="save-static-assignee-json"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:StaticAssigneeVariables',
+    )
+  })
+
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  const undoMetadataXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(!undoMetadataXml.includes('flowable:staticAssigneeVariables'), '业务 JSON 撤销失败')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+
+  const nodeFormInput = page.locator('[data-testid="node-form-exp-json"]')
+  const formSection = page.locator('.el-collapse-item').filter({
+    has: page.locator('.el-collapse-item__header', { hasText: '表单配置' }),
+  })
+  await formSection.locator('.el-collapse-item__header').click()
+  const nodeFormSelectionTab = formSection.getByRole('tab', { name: '已选表单', exact: true })
+  const nodeFormJsonTab = formSection.getByRole('tab', { name: '高级 JSON', exact: true })
+  await nodeFormJsonTab.click()
+  await nodeFormInput.waitFor({ state: 'visible' })
+  const unsavedNodeFormJson = '[{"code":"unsavedForm","name":"未保存草稿"}]'
+  await nodeFormInput.fill(unsavedNodeFormJson)
+
+  const freeApprovalSection = page.locator('.el-collapse-item').filter({
+    has: page.locator('.el-collapse-item__header', { hasText: '自由审批' }),
+  })
+  await freeApprovalSection.locator('.el-collapse-item__header').click()
+  const freeApprovalStructuredTab = freeApprovalSection.getByRole('tab', {
+    name: '结构化配置',
+    exact: true,
+  })
+  const freeApprovalJsonTab = freeApprovalSection.getByRole('tab', {
+    name: '高级 JSON',
+    exact: true,
+  })
+  await freeApprovalJsonTab.click()
+  const seededNextUser = {
+    name: '指定审批人',
+    code: 'nextApprover',
+    multiple: 'false',
+    hostMetadata: {
+      source: 'host-library',
+      routing: { strategy: 'retain', levels: [1, 2] },
+    },
+  }
+  const nextUserJson = JSON.stringify([seededNextUser])
+  const nextUserInput = page.locator('[data-testid="next-user-json"]')
+  await nextUserInput.waitFor({ state: 'visible' })
+  await nextUserInput.fill(nextUserJson)
+  await page.locator('[data-testid="save-next-user-json"]').click()
+  assert(
+    (await nodeFormInput.inputValue()) === unsavedNodeFormJson,
+    '保存其他业务扩展时覆盖了未保存的 NodeFormExp 草稿',
+  )
+
+  const seededNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  await freeApprovalStructuredTab.click()
+  const nextUserRow = freeApprovalSection.locator('[data-testid="next-user-row"]').first()
+  await nextUserRow.waitFor({ state: 'visible' })
+  await nextUserRow.getByRole('button', { name: '编辑下一审批人' }).click()
+  const editedNextUser = {
+    ...seededNextUser,
+    name: '指定审批人（已编辑）',
+    code: 'nextApproverEdited',
+    multiple: true,
+  }
+  await page.locator('[data-testid="free-approval-name"]').fill(editedNextUser.name)
+  await page.locator('[data-testid="free-approval-code"]').fill(editedNextUser.code)
+  await page.locator('[data-testid="free-approval-multiple"]').click()
+  await page.locator('[data-testid="save-free-approval"]').click()
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const extension = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:NextUser',
+    )
+    return extension?.body && JSON.stringify(JSON.parse(extension.body)) === JSON.stringify([expected])
+  }, editedNextUser)
+
+  const editedNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(editedNextUserXml !== seededNextUserXml, '结构化编辑 NextUser 未修改 BPMN XML')
+  assert(
+    editedNextUserXml.includes('"strategy": "retain"'),
+    '结构化编辑 NextUser 时丢失未知嵌套字段',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  const undoNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(undoNextUserXml === seededNextUserXml, '结构化编辑 NextUser 撤销后未恢复原始 XML')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  const redoNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(redoNextUserXml === editedNextUserXml, '结构化编辑 NextUser 重做后未恢复编辑后的 XML')
+
+  const nextSequenceFlow = { name: '审批通过', code: 'Flow_approved' }
+  await freeApprovalSection.locator('[data-testid="add-next-sequence-flow"]').click()
+  await page.locator('[data-testid="free-approval-name"]').fill(nextSequenceFlow.name)
+  await page.locator('[data-testid="free-approval-code"]').fill(nextSequenceFlow.code)
+  await page.locator('[data-testid="save-free-approval"]').click()
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const extension = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:NextSequenceFlow',
+    )
+    return extension?.body && JSON.stringify(JSON.parse(extension.body)) === JSON.stringify([expected])
+  }, nextSequenceFlow)
+
+  const addedNextSequenceFlowXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    addedNextSequenceFlowXml.includes('<flowable:nextSequenceFlow>') &&
+      addedNextSequenceFlowXml.includes('"code": "Flow_approved"'),
+    '结构化新增 NextSequenceFlow 未写入 BPMN XML',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  const undoNextSequenceFlowXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    undoNextSequenceFlowXml === editedNextUserXml &&
+      !undoNextSequenceFlowXml.includes('<flowable:nextSequenceFlow>'),
+    '结构化新增 NextSequenceFlow 撤销失败',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  const redoNextSequenceFlowXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    redoNextSequenceFlowXml === addedNextSequenceFlowXml,
+    '结构化新增 NextSequenceFlow 重做后未恢复 XML',
+  )
+
+  await page.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    window.bpmnModeler.get('selection').select(registry.get('StartEvent_apply'))
+  })
+  await page.locator('.element-summary').getByText('提交申请', { exact: true }).waitFor()
+  await page.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    window.bpmnModeler.get('selection').select(registry.get('UserTask_approve'))
+  })
+  await page.locator('.element-summary').getByText('部门审批', { exact: true }).waitFor()
+  const formSectionHeader = formSection.locator('.el-collapse-item__header')
+  assert(
+    (await formSectionHeader.getAttribute('aria-expanded')) === 'false',
+    '切换元素后表单配置没有按聚焦策略收起',
+  )
+  await formSectionHeader.click()
+  await nodeFormJsonTab.click()
+  await nodeFormInput.waitFor({ state: 'visible' })
+  assert(
+    (await nodeFormInput.inputValue()) === unsavedNodeFormJson,
+    '切换元素后未恢复 NodeFormExp 草稿',
+  )
+
+  const nodeFormJson = '[{"code":"leaveForm","name":"请假申请表","tenant":"default"}]'
+  await nodeFormInput.fill(nodeFormJson)
+  await page.locator('[data-testid="save-node-form-exp-json"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:NodeFormExp' && value.body.includes('leaveForm'),
+    )
+  })
+  await nodeFormSelectionTab.click()
+  const syncNodeFormButton = page.locator('[data-testid="sync-node-form-key"]')
+  await syncNodeFormButton.waitFor({ state: 'visible' })
+  await syncNodeFormButton.press('Enter')
+
+  const metadataXmlBeforeSync = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    metadataXmlBeforeSync.includes('flowable:assignee="${manager}"'),
+    '保存 static 元数据时不应静默覆盖基础办理人字段',
+  )
+  assert(
+    metadataXmlBeforeSync.includes('<flowable:assigneeType>static</flowable:assigneeType>'),
+    'AssigneeType 未通过属性面板写回 XML',
+  )
+  assert(
+    metadataXmlBeforeSync.includes(
+      '<flowable:staticAssigneeVariables>[{"name":"A&amp;B","tabKey":"user","value":"manager"}]</flowable:staticAssigneeVariables>',
+    ),
+    'StaticAssigneeVariables 未通过属性面板完整写回 XML',
+  )
+  assert(
+    metadataXmlBeforeSync.includes('<flowable:nextUser>') &&
+      metadataXmlBeforeSync.includes('"code": "nextApproverEdited"') &&
+      metadataXmlBeforeSync.includes('"strategy": "retain"'),
+    'NextUser 未通过属性面板写回 XML',
+  )
+  assert(
+    metadataXmlBeforeSync.includes('<flowable:nextSequenceFlow>') &&
+      metadataXmlBeforeSync.includes('"code": "Flow_approved"'),
+    'NextSequenceFlow 未通过结构化配置写回 XML',
+  )
+  assert(
+    metadataXmlBeforeSync.includes(
+      '<flowable:nodeFormExp>[{"code":"leaveForm","name":"请假申请表","tenant":"default"}]</flowable:nodeFormExp>',
+    ),
+    'NodeFormExp 未通过属性面板写回 XML',
+  )
+  assert(metadataXmlBeforeSync.includes('flowable:formKey="leaveForm"'), 'NodeFormExp code 未同步到 formKey')
+
+  await page.locator('[data-testid="sync-static-assignment"]').click()
+  const metadataXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(metadataXml.includes('flowable:assignee="manager"'), '静态分配 value 未显式同步到办理人')
+
+  const hostSelectedNodeForm = {
+    id: 'Form_host_leave',
+    code: 'hostLeaveForm',
+    name: '宿主请假表单',
+    title: '请假申请',
+    categoryCode: 'hr',
+    categoryName: '人事流程',
+    hostMetadata: {
+      source: 'host-library',
+      routing: { tenant: 'acme', versions: [1, 2] },
+    },
+  }
+  const staleHostSelectedNodeForm = {
+    code: 'staleHostForm',
+    name: '过期宿主表单',
+  }
+  await page.evaluate(() => {
+    window.__staleNodeFormSelectionSettled = false
+    window.__nodeFormHostAdapter = {
+      selectNodeForms() {
+        return new Promise((resolve) => {
+          window.__resolveStaleNodeFormSelection = resolve
+        }).finally(() => {
+          setTimeout(() => {
+            window.__staleNodeFormSelectionSettled = true
+          }, 0)
+        })
+      },
+    }
+    window.flowableProcessModeler.configureHost(window.__nodeFormHostAdapter)
+  })
+
+  const selectNodeFormsButton = formSection.locator(
+    '[data-testid="select-node-forms-from-host"]',
+  )
+  await selectNodeFormsButton.waitFor({ state: 'visible' })
+  await selectNodeFormsButton.click()
+  await page.waitForFunction(() => typeof window.__resolveStaleNodeFormSelection === 'function')
+
+  const nodeFormDraftJson = '[{"code":"draftOnlyForm","name":"未提交表单草稿"}]'
+  await nodeFormJsonTab.click()
+  await nodeFormInput.fill(nodeFormDraftJson)
+  await page.evaluate(
+    ({ selectedForm, staleForm }) => {
+      window.__nodeFormHostCalls = { select: [] }
+      const clone = (value) => structuredClone(value)
+      const adapter = window.__nodeFormHostAdapter
+      adapter.selectNodeForms = (context) => {
+        window.__nodeFormHostCalls.select.push(clone(context))
+        return [clone(selectedForm)]
+      }
+      window.flowableProcessModeler.configureHost(adapter)
+      window.__resolveStaleNodeFormSelection([clone(staleForm)])
+    },
+    {
+      selectedForm: hostSelectedNodeForm,
+      staleForm: staleHostSelectedNodeForm,
+    },
+  )
+  await page.waitForFunction(() => window.__staleNodeFormSelectionSettled)
+  const stateAfterStaleSelection = await page.evaluate(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const extension = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:NodeFormExp',
+    )
+    const draftElement = document.querySelector('[data-testid="node-form-exp-json"]')
+    return {
+      committed: extension?.body ? JSON.parse(extension.body) : [],
+      draft: draftElement?.value ?? draftElement?.querySelector('textarea')?.value,
+    }
+  })
+  assert(
+    stateAfterStaleSelection.committed[0]?.code === 'leaveForm',
+    '旧宿主适配器的异步结果覆盖了已提交 NodeFormExp',
+  )
+  assert(
+    stateAfterStaleSelection.draft === nodeFormDraftJson,
+    '旧宿主适配器的异步结果覆盖了未提交 NodeFormExp 草稿',
+  )
+
+  await nodeFormSelectionTab.click()
+  await selectNodeFormsButton.click()
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const extension = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:NodeFormExp',
+    )
+    if (!extension?.body) return false
+    try {
+      return JSON.stringify(JSON.parse(extension.body)) === JSON.stringify([expected])
+    } catch {
+      return false
+    }
+  }, hostSelectedNodeForm)
+  const selectedNodeForms = await page.evaluate(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const extension = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:NodeFormExp',
+    )
+    return JSON.parse(extension.body)
+  })
+  assert(
+    JSON.stringify(selectedNodeForms) === JSON.stringify([hostSelectedNodeForm]),
+    `宿主表单选择结果未完整保留未知嵌套字段：${JSON.stringify(selectedNodeForms)}`,
+  )
+
+  await syncNodeFormButton.click()
+  await page.waitForFunction(
+    (expectedFormKey) =>
+      window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject.formKey ===
+      expectedFormKey,
+    hostSelectedNodeForm.code,
+  )
+
+  const xmlBeforeInvalidHostSelection = await page.evaluate(() =>
+    window.flowableProcessModeler.getXML(),
+  )
+  await page.evaluate(() => {
+    window.flowableProcessModeler.configureHost({
+      selectNodeForms(context) {
+        structuredClone(context)
+        return [{ code: 123, name: { label: '错误表单名' } }]
+      },
+    })
+  })
+  await selectNodeFormsButton.waitFor({ state: 'visible' })
+  await selectNodeFormsButton.click()
+  await page
+    .locator('.el-message--error:visible')
+    .filter({ hasText: '非空字符串 code' })
+    .waitFor()
+  const xmlAfterInvalidHostSelection = await page.evaluate(() =>
+    window.flowableProcessModeler.getXML(),
+  )
+  assert(
+    xmlAfterInvalidHostSelection === xmlBeforeInvalidHostSelection,
+    '宿主返回非字符串 code/name 时仍修改了 NodeFormExp',
+  )
+  await page.evaluate(() => window.flowableProcessModeler.configureHost(null))
+
+  const problems = await page.evaluate(() => window.flowableProcessModeler.validate())
+  assert(Array.isArray(problems), '流程校验没有返回结果数组')
+
+  const extensionPropertySection = page.locator('.el-collapse-item').filter({
+    has: page.locator('.collapse-title', { hasText: '扩展属性' }),
+  })
+  await extensionPropertySection.locator('.el-collapse-item__header').click()
+
+  const originalExtensionProperty = {
+    id: 'Property_smoke',
+    name: 'approvalLevel',
+    value: 'department',
+  }
+  const editedExtensionProperty = {
+    ...originalExtensionProperty,
+    name: 'approvalScope',
+    value: 'company',
+  }
+
+  await extensionPropertySection.locator('[data-testid="add-extension-property"]').click()
+  await page.locator('[data-testid="extension-property-id"]').fill(originalExtensionProperty.id)
+  await page.locator('[data-testid="extension-property-name"]').fill(originalExtensionProperty.name)
+  await page.locator('[data-testid="extension-property-value"]').fill(originalExtensionProperty.value)
+  await page.locator('[data-testid="save-extension-property"]').click()
+  await waitForExtensionProperty(page, 'UserTask_approve', originalExtensionProperty)
+
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForExtensionProperty(page, 'UserTask_approve', null)
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForExtensionProperty(page, 'UserTask_approve', originalExtensionProperty)
+
+  let extensionPropertyRow = page
+    .locator('[data-testid="extension-property-row"]')
+    .filter({ hasText: originalExtensionProperty.name })
+  await extensionPropertyRow.getByRole('button', { name: '编辑扩展属性' }).click()
+  await page.locator('[data-testid="extension-property-name"]').fill(editedExtensionProperty.name)
+  await page.locator('[data-testid="extension-property-value"]').fill(editedExtensionProperty.value)
+  await page.locator('[data-testid="save-extension-property"]').click()
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForExtensionProperty(page, 'UserTask_approve', originalExtensionProperty)
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  extensionPropertyRow = page.locator('[data-testid="extension-property-row"]')
+  assert((await extensionPropertyRow.count()) === 1, '编辑扩展属性后列表行数量异常')
+  await extensionPropertyRow.getByRole('button', { name: '删除扩展属性' }).click()
+  await page.locator('.el-message-box:visible').getByRole('button', { name: '确定' }).click()
+  await waitForExtensionProperty(page, 'UserTask_approve', null)
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForExtensionProperty(page, 'UserTask_approve', null)
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  let extensionPropertyXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  const serializedExtensionProperty =
+    '<flowable:property id="Property_smoke" name="approvalScope" value="company" />'
+  assert(extensionPropertyXml.includes(serializedExtensionProperty), '扩展属性未写回 XML')
+  for (let cycle = 1; cycle <= 2; cycle += 1) {
+    const warningCount = await page.evaluate(
+      async ({ fixture, fileName }) =>
+        (await window.flowableProcessModeler.importXML(fixture, fileName)).warnings.length,
+      {
+        fixture: extensionPropertyXml,
+        fileName: `extension-property-cycle-${cycle}.bpmn20.xml`,
+      },
+    )
+    assert(warningCount === 0, `扩展属性第 ${cycle} 次导入产生兼容警告`)
+    await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+    extensionPropertyXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+    assert(
+      extensionPropertyXml.includes(serializedExtensionProperty),
+      `扩展属性第 ${cycle} 次往返后丢失`,
+    )
+  }
+
+  const concurrentImport = await page.evaluate(async (latestFixture) => {
+    const modeler = window.bpmnModeler
+    const bridge = window.flowableProcessModeler
+    const moddle = modeler.get('moddle')
+    const staleFixture = latestFixture
+      .replaceAll('Process_leave_request', 'Process_concurrent_stale')
+      .replace('name="请假审批流程"', 'name="并发导入旧请求"')
+    const originalFromXML = moddle.fromXML
+    let parseCalls = 0
+
+    moddle.fromXML = async function delayedFirstParse(xml, ...args) {
+      parseCalls += 1
+      if (parseCalls === 1) {
+        await new Promise((resolve) => setTimeout(resolve, 80))
+      }
+      return originalFromXML.call(moddle, xml, ...args)
+    }
+
+    try {
+      const staleImport = bridge.importXML(staleFixture, 'concurrent-stale.bpmn20.xml')
+      const latestImport = bridge.importXML(latestFixture, 'concurrent-latest.bpmn20.xml')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+      const loadingDuringImport = Boolean(document.querySelector('.canvas-loading'))
+      const designerMain = document.querySelector('.designer-main')
+      const saveDraftButton = [...document.querySelectorAll('button')].find(
+        (button) => button.textContent?.trim() === '保存草稿',
+      )
+      const mainInertDuringImport = Boolean(designerMain?.inert)
+      const mainHasInertAttributeDuringImport = Boolean(designerMain?.hasAttribute('inert'))
+      const mainBusyDuringImport = designerMain?.getAttribute('aria-busy')
+      const toolbarLockedDuringImport = Boolean(saveDraftButton?.disabled)
+      const results = await Promise.all([staleImport, latestImport])
+      return {
+        loadingDuringImport,
+        mainInertDuringImport,
+        mainHasInertAttributeDuringImport,
+        mainBusyDuringImport,
+        toolbarLockedDuringImport,
+        parseCalls,
+        warningCounts: results.map((result) => result.warnings.length),
+        finalProcessId: modeler.get('canvas').getRootElement().businessObject.id,
+      }
+    } finally {
+      moddle.fromXML = originalFromXML
+    }
+  }, extensionPropertyXml)
+  assert(concurrentImport.loadingDuringImport, '并发导入期间未保持加载状态')
+  assert(
+    concurrentImport.mainInertDuringImport && concurrentImport.mainHasInertAttributeDuringImport,
+    `导入期间未冻结画布和属性面板交互：${JSON.stringify(concurrentImport)}`,
+  )
+  assert(concurrentImport.toolbarLockedDuringImport, '导入期间工具栏仍允许执行模型操作')
+  assert(concurrentImport.parseCalls === 2, '并发导入未执行全部宿主请求')
+  assert(
+    concurrentImport.warningCounts.every((count) => count === 0),
+    '并发导入产生兼容警告',
+  )
+  assert(
+    concurrentImport.finalProcessId === 'Process_leave_request',
+    '并发导入结束后不是最后一次宿主调用的流程',
+  )
+  await page.locator('.canvas-loading').waitFor({ state: 'hidden' })
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  const rollbackBaseline = await page.evaluate(async () => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('modeling').updateProperties(task, { name: '回滚基线审批' })
+    modeler.get('selection').select(task)
+    const viewbox = modeler.get('canvas').viewbox()
+    return {
+      xml: await window.flowableProcessModeler.getXML(),
+      viewbox: {
+        x: viewbox.x,
+        y: viewbox.y,
+        width: viewbox.width,
+        height: viewbox.height,
+      },
+    }
+  })
+  await waitForHeaderStatus(page, '未保存')
+  await page.locator('.element-summary').getByText('回滚基线审批', { exact: true }).waitFor()
+
+  const parseFailureRollback = await page.evaluate(async () => {
+    let rejected = false
+    try {
+      await window.bpmnModeler.importXML('<bpmn:definitions')
+    } catch {
+      rejected = true
+    }
+    return {
+      rejected,
+      canUndo: window.bpmnModeler.get('commandStack').canUndo(),
+      rootId: window.bpmnModeler.get('canvas').getRootElement().businessObject.id,
+      xml: await window.flowableProcessModeler.getXML(),
+    }
+  })
+  assert(parseFailureRollback.rejected, '非法 XML 导入没有拒绝 Promise')
+  assert(parseFailureRollback.canUndo, '解析失败后丢失了原流程 undo 历史')
+  assert(parseFailureRollback.rootId === 'Process_leave_request', '解析失败后画布根流程发生变化')
+  assert(parseFailureRollback.xml === rollbackBaseline.xml, '解析失败后导出 XML 发生变化')
+
+  const missingTargetFixture = rollbackBaseline.xml
+    .replaceAll('Process_leave_request', 'Process_failed_target_probe')
+    .replace('name="请假审批流程"', 'name="失败目标候选流程"')
+  const missingTargetRollback = await page.evaluate(async (fixture) => {
+    let rejected = false
+    let message = ''
+    try {
+      await window.bpmnModeler.importXML(fixture, 'BPMNDiagram_missing_probe')
+    } catch (error) {
+      rejected = true
+      message = error?.message || String(error)
+    }
+    const modeler = window.bpmnModeler
+    const viewbox = modeler.get('canvas').viewbox()
+    return {
+      rejected,
+      message,
+      rootId: modeler.get('canvas').getRootElement().businessObject.id,
+      taskName: modeler.get('elementRegistry').get('UserTask_approve').businessObject.name,
+      selectionIds: modeler.get('selection').get().map((element) => element.id),
+      viewbox: {
+        x: viewbox.x,
+        y: viewbox.y,
+        width: viewbox.width,
+        height: viewbox.height,
+      },
+      xml: await window.flowableProcessModeler.getXML(),
+    }
+  }, missingTargetFixture)
+  assert(missingTargetRollback.rejected, '不存在的 BPMNDiagram 目标没有拒绝导入')
+  assert(missingTargetRollback.message.includes('not found'), '目标 Diagram 失败原因不正确')
+  assert(
+    missingTargetRollback.rootId === 'Process_leave_request' &&
+      missingTargetRollback.taskName === '回滚基线审批',
+    '目标 Diagram 失败后画布未恢复原流程',
+  )
+  assert(
+    JSON.stringify(missingTargetRollback.selectionIds) === JSON.stringify(['UserTask_approve']),
+    '目标 Diagram 失败后未恢复原选择',
+  )
+  for (const key of ['x', 'y', 'width', 'height']) {
+    assert(
+      Math.abs(missingTargetRollback.viewbox[key] - rollbackBaseline.viewbox[key]) < 0.01,
+      `目标 Diagram 失败后未恢复视口 ${key}`,
+    )
+  }
+  assert(
+    missingTargetRollback.xml === rollbackBaseline.xml &&
+      !missingTargetRollback.xml.includes('Process_failed_target_probe'),
+    '目标 Diagram 失败后画布与导出 definitions 不一致',
+  )
+  await waitForHeaderStatus(page, '未保存')
+  await page.locator('.element-summary').getByText('回滚基线审批', { exact: true }).waitFor()
+
+  const dualDiagramBaseline = await page.evaluate(async (sourceXml) => {
+    const BPMN_DI_NAMESPACE = 'http://www.omg.org/spec/BPMN/20100524/DI'
+    const DC_NAMESPACE = 'http://www.omg.org/spec/DD/20100524/DC'
+    const DI_NAMESPACE = 'http://www.omg.org/spec/DD/20100524/DI'
+    const secondaryDiagramId = 'BPMNDiagram_rollback_secondary'
+    const documentNode = new DOMParser().parseFromString(sourceXml, 'application/xml')
+    const parserError = documentNode.querySelector('parsererror')
+    if (parserError) throw new Error(`双 DI 测试 XML 解析失败：${parserError.textContent}`)
+
+    const diagrams = [...documentNode.getElementsByTagNameNS(BPMN_DI_NAMESPACE, 'BPMNDiagram')]
+    if (diagrams.length !== 1) {
+      throw new Error(`双 DI 测试需要一个基准 BPMNDiagram，实际为 ${diagrams.length}`)
+    }
+    const primaryDiagram = diagrams[0]
+    const primaryTaskShape = [...primaryDiagram.getElementsByTagNameNS(BPMN_DI_NAMESPACE, 'BPMNShape')]
+      .find((shape) => shape.getAttribute('bpmnElement') === 'UserTask_approve')
+    const primaryTaskBounds = primaryTaskShape?.getElementsByTagNameNS(DC_NAMESPACE, 'Bounds')[0]
+    if (!primaryTaskBounds) throw new Error('双 DI 测试找不到基准 UserTask_approve 坐标')
+
+    const secondaryDiagram = primaryDiagram.cloneNode(true)
+    for (const element of [secondaryDiagram, ...secondaryDiagram.getElementsByTagName('*')]) {
+      const id = element.getAttribute('id')
+      if (id) element.setAttribute('id', `${id}_rollback_secondary`)
+    }
+    secondaryDiagram.setAttribute('id', secondaryDiagramId)
+    const secondaryPlane = secondaryDiagram.getElementsByTagNameNS(BPMN_DI_NAMESPACE, 'BPMNPlane')[0]
+    if (!secondaryPlane) throw new Error('双 DI 测试的第二张图缺少 BPMNPlane')
+    secondaryPlane.setAttribute('id', 'BPMNPlane_rollback_secondary')
+
+    for (const bounds of secondaryDiagram.getElementsByTagNameNS(DC_NAMESPACE, 'Bounds')) {
+      bounds.setAttribute('x', String(Number(bounds.getAttribute('x')) + 640))
+      bounds.setAttribute('y', String(Number(bounds.getAttribute('y')) + 120))
+    }
+    for (const waypoint of secondaryDiagram.getElementsByTagNameNS(DI_NAMESPACE, 'waypoint')) {
+      waypoint.setAttribute('x', String(Number(waypoint.getAttribute('x')) + 640))
+      waypoint.setAttribute('y', String(Number(waypoint.getAttribute('y')) + 120))
+    }
+    documentNode.documentElement.append(secondaryDiagram)
+
+    const fixture = new XMLSerializer().serializeToString(documentNode)
+    const result = await window.bpmnModeler.importXML(fixture, secondaryDiagramId)
+    const modeler = window.bpmnModeler
+    const canvas = modeler.get('canvas')
+    const root = canvas.getRootElement()
+    const definitions = modeler.getDefinitions()
+    const activeDiagram = definitions.diagrams.find(
+      (diagram) => diagram.plane === root.di || diagram.id === root.di?.$parent?.id,
+    )
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('selection').select(task)
+    return {
+      warningCount: result.warnings.length,
+      xml: await window.flowableProcessModeler.getXML(),
+      diagramCount: definitions.diagrams.length,
+      diagramOwners: definitions.diagrams.map((diagram) => diagram.plane?.bpmnElement?.id),
+      activeDiagramId: activeDiagram?.id,
+      primaryTask: {
+        x: Number(primaryTaskBounds.getAttribute('x')),
+        y: Number(primaryTaskBounds.getAttribute('y')),
+      },
+      task: { x: task.x, y: task.y },
+    }
+  }, rollbackBaseline.xml)
+  assert(dualDiagramBaseline.warningCount === 0, '双 DI 基准导入产生兼容警告')
+  assert(
+    dualDiagramBaseline.diagramCount === 2 &&
+      dualDiagramBaseline.diagramOwners.every((ownerId) => ownerId === 'Process_leave_request'),
+    `双 DI 基准未指向同一流程：${JSON.stringify(dualDiagramBaseline)}`,
+  )
+  assert(
+    dualDiagramBaseline.activeDiagramId === 'BPMNDiagram_rollback_secondary',
+    '强制导入后未激活第二张 BPMNDiagram',
+  )
+  assert(
+    Math.abs(dualDiagramBaseline.task.x - (dualDiagramBaseline.primaryTask.x + 640)) < 0.01 &&
+      Math.abs(dualDiagramBaseline.task.y - (dualDiagramBaseline.primaryTask.y + 120)) < 0.01,
+    '第二张 BPMNDiagram 未使用其独立坐标',
+  )
+
+  const dualDiagramRollback = await page.evaluate(async (fixture) => {
+    let rejected = false
+    let message = ''
+    try {
+      await window.bpmnModeler.importXML(fixture, 'BPMNDiagram_rollback_missing')
+    } catch (error) {
+      rejected = true
+      message = error?.message || String(error)
+    }
+    const modeler = window.bpmnModeler
+    const canvas = modeler.get('canvas')
+    const root = canvas.getRootElement()
+    const definitions = modeler.getDefinitions()
+    const activeDiagram = definitions.diagrams.find(
+      (diagram) => diagram.plane === root.di || diagram.id === root.di?.$parent?.id,
+    )
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    return {
+      rejected,
+      message,
+      activeDiagramId: activeDiagram?.id,
+      task: { x: task.x, y: task.y },
+      selectionIds: modeler.get('selection').get().map((element) => element.id),
+      xml: await window.flowableProcessModeler.getXML(),
+    }
+  }, dualDiagramBaseline.xml)
+  assert(dualDiagramRollback.rejected, '双 DI 的不存在目标没有拒绝导入')
+  assert(dualDiagramRollback.message.includes('not found'), '双 DI 目标失败原因不正确')
+  assert(
+    dualDiagramRollback.activeDiagramId === dualDiagramBaseline.activeDiagramId,
+    '双 DI 失败回滚后没有恢复原先激活的第二张图',
+  )
+  assert(
+    Math.abs(dualDiagramRollback.task.x - dualDiagramBaseline.task.x) < 0.01 &&
+      Math.abs(dualDiagramRollback.task.y - dualDiagramBaseline.task.y) < 0.01,
+    '双 DI 失败回滚后没有恢复第二张图的元素坐标',
+  )
+  assert(
+    JSON.stringify(dualDiagramRollback.selectionIds) === JSON.stringify(['UserTask_approve']),
+    '双 DI 失败回滚后没有恢复元素选择',
+  )
+  assert(dualDiagramRollback.xml === dualDiagramBaseline.xml, '双 DI 失败回滚后导出 XML 发生变化')
+
+  const dualDiagramRecovery = await page.evaluate(async (fixture) => {
+    const result = await window.flowableProcessModeler.importXML(
+      fixture,
+      'dual-di-test-recovery.bpmn20.xml',
+    )
+    return {
+      warningCount: result.warnings.length,
+      rootId: window.bpmnModeler.get('canvas').getRootElement().businessObject.id,
+      xml: await window.flowableProcessModeler.getXML(),
+    }
+  }, rollbackBaseline.xml)
+  assert(dualDiagramRecovery.warningCount === 0, '双 DI 用例后的合法恢复产生警告')
+  assert(
+    dualDiagramRecovery.rootId === 'Process_leave_request' &&
+      dualDiagramRecovery.xml === rollbackBaseline.xml,
+    '双 DI 用例末尾未恢复合法基准流程',
+  )
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  const incoherentImportState = await page.evaluate(
+    async ({ failedFixture, recoveryFixture }) => {
+      const modeler = window.bpmnModeler
+      const bridge = window.flowableProcessModeler
+      const moddle = modeler.get('moddle')
+      const originalFromXML = moddle.fromXML
+      let parseCalls = 0
+      let targetRejected = false
+      let targetError = ''
+
+      moddle.fromXML = function failRollbackParse(xml, ...args) {
+        parseCalls += 1
+        if (parseCalls === 2) {
+          return Promise.reject(new Error('forced rollback parse failure'))
+        }
+        return originalFromXML.call(moddle, xml, ...args)
+      }
+      try {
+        await modeler.importXML(failedFixture, 'BPMNDiagram_forced_rollback_failure')
+      } catch (error) {
+        targetRejected = true
+        targetError = error?.message || String(error)
+      } finally {
+        moddle.fromXML = originalFromXML
+      }
+
+      const readLockSnapshot = () => {
+        const shell = document.querySelector('.designer-shell')
+        const main = document.querySelector('.designer-main')
+        const saveButton = [...document.querySelectorAll('button')].find(
+          (button) => button.textContent?.trim() === '保存草稿',
+        )
+        return {
+          shellLocked: Boolean(shell?.classList.contains('is-interaction-locked')),
+          mainInert: Boolean(main?.inert),
+          mainHasInertAttribute: Boolean(main?.hasAttribute('inert')),
+          saveDisabled: Boolean(saveButton?.disabled),
+        }
+      }
+      const readModelSnapshot = () => ({
+        rootId: modeler.get('canvas').getRootElement().businessObject.id,
+        processIds: (modeler.getDefinitions().rootElements || [])
+          .filter((element) => element.$type === 'bpmn:Process')
+          .map((element) => element.id),
+      })
+
+      const lockBeforeMalformed = readLockSnapshot()
+      const modelBeforeMalformed = readModelSnapshot()
+      let malformedRejected = false
+      let malformedError = ''
+      try {
+        await modeler.importXML('<bpmn:definitions')
+      } catch (error) {
+        malformedRejected = true
+        malformedError = error?.message || String(error)
+      }
+
+      const operationErrors = {}
+      try {
+        await bridge.getXML()
+      } catch (error) {
+        operationErrors.getXML = error?.message || String(error)
+      }
+      try {
+        bridge.validate()
+      } catch (error) {
+        operationErrors.validate = error?.message || String(error)
+      }
+      try {
+        await bridge.saveDraft()
+      } catch (error) {
+        operationErrors.saveDraft = error?.message || String(error)
+      }
+
+      const lockedAfterMalformed = readLockSnapshot()
+      const modelAfterMalformed = readModelSnapshot()
+      const recoveryResult = await bridge.importXML(
+        recoveryFixture,
+        'incoherent-state-recovery.bpmn20.xml',
+      )
+      const recoveredXml = await bridge.getXML()
+      return {
+        parseCalls,
+        targetRejected,
+        targetError,
+        malformedRejected,
+        malformedError,
+        lockBeforeMalformed,
+        lockedAfterMalformed,
+        modelBeforeMalformed,
+        modelAfterMalformed,
+        operationErrors,
+        recoveryWarningCount: recoveryResult.warnings.length,
+        recoveredRootId: modeler.get('canvas').getRootElement().businessObject.id,
+        recoveredXml,
+        lockAfterRecovery: readLockSnapshot(),
+      }
+    },
+    { failedFixture: missingTargetFixture, recoveryFixture: rollbackBaseline.xml },
+  )
+  assert(incoherentImportState.parseCalls === 2, '双失败注入没有命中候选解析和回滚解析')
+  assert(
+    incoherentImportState.targetRejected && incoherentImportState.targetError.includes('not found'),
+    '强制目标导入没有以原始 missing-target 错误拒绝',
+  )
+  assert(incoherentImportState.malformedRejected, '不一致状态下 malformed XML 导入没有拒绝')
+  assert(
+    incoherentImportState.modelBeforeMalformed.rootId === 'Process_leave_request' &&
+      incoherentImportState.modelBeforeMalformed.processIds.includes('Process_failed_target_probe'),
+    '双失败没有制造可观察的画布/definitions 不一致状态',
+  )
+  assert(
+    JSON.stringify(incoherentImportState.modelAfterMalformed) ===
+      JSON.stringify(incoherentImportState.modelBeforeMalformed),
+    'malformed 解析改变了既有不一致状态',
+  )
+  for (const phase of ['lockBeforeMalformed', 'lockedAfterMalformed']) {
+    const lock = incoherentImportState[phase]
+    assert(
+      lock.shellLocked && lock.mainInert && lock.mainHasInertAttribute && lock.saveDisabled,
+      `${phase} 未保持不可操作锁：${JSON.stringify(lock)}`,
+    )
+  }
+  for (const operation of ['getXML', 'validate', 'saveDraft']) {
+    assert(
+      incoherentImportState.operationErrors[operation]?.includes('导入恢复失败'),
+      `不一致状态下 ${operation} 没有拒绝：${JSON.stringify(incoherentImportState.operationErrors)}`,
+    )
+  }
+  assert(
+    incoherentImportState.recoveryWarningCount === 0 &&
+      incoherentImportState.recoveredRootId === 'Process_leave_request' &&
+      incoherentImportState.recoveredXml === rollbackBaseline.xml,
+    '不一致状态用例末尾未通过合法导入恢复',
+  )
+  assert(
+    !incoherentImportState.lockAfterRecovery.shellLocked &&
+      !incoherentImportState.lockAfterRecovery.mainInert &&
+      !incoherentImportState.lockAfterRecovery.mainHasInertAttribute &&
+      !incoherentImportState.lockAfterRecovery.saveDisabled,
+    `合法恢复后仍保持交互锁：${JSON.stringify(incoherentImportState.lockAfterRecovery)}`,
+  )
+  await page.locator('.canvas-loading').waitFor({ state: 'hidden' })
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  const noPlaneFixture = rollbackBaseline.xml
+    .replaceAll('Process_leave_request', 'Process_no_plane_probe')
+    .replace(
+      /<bpmndi:BPMNDiagram\b[\s\S]*?<\/bpmndi:BPMNDiagram>/,
+      '<bpmndi:BPMNDiagram id="BPMNDiagram_no_plane_probe" />',
+    )
+  const failedThenSuccessfulImport = await page.evaluate(
+    async ({ failedFixture, recoveryFixture }) => {
+      const failedImport = window.bpmnModeler.importXML(
+        failedFixture,
+        'BPMNDiagram_no_plane_probe',
+      )
+      const recoveryImport = window.flowableProcessModeler.importXML(
+        recoveryFixture,
+        'rollback-queue-recovery.bpmn20.xml',
+      )
+      const settled = await Promise.allSettled([failedImport, recoveryImport])
+      const modeler = window.bpmnModeler
+      return {
+        statuses: settled.map((result) => result.status),
+        recoveryWarnings:
+          settled[1].status === 'fulfilled' ? settled[1].value.warnings.length : -1,
+        rootId: modeler.get('canvas').getRootElement().businessObject.id,
+        selectionCount: modeler.get('selection').get().length,
+        xml: await window.flowableProcessModeler.getXML(),
+      }
+    },
+    { failedFixture: noPlaneFixture, recoveryFixture: rollbackBaseline.xml },
+  )
+  assert(
+    JSON.stringify(failedThenSuccessfulImport.statuses) ===
+      JSON.stringify(['rejected', 'fulfilled']),
+    '失败导入污染了后续合法导入队列',
+  )
+  assert(failedThenSuccessfulImport.recoveryWarnings === 0, '回滚后的合法导入产生警告')
+  assert(
+    failedThenSuccessfulImport.rootId === 'Process_leave_request' &&
+      failedThenSuccessfulImport.selectionCount === 0,
+    '失败后续跑的合法导入未成为最终画布状态',
+  )
+  assert(
+    failedThenSuccessfulImport.xml === rollbackBaseline.xml,
+    '失败后续跑的合法导入未成为最终导出 definitions',
+  )
+  await page.locator('.canvas-loading').waitFor({ state: 'hidden' })
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  const unsupportedRetryCycleState = await page.evaluate(async () => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    const extensionElements = task.businessObject.extensionElements
+    if (!extensionElements) throw new Error('User Task 缺少 extensionElements')
+    const retryCycle = modeler.get('moddle').create('flowable:FailedJobRetryTimeCycle', {
+      body: 'R2/PT1M',
+    })
+    retryCycle.$parent = extensionElements
+    modeler.get('modeling').updateModdleProperties(task, extensionElements, {
+      values: [...(extensionElements.values || []), retryCycle],
+    })
+    return {
+      problems: window.flowableProcessModeler.validate(),
+      xml: await window.flowableProcessModeler.getXML(),
+    }
+  })
+  assert(
+    unsupportedRetryCycleState.problems.some(
+      (problem) =>
+        problem.elementId === 'UserTask_approve' &&
+        problem.level === 'warning' &&
+        problem.message === 'Flowable 6.8.1 仅从服务任务读取失败作业重试周期',
+    ),
+    'User Task 上的失败作业重试周期没有给出精确执行语义 warning',
+  )
+  assert(
+    unsupportedRetryCycleState.xml.includes(
+      '<flowable:failedJobRetryTimeCycle>R2/PT1M</flowable:failedJobRetryTimeCycle>',
+    ),
+    'User Task 上注入的失败作业重试周期未保留在 XML 中',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:FailedJobRetryTimeCycle',
+    )
+  })
+
+  const legacyAsyncCompatibilityState = await page.evaluate(async () => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('modeling').updateProperties(task, {
+      'flowable:exclusive': false,
+      'flowable:asyncLeaveExclusive': false,
+      'flowable:jobCategory': 'legacyCategory',
+      'flowable:leaveJobCategory': 'legacyLeaveCategory',
+    })
+    return {
+      problems: window.flowableProcessModeler.validate(),
+      xml: await window.flowableProcessModeler.getXML(),
+    }
+  })
+  for (const message of [
+    'exclusive="false" 仅在 flowable:async="true" 时生效',
+    'asyncLeaveExclusive="false" 仅在 flowable:asyncLeave="true" 时生效',
+    'flowable:jobCategory 属性不会被 Flowable 6.8.1 读取，请改用 jobCategory 扩展元素',
+    'flowable:leaveJobCategory 属性不会被 Flowable 6.8.1 读取',
+  ]) {
+    assert(
+      legacyAsyncCompatibilityState.problems.some(
+        (problem) =>
+          problem.elementId === 'UserTask_approve' &&
+          problem.level === 'warning' &&
+          problem.message === message,
+      ),
+      `旧异步配置没有给出精确 warning：${message}`,
+    )
+  }
+  assert(
+    legacyAsyncCompatibilityState.xml.includes('flowable:jobCategory="legacyCategory"') &&
+      legacyAsyncCompatibilityState.xml.includes(
+        'flowable:leaveJobCategory="legacyLeaveCategory"',
+      ),
+    '旧作业分类属性没有在兼容导入路径中无损保留',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      task.get('flowable:jobCategory') === undefined &&
+      task.get('flowable:leaveJobCategory') === undefined &&
+      task.get('flowable:exclusive') === true &&
+      task.get('flowable:asyncLeaveExclusive') === true
+    )
+  })
+
+  const mapExceptionServiceTask = await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const current = modeler.get('elementRegistry').get('UserTask_approve')
+    const replacement = modeler.get('bpmnReplace').replaceElement(current, {
+      type: 'bpmn:ServiceTask',
+    })
+    modeler.get('selection').select(replacement)
+    return { id: replacement.id, type: replacement.type }
+  })
+  assert(
+    mapExceptionServiceTask.id === 'UserTask_approve' &&
+      mapExceptionServiceTask.type === 'bpmn:ServiceTask',
+    '异常映射测试未能创建 Service Task',
+  )
+
+  const serviceTaskAdvancedSection = page.locator('.el-collapse-item').filter({
+    has: page.locator('.el-collapse-item__header', { hasText: '高级配置' }),
+  })
+  const serviceTaskAdvancedHeader = serviceTaskAdvancedSection.locator(
+    '.el-collapse-item__header',
+  )
+  if ((await serviceTaskAdvancedHeader.getAttribute('aria-expanded')) !== 'true') {
+    await serviceTaskAdvancedHeader.click()
+  }
+
+  const jobCategoryInput = page.locator('[data-testid="job-category"]')
+  await jobCategoryInput.waitFor({ state: 'visible' })
+  await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('modeling').updateProperties(task, {
+      'flowable:jobCategory': 'legacyCategory',
+      'flowable:leaveJobCategory': 'legacyLeaveCategory',
+      'flowable:asyncBefore': true,
+      'flowable:asyncAfter': true,
+    })
+  })
+  await page.waitForFunction(() => {
+    const input = document.querySelector('[data-testid="job-category"]')
+    return input?.value === 'legacyCategory'
+  })
+  assert(
+    (await jobCategoryInput.inputValue()) === 'legacyCategory',
+    '旧 flowable:jobCategory 属性没有回显到迁移入口',
+  )
+
+  await jobCategoryInput.fill('migrated-category')
+  await jobCategoryInput.press('Tab')
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const category = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:JobCategory',
+    )
+    return (
+      category?.body === 'migrated-category' &&
+      task.get('flowable:jobCategory') === undefined
+    )
+  })
+  const migratedJobCategoryXml = await page.evaluate(() =>
+    window.flowableProcessModeler.getXML(),
+  )
+  assert(
+    migratedJobCategoryXml.includes(
+      '<flowable:jobCategory>migrated-category</flowable:jobCategory>',
+    ) &&
+      !/flowable:jobCategory\s*=/.test(migratedJobCategoryXml) &&
+      !/flowable:leaveJobCategory\s*=/.test(migratedJobCategoryXml),
+    '旧作业分类没有迁移为 Flowable 读取的扩展正文',
+  )
+
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      !(task.extensionElements?.values || []).some(
+        (value) => value.$type === 'flowable:JobCategory',
+      ) &&
+      task.get('flowable:jobCategory') === 'legacyCategory' &&
+      task.get('flowable:leaveJobCategory') === 'legacyLeaveCategory'
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      (task.extensionElements?.values || []).some(
+        (value) =>
+          value.$type === 'flowable:JobCategory' &&
+          value.body === 'migrated-category',
+      ) &&
+      task.get('flowable:jobCategory') === undefined &&
+      task.get('flowable:leaveJobCategory') === undefined
+    )
+  })
+
+  const jobCategoryExpression = '${jobCategory}'
+  await jobCategoryInput.fill(jobCategoryExpression)
+  await jobCategoryInput.press('Tab')
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:JobCategory' && value.body === expected,
+    )
+  }, jobCategoryExpression)
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:JobCategory' && value.body === 'migrated-category',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:JobCategory' && value.body === expected,
+    )
+  }, jobCategoryExpression)
+
+  const unblurredHostCategory = 'host-get-xml-category'
+  await jobCategoryInput.fill(unblurredHostCategory)
+  const unblurredHostXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    unblurredHostXml.includes(
+      '<flowable:jobCategory>host-get-xml-category</flowable:jobCategory>',
+    ),
+    '宿主 getXML 没有提交仍聚焦的作业分类输入',
+  )
+
+  const unblurredDraftCategory = 'ctrl-save-category'
+  await jobCategoryInput.fill(unblurredDraftCategory)
+  await jobCategoryInput.press('Control+s')
+  await page.waitForFunction((expected) => {
+    const raw = localStorage.getItem('flowable-modeler:draft:v1')
+    if (!raw) return false
+    try {
+      return JSON.parse(raw).xml.includes(
+        `<flowable:jobCategory>${expected}</flowable:jobCategory>`,
+      )
+    } catch {
+      return false
+    }
+  }, unblurredDraftCategory)
+
+  await jobCategoryInput.fill(jobCategoryExpression)
+  const restoredJobCategoryXml = await page.evaluate(() =>
+    window.flowableProcessModeler.getXML(),
+  )
+  assert(
+    restoredJobCategoryXml.includes(
+      '<flowable:jobCategory>${jobCategory}</flowable:jobCategory>',
+    ),
+    '作业分类表达式未通过聚焦编辑提交路径恢复',
+  )
+
+  const asyncBeforeSwitch = page.locator('[data-testid="async-before"]')
+  const asyncAfterSwitch = page.locator('[data-testid="async-after"]')
+  assert(
+    (await asyncBeforeSwitch.locator('input[type="checkbox"]').isChecked()) &&
+      (await asyncAfterSwitch.locator('input[type="checkbox"]').isChecked()),
+    'asyncBefore/asyncAfter 兼容别名没有回显到异步开关',
+  )
+  await asyncBeforeSwitch.click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      task.get('flowable:async') === false &&
+      task.get('flowable:asyncLeave') === true &&
+      task.get('flowable:asyncBefore') === false &&
+      task.get('flowable:asyncAfter') === false
+    )
+  })
+  await asyncBeforeSwitch.click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return task.get('flowable:async') === true
+  })
+  const asyncBeforeExclusiveSwitch = page.locator(
+    '[data-testid="async-before-exclusive"]',
+  )
+  await asyncBeforeExclusiveSwitch.waitFor({ state: 'visible' })
+  await asyncBeforeExclusiveSwitch.click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return task.get('flowable:exclusive') === false
+  })
+
+  const asyncAfterExclusiveSwitch = page.locator(
+    '[data-testid="async-after-exclusive"]',
+  )
+  await asyncAfterExclusiveSwitch.waitFor({ state: 'visible' })
+  await asyncAfterExclusiveSwitch.click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return task.get('flowable:asyncLeaveExclusive') === false
+  })
+
+  const asyncConfigurationState = await page.evaluate(async () => ({
+    problems: window.flowableProcessModeler.validate(),
+    xml: await window.flowableProcessModeler.getXML(),
+  }))
+  assert(
+    /<bpmn2?:serviceTask\b(?=[^>]*\bflowable:async="true")(?=[^>]*\bflowable:exclusive="false")(?=[^>]*\bflowable:asyncLeave="true")(?=[^>]*\bflowable:asyncLeaveExclusive="false")[^>]*>/.test(
+      asyncConfigurationState.xml,
+    ),
+    '进入/离开异步及各自独占标志没有独立写入 Service Task',
+  )
+  assert(
+    asyncConfigurationState.xml.includes(
+      '<flowable:jobCategory>${jobCategory}</flowable:jobCategory>',
+    ) && !/flowable:jobCategory\s*=/.test(asyncConfigurationState.xml),
+    '作业分类表达式没有按 Flowable 扩展正文输出',
+  )
+  assert(
+    !asyncConfigurationState.problems.some((problem) =>
+      [
+        'exclusive="false" 仅在 flowable:async="true" 时生效',
+        'asyncLeaveExclusive="false" 仅在 flowable:asyncLeave="true" 时生效',
+        'flowable:jobCategory 属性不会被 Flowable 6.8.1 读取，请改用 jobCategory 扩展元素',
+      ].includes(problem.message),
+    ),
+    '有效异步配置被错误标记为兼容性 warning',
+  )
+
+  await jobCategoryInput.fill('')
+  await jobCategoryInput.press('Tab')
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:JobCategory',
+    )
+  })
+  const clearedJobCategoryXml = await page.evaluate(() =>
+    window.flowableProcessModeler.getXML(),
+  )
+  assert(
+    !clearedJobCategoryXml.includes('flowable:jobCategory'),
+    '清空作业分类后扩展元素仍残留在 XML 中',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:JobCategory' && value.body === expected,
+    )
+  }, jobCategoryExpression)
+
+  const retryCycleInput = page.locator('[data-testid="failed-job-retry-cycle"]')
+  await retryCycleInput.waitFor({ state: 'visible' })
+  await retryCycleInput.fill('R5/PT5M')
+  await retryCycleInput.press('Tab')
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const retryCycle = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:FailedJobRetryTimeCycle',
+    )
+    return retryCycle?.body === 'R5/PT5M'
+  })
+  const fixedRetryCycleXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    fixedRetryCycleXml.includes(
+      '<flowable:failedJobRetryTimeCycle>R5/PT5M</flowable:failedJobRetryTimeCycle>',
+    ),
+    'Service Task 失败作业重试周期未写入扩展正文和 XML',
+  )
+
+  const retryCycleExpression = '${retryCycle}'
+  await retryCycleInput.fill(retryCycleExpression)
+  await retryCycleInput.press('Tab')
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:FailedJobRetryTimeCycle' && value.body === expected,
+    )
+  }, retryCycleExpression)
+  const expressionRetryCycleXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    expressionRetryCycleXml.includes(
+      '<flowable:failedJobRetryTimeCycle>${retryCycle}</flowable:failedJobRetryTimeCycle>',
+    ),
+    'Service Task 表达式重试周期未原样写入 XML',
+  )
+
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:FailedJobRetryTimeCycle' && value.body === 'R5/PT5M',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:FailedJobRetryTimeCycle' && value.body === expected,
+    )
+  }, retryCycleExpression)
+
+  await retryCycleInput.fill('')
+  await retryCycleInput.press('Tab')
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:FailedJobRetryTimeCycle',
+    )
+  })
+  const clearedRetryCycleXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    !clearedRetryCycleXml.includes('flowable:failedJobRetryTimeCycle'),
+    '清空 Service Task 重试周期后扩展元素仍残留在 XML 中',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction((expected) => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:FailedJobRetryTimeCycle' && value.body === expected,
+    )
+  }, retryCycleExpression)
+
+  const retryCycleRoundTripXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  mkdirSync('artifacts', { recursive: true })
+  writeFileSync(
+    'artifacts/async-job-config-roundtrip.bpmn20.xml',
+    retryCycleRoundTripXml,
+    'utf8',
+  )
+  const retryCycleRoundTripState = await page.evaluate(async (fixture) => {
+    const result = await window.flowableProcessModeler.importXML(
+      fixture,
+      'failed-job-retry-cycle-roundtrip.bpmn20.xml',
+    )
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('selection').select(task)
+    const retryCycle = (task.businessObject.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:FailedJobRetryTimeCycle',
+    )
+    const jobCategory = (task.businessObject.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:JobCategory',
+    )
+    return {
+      warnings: result.warnings.length,
+      body: retryCycle?.body,
+      jobCategory: jobCategory?.body,
+      async: task.businessObject.get('flowable:async'),
+      exclusive: task.businessObject.get('flowable:exclusive'),
+      asyncLeave: task.businessObject.get('flowable:asyncLeave'),
+      asyncLeaveExclusive: task.businessObject.get('flowable:asyncLeaveExclusive'),
+    }
+  }, retryCycleRoundTripXml)
+  assert(
+    retryCycleRoundTripState.warnings === 0 &&
+      retryCycleRoundTripState.body === retryCycleExpression &&
+      retryCycleRoundTripState.jobCategory === jobCategoryExpression &&
+      retryCycleRoundTripState.async === true &&
+      retryCycleRoundTripState.exclusive === false &&
+      retryCycleRoundTripState.asyncLeave === true &&
+      retryCycleRoundTripState.asyncLeaveExclusive === false,
+    `Service Task 异步作业配置 XML 往返异常：${JSON.stringify(retryCycleRoundTripState)}`,
+  )
+  await page.locator('.canvas-loading').waitFor({ state: 'hidden' })
+  if ((await serviceTaskAdvancedHeader.getAttribute('aria-expanded')) !== 'true') {
+    await serviceTaskAdvancedHeader.click()
+  }
+  await retryCycleInput.waitFor({ state: 'visible' })
+  assert(
+    (await retryCycleInput.inputValue()) === retryCycleExpression,
+    'Service Task 重试周期 XML 往返后未回显表达式',
+  )
+  assert(
+    (await jobCategoryInput.inputValue()) === jobCategoryExpression &&
+      (await asyncBeforeSwitch.locator('input[type="checkbox"]').isChecked()) &&
+      !(await asyncBeforeExclusiveSwitch.locator('input[type="checkbox"]').isChecked()) &&
+      (await asyncAfterSwitch.locator('input[type="checkbox"]').isChecked()) &&
+      !(await asyncAfterExclusiveSwitch.locator('input[type="checkbox"]').isChecked()),
+    'Service Task 异步作业配置 XML 往返后未完整回显到属性面板',
+  )
+
+  const mapExceptionSection = page.locator('.el-collapse-item').filter({
+    has: page.locator('.el-collapse-item__header', { hasText: '异常映射' }),
+  })
+  await mapExceptionSection.locator('.el-collapse-item__header').click()
+  await mapExceptionSection.locator('[data-testid="add-map-exception"]').click()
+  await page.locator('[data-testid="map-exception-error-code"]').fill('ORDER_ERROR')
+  await page.locator('[data-testid="map-exception-class"]').fill('java.lang.RuntimeException')
+  await page
+    .locator('[data-testid="map-exception-root-cause"]')
+    .fill('java.lang.IllegalArgumentException')
+  await page.locator('[data-testid="map-exception-include-children"]').click()
+  await page.locator('[data-testid="save-map-exception"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const mappings = (task.extensionElements?.values || []).filter(
+      (value) => value.$type === 'flowable:MapException',
+    )
+    return (
+      mappings.length === 1 &&
+      mappings[0].errorCode === 'ORDER_ERROR' &&
+      mappings[0].class === 'java.lang.RuntimeException' &&
+      mappings[0].includeChildExceptions === true &&
+      mappings[0].rootCause === 'java.lang.IllegalArgumentException'
+    )
+  })
+  let mapExceptionRow = mapExceptionSection.locator('[data-testid="map-exception-row"]')
+  assert((await mapExceptionRow.count()) === 1, '新增异常映射后列表数量异常')
+  const createdMapExceptionXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    /<flowable:mapException\b(?=[^>]*\berrorCode="ORDER_ERROR")(?=[^>]*\bincludeChildExceptions="true")(?=[^>]*\brootCause="java\.lang\.IllegalArgumentException")[^>]*>java\.lang\.RuntimeException<\/flowable:mapException>/.test(
+      createdMapExceptionXml,
+    ),
+    '新增异常映射未完整写入 XML',
+  )
+
+  await mapExceptionRow.getByRole('button', { name: '编辑异常映射' }).click()
+  assert(
+    (await page.locator('[data-testid="map-exception-error-code"]').inputValue()) ===
+      'ORDER_ERROR',
+    '导入的异常映射错误码未回显',
+  )
+  await page.locator('[data-testid="map-exception-error-code"]').fill('ORDER_UPDATED')
+  await page.locator('[data-testid="map-exception-class"]').fill('java.lang.IllegalStateException')
+  await page.locator('[data-testid="map-exception-root-cause"]').fill('java.io.IOException')
+  await page.locator('[data-testid="map-exception-include-children"]').click()
+  await page.locator('[data-testid="save-map-exception"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const mapping = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:MapException',
+    )
+    return (
+      mapping?.errorCode === 'ORDER_UPDATED' &&
+      mapping.class === 'java.lang.IllegalStateException' &&
+      mapping.includeChildExceptions === false &&
+      mapping.rootCause === 'java.io.IOException'
+    )
+  })
+  const editedMapExceptionXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    /<flowable:mapException\b(?=[^>]*\berrorCode="ORDER_UPDATED")(?=[^>]*\brootCause="java\.io\.IOException")[^>]*>java\.lang\.IllegalStateException<\/flowable:mapException>/.test(
+      editedMapExceptionXml,
+    ) && !editedMapExceptionXml.includes('includeChildExceptions="true"'),
+    '编辑异常映射未完整写入 XML',
+  )
+
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const mapping = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:MapException',
+    )
+    return mapping?.errorCode === 'ORDER_ERROR' && mapping.includeChildExceptions === true
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const mapping = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:MapException',
+    )
+    return mapping?.errorCode === 'ORDER_UPDATED' && mapping.includeChildExceptions === false
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const mapping = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:MapException',
+    )
+    return mapping?.errorCode === 'ORDER_ERROR' && mapping.includeChildExceptions === true
+  })
+
+  await mapExceptionSection.locator('[data-testid="add-map-exception"]').click()
+  await page.locator('[data-testid="map-exception-error-code"]').fill('DEFAULT_ERROR')
+  await page.locator('[data-testid="save-map-exception"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const mappings = (task.extensionElements?.values || []).filter(
+      (value) => value.$type === 'flowable:MapException',
+    )
+    return (
+      mappings.length === 2 &&
+      mappings.some(
+        (mapping) =>
+          mapping.errorCode === 'DEFAULT_ERROR' &&
+          !mapping.class &&
+          mapping.includeChildExceptions === false &&
+          !mapping.rootCause,
+      )
+    )
+  })
+  const defaultMapExceptionXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    /<flowable:mapException\b[^>]*\berrorCode="DEFAULT_ERROR"[^>]*(?:\/>|><\/flowable:mapException>)/.test(
+      defaultMapExceptionXml,
+    ),
+    '默认异常映射未写入 XML',
+  )
+
+  mapExceptionRow = mapExceptionSection
+    .locator('[data-testid="map-exception-row"]')
+    .filter({ hasText: 'DEFAULT_ERROR' })
+  await mapExceptionRow.getByRole('button', { name: '上移异常映射' }).click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || [])
+      .filter((value) => value.$type === 'flowable:MapException')
+      .map((value) => value.errorCode)
+      .join(',') === 'DEFAULT_ERROR,ORDER_ERROR'
+  })
+  const orderedMapExceptionXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  assert(
+    orderedMapExceptionXml.indexOf('errorCode="DEFAULT_ERROR"') <
+      orderedMapExceptionXml.indexOf('errorCode="ORDER_ERROR"'),
+    '异常映射上移后 XML 顺序未更新',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || [])
+      .filter((value) => value.$type === 'flowable:MapException')
+      .map((value) => value.errorCode)
+      .join(',') === 'ORDER_ERROR,DEFAULT_ERROR'
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || [])
+      .filter((value) => value.$type === 'flowable:MapException')
+      .map((value) => value.errorCode)
+      .join(',') === 'DEFAULT_ERROR,ORDER_ERROR'
+  })
+  await mapExceptionRow.getByRole('button', { name: '删除异常映射' }).click()
+  await page.locator('.el-message-box:visible').getByRole('button', { name: '确定' }).click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      (task.extensionElements?.values || []).filter(
+        (value) => value.$type === 'flowable:MapException',
+      ).length === 1
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      (task.extensionElements?.values || []).filter(
+        (value) => value.$type === 'flowable:MapException',
+      ).length === 2
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      (task.extensionElements?.values || []).filter(
+        (value) => value.$type === 'flowable:MapException',
+      ).length === 1
+    )
+  })
+
+  const mapExceptionRoundTripXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  const mapExceptionRoundTripWarnings = await page.evaluate(
+    async (fixture) => (await window.bpmnModeler.importXML(fixture)).warnings.length,
+    mapExceptionRoundTripXml,
+  )
+  assert(mapExceptionRoundTripWarnings === 0, '异常映射 XML 重新导入产生兼容警告')
+  await page.evaluate(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve')
+    window.bpmnModeler.get('selection').select(task)
+  })
+  await mapExceptionSection.locator('.el-collapse-item__header').click()
+  mapExceptionRow = mapExceptionSection.locator('[data-testid="map-exception-row"]')
+  assert((await mapExceptionRow.count()) === 1, '异常映射 XML 往返后列表未恢复')
+  assert((await mapExceptionRow.innerText()).includes('ORDER_ERROR'), '异常映射 XML 往返后错误码丢失')
+
+  const mapExceptionRecoveryWarnings = await page.evaluate(
+    async (fixture) =>
+      (await window.flowableProcessModeler.importXML(fixture, 'map-exception-recovery.bpmn20.xml'))
+        .warnings.length,
+    rollbackBaseline.xml,
+  )
+  assert(mapExceptionRecoveryWarnings === 0, '异常映射用例后的基准恢复产生警告')
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  const externalWorkerServiceTask = await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const current = modeler.get('elementRegistry').get('UserTask_approve')
+    const replacement = modeler.get('bpmnReplace').replaceElement(current, {
+      type: 'bpmn:ServiceTask',
+    })
+    modeler.get('selection').select(replacement)
+    return { id: replacement.id, type: replacement.type }
+  })
+  assert(
+    externalWorkerServiceTask.id === 'UserTask_approve' &&
+      externalWorkerServiceTask.type === 'bpmn:ServiceTask',
+    '外部工作器测试未能创建 Service Task',
+  )
+
+  await page
+    .locator('[data-testid="service-implementation-type"] .el-select__wrapper')
+    .waitFor({ state: 'visible' })
+  await page.locator('[data-testid="service-implementation-type"] .el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: 'Flowable 内置类型' })
+    .click()
+  await page.locator('[data-testid="service-built-in-type"] .el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: /^外部工作器$/ })
+    .click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return task.get('flowable:type') === 'external-worker' && !task.get('flowable:topic')
+  })
+
+  const missingExternalWorkerTopicProblems = await page.evaluate(() =>
+    window.flowableProcessModeler.validate(),
+  )
+  assert(
+    missingExternalWorkerTopicProblems.some(
+      (problem) =>
+        problem.elementId === 'UserTask_approve' &&
+        problem.level === 'error' &&
+        problem.message === '外部工作任务未配置主题',
+    ),
+    '外部工作器缺少主题时未返回精确校验错误',
+  )
+
+  const externalWorkerTopic = page.locator('[data-testid="external-worker-topic"]')
+  await externalWorkerTopic.fill('order-jobs')
+  await externalWorkerTopic.press('Tab')
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return task.get('flowable:topic') === 'order-jobs'
+  })
+  const configuredExternalWorkerProblems = await page.evaluate(() =>
+    window.flowableProcessModeler.validate(),
+  )
+  assert(
+    !configuredExternalWorkerProblems.some(
+      (problem) =>
+        problem.elementId === 'UserTask_approve' &&
+        problem.message === '外部工作任务未配置主题',
+    ),
+    '外部工作器配置主题后仍被校验器报错',
+  )
+  const externalWorkerXmlState = await page.evaluate(async () => {
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const serviceTask = [...xmlDocument.getElementsByTagNameNS(
+      'http://www.omg.org/spec/BPMN/20100524/MODEL',
+      'serviceTask',
+    )].find((element) => element.getAttribute('id') === 'UserTask_approve')
+    return {
+      found: Boolean(serviceTask),
+      type: serviceTask?.getAttributeNS('http://flowable.org/bpmn', 'type'),
+      topic: serviceTask?.getAttributeNS('http://flowable.org/bpmn', 'topic'),
+    }
+  })
+  assert(
+    externalWorkerXmlState.found &&
+      externalWorkerXmlState.type === 'external-worker' &&
+      externalWorkerXmlState.topic === 'order-jobs',
+    '外部工作器未同时序列化 flowable:type 和 flowable:topic',
+  )
+
+  const legacyExternalImport = await page.evaluate(async () => {
+    const canonicalXml = await window.flowableProcessModeler.getXML()
+    const legacyXml = canonicalXml.replace(
+      'flowable:type="external-worker"',
+      'flowable:type="external"',
+    )
+    const result = await window.flowableProcessModeler.importXML(
+      legacyXml,
+      'legacy-external-worker.bpmn20.xml',
+    )
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('selection').select(task)
+    return {
+      warnings: result.warnings.length,
+      type: task.businessObject.get('flowable:type'),
+      topic: task.businessObject.get('flowable:topic'),
+    }
+  })
+  assert(
+    legacyExternalImport.warnings === 0 &&
+      legacyExternalImport.type === 'external' &&
+      legacyExternalImport.topic === 'order-jobs',
+    '旧 external 类型导入后未保留类型和主题',
+  )
+  await page.locator('.canvas-loading').waitFor({ state: 'hidden' })
+  await externalWorkerTopic.waitFor({ state: 'visible' })
+  assert(
+    (await externalWorkerTopic.inputValue()) === 'order-jobs',
+    '旧 external 类型导入后未回显主题',
+  )
+
+  await page.evaluate(() => window.flowableProcessModeler.configureHost(null))
+  await page.locator('[data-testid="service-built-in-type"] .el-select__wrapper').click()
+  const unconfiguredServiceTaskOptions = await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .allInnerTexts()
+  for (const label of [
+    'REST 服务',
+    '服务编排（SC）',
+    '消息队列',
+    '抄送任务',
+    'CMMN 案例任务',
+  ]) {
+    assert(
+      !unconfiguredServiceTaskOptions.includes(label),
+      `未配置宿主白名单时仍可新选 ${label}`,
+    )
+  }
+  await page.keyboard.press('Escape')
+
+  const importedUnknownServiceType = await page.evaluate(async () => {
+    const bridge = window.flowableProcessModeler
+    const currentXml = await bridge.getXML()
+    const unknownTypeXml = currentXml
+      .replace('flowable:type="external"', 'flowable:type="rest"')
+      .replace(/\sflowable:topic="[^"]*"/, '')
+    const result = await bridge.importXML(
+      unknownTypeXml,
+      'host-service-task-type-unknown.bpmn20.xml',
+    )
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve')
+    window.bpmnModeler.get('selection').select(task)
+    return {
+      warnings: result.warnings.map((warning) => warning.message || String(warning)),
+      type: task.businessObject.get('flowable:type'),
+      problems: bridge.validate(),
+    }
+  })
+  assert(
+    importedUnknownServiceType.warnings.length === 0 &&
+      importedUnknownServiceType.type === 'rest' &&
+      importedUnknownServiceType.problems.some(
+        (problem) =>
+          problem.elementId === 'UserTask_approve' &&
+          problem.level === 'error' &&
+          problem.message ===
+            '服务任务类型 rest 不是当前支持的 Flowable 6.8.1 BPMN 类型，且宿主未声明运行时适配',
+      ),
+    `导入宿主服务类型后未返回精确本地错误：${JSON.stringify(importedUnknownServiceType)}`,
+  )
+  await page.locator('.canvas-loading').waitFor({ state: 'hidden' })
+  const importedServiceTypeSelect = page.locator('[data-testid="service-built-in-type"]')
+  await importedServiceTypeSelect.waitFor({ state: 'visible' })
+  await page.waitForFunction(() =>
+    document
+      .querySelector('[data-testid="service-built-in-type"]')
+      ?.textContent?.includes('导入类型：rest（宿主未授权）'),
+  )
+  await importedServiceTypeSelect.locator('.el-select__wrapper').click()
+  const unauthorizedServiceTaskDropdown = page.locator('.el-select-dropdown:visible')
+  await unauthorizedServiceTaskDropdown.waitFor({ state: 'visible' })
+  const unauthorizedRestOptions = await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .allInnerTexts()
+  assert(
+    unauthorizedRestOptions.includes('导入类型：rest（宿主未授权）') &&
+      !unauthorizedRestOptions.includes('REST 服务'),
+    `未授权的导入类型没有以只保留状态显示：${JSON.stringify(unauthorizedRestOptions)}`,
+  )
+  await page.keyboard.press('Escape')
+
+  await page.evaluate(() =>
+    window.flowableProcessModeler.configureHost({
+      customServiceTaskTypes: [{ type: 'rest', label: 'REST 服务' }],
+    }),
+  )
+  await page.waitForFunction(() =>
+    !window.flowableProcessModeler.validate().some(
+      (problem) =>
+        problem.elementId === 'UserTask_approve' &&
+        problem.message ===
+          '服务任务类型 rest 不是当前支持的 Flowable 6.8.1 BPMN 类型，且宿主未声明运行时适配',
+    ),
+  )
+  await page.waitForFunction(() => {
+    const select = document.querySelector('[data-testid="service-built-in-type"]')
+    return select?.textContent?.includes('REST 服务') &&
+      !select.textContent.includes('导入类型：rest（宿主未授权）')
+  })
+  await page.locator('[data-testid="service-built-in-type"] .el-select__wrapper').click()
+  await page.locator('.el-select-dropdown:visible').waitFor({ state: 'visible' })
+  const configuredServiceTaskOptions = await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .allInnerTexts()
+  assert(
+    configuredServiceTaskOptions.includes('REST 服务') &&
+      !configuredServiceTaskOptions.includes('导入类型：rest（宿主未授权）') &&
+      !configuredServiceTaskOptions.includes('服务编排（SC）') &&
+      !configuredServiceTaskOptions.includes('消息队列') &&
+      !configuredServiceTaskOptions.includes('抄送任务'),
+    `宿主服务类型白名单没有精确生效：${JSON.stringify(configuredServiceTaskOptions)}`,
+  )
+  await page.keyboard.press('Escape')
+  assert(!(await externalWorkerTopic.isVisible()), '导入 REST 服务类型后仍显示外部工作器主题')
+  const importedRestXmlState = await page.evaluate(async () => {
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const serviceTask = [...xmlDocument.getElementsByTagNameNS(
+      'http://www.omg.org/spec/BPMN/20100524/MODEL',
+      'serviceTask',
+    )].find((element) => element.getAttribute('id') === 'UserTask_approve')
+    return {
+      type: serviceTask?.getAttributeNS('http://flowable.org/bpmn', 'type'),
+      hasTopic: serviceTask?.hasAttributeNS('http://flowable.org/bpmn', 'topic') ?? true,
+    }
+  })
+  assert(
+    importedRestXmlState.type === 'rest' && !importedRestXmlState.hasTopic,
+    `导入 REST 服务类型的 XML 语义不正确：${JSON.stringify(importedRestXmlState)}`,
+  )
+  await page.evaluate(() => window.flowableProcessModeler.configureHost(null))
+
+  const externalWorkerRecoveryWarnings = await page.evaluate(
+    async (fixture) =>
+      (await window.flowableProcessModeler.importXML(fixture, 'external-worker-recovery.bpmn20.xml'))
+        .warnings.length,
+    rollbackBaseline.xml,
+  )
+  assert(externalWorkerRecoveryWarnings === 0, '外部工作器用例后的基准恢复产生警告')
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  const sendEventServiceTask = await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const current = modeler.get('elementRegistry').get('UserTask_approve')
+    const replacement = modeler.get('bpmnReplace').replaceElement(current, {
+      type: 'bpmn:ServiceTask',
+    })
+    modeler.get('selection').select(replacement)
+    return { id: replacement.id, type: replacement.type }
+  })
+  assert(
+    sendEventServiceTask.id === 'UserTask_approve' &&
+      sendEventServiceTask.type === 'bpmn:ServiceTask',
+    '发送事件测试未能创建 Service Task',
+  )
+  await page
+    .locator('[data-testid="service-implementation-type"] .el-select__wrapper')
+    .waitFor({ state: 'visible' })
+  await page.locator('[data-testid="service-implementation-type"] .el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: 'Flowable 内置类型' })
+    .click()
+  await page.locator('[data-testid="service-built-in-type"] .el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: /^Event Registry 发送事件$/ })
+    .click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return task.get('flowable:type') === 'send-event'
+  })
+
+  const missingSendEventProblems = await page.evaluate(() =>
+    window.flowableProcessModeler.validate(),
+  )
+  for (const message of [
+    '发送事件任务未配置事件类型',
+    '发送事件任务未配置出站通道或系统通道',
+  ]) {
+    assert(
+      missingSendEventProblems.some(
+        (problem) =>
+          problem.elementId === 'UserTask_approve' &&
+          problem.level === 'error' &&
+          problem.message === message,
+      ),
+      `发送事件缺失字段未返回精确校验错误：${message}`,
+    )
+  }
+
+  const sendEventTypeInput = page.locator('[data-testid="send-event-type"]')
+  const sendEventTriggerTypeInput = page.locator('[data-testid="send-event-trigger-type"]')
+  const sendEventChannelInput = page.locator('[data-testid="send-event-channel-key"]')
+  const sendEventSystemChannelSwitch = page.locator(
+    '[data-testid="send-event-system-channel"]',
+  )
+  const sendEventSynchronouslySwitch = page.locator(
+    '[data-testid="send-event-synchronously"]',
+  )
+  await sendEventTypeInput.fill('order-updated')
+  await sendEventTypeInput.press('Tab')
+  await sendEventTriggerTypeInput.fill('order-acknowledged')
+  await sendEventTriggerTypeInput.press('Tab')
+  await sendEventChannelInput.fill('orders-out')
+  await sendEventChannelInput.press('Tab')
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const extensions = task.extensionElements?.values || []
+    const body = (type) => extensions.find((value) => value.$type === type)?.body
+    return (
+      body('flowable:EventType') === 'order-updated' &&
+      body('flowable:TriggerEventType') === 'order-acknowledged' &&
+      body('flowable:ChannelKey') === 'orders-out'
+    )
+  })
+  const configuredSendEventProblems = await page.evaluate(() =>
+    window.flowableProcessModeler.validate(),
+  )
+  assert(
+    !configuredSendEventProblems.some(
+      (problem) =>
+        problem.elementId === 'UserTask_approve' &&
+        [
+          '发送事件任务未配置事件类型',
+          '发送事件任务未配置出站通道或系统通道',
+        ].includes(problem.message),
+    ),
+    '发送事件配置事件类型和通道后仍被校验器报缺失字段',
+  )
+  const channelKeyXmlBeforeSystemChannel = await page.evaluate(async () => {
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    return [...xmlDocument.getElementsByTagNameNS('http://flowable.org/bpmn', 'channelKey')]
+      .find((element) => element.parentElement?.parentElement?.getAttribute('id') === 'UserTask_approve')
+      ?.textContent
+  })
+  assert(
+    channelKeyXmlBeforeSystemChannel === 'orders-out',
+    '发送事件出站通道未写回 flowable:channelKey',
+  )
+
+  await sendEventSystemChannelSwitch.click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:SystemChannel',
+    )
+  })
+  assert(await sendEventChannelInput.isDisabled(), '启用系统通道后出站通道输入框仍可编辑')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:SystemChannel',
+    )
+  })
+  assert(!(await sendEventChannelInput.isDisabled()), '撤销系统通道后出站通道输入框仍被禁用')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:SystemChannel',
+    )
+  })
+
+  await sendEventSynchronouslySwitch.click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:SendSynchronously' && value.body === 'true',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:SendSynchronously',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:SendSynchronously' && value.body === 'true',
+    )
+  })
+
+  const sendEventAddInputButton = page.locator('[data-testid="add-input-mapping"]')
+  const sendEventAddOutputButton = page.locator('[data-testid="add-output-mapping"]')
+  await sendEventAddInputButton.click()
+  let sendEventMappingDialog = page.locator('.el-dialog:visible')
+  await sendEventMappingDialog.getByText('输入参数映射', { exact: true }).waitFor()
+  await sendEventMappingDialog
+    .locator('[data-testid="mapping-source-type"]')
+    .getByText('表达式', { exact: true })
+    .click()
+  await sendEventMappingDialog.locator('[data-testid="mapping-source"]').fill('${order.id}')
+  await sendEventMappingDialog.locator('[data-testid="mapping-target"]').fill('orderId')
+  await sendEventMappingDialog.locator('[data-testid="mapping-transient"]').click()
+  await sendEventMappingDialog.locator('[data-testid="save-mapping"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:EventInParameter' &&
+        value.sourceExpression === '${order.id}' &&
+        value.target === 'orderId' &&
+        value.transient === true,
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:EventInParameter',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:EventInParameter' &&
+        value.sourceExpression === '${order.id}' &&
+        value.transient === true,
+    )
+  })
+
+  await sendEventAddOutputButton.click()
+  sendEventMappingDialog = page.locator('.el-dialog:visible')
+  await sendEventMappingDialog.getByText('输出参数映射', { exact: true }).waitFor()
+  await sendEventMappingDialog
+    .locator('[data-testid="mapping-source-type"]')
+    .getByText('变量', { exact: true })
+    .click()
+  await sendEventMappingDialog.locator('[data-testid="mapping-source"]').fill('ackId')
+  await sendEventMappingDialog
+    .locator('[data-testid="mapping-target"]')
+    .fill('acknowledgementId')
+  await sendEventMappingDialog.locator('[data-testid="mapping-transient"]').click()
+  await sendEventMappingDialog.locator('[data-testid="save-mapping"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:EventOutParameter' &&
+        value.source === 'ackId' &&
+        value.target === 'acknowledgementId' &&
+        value.transient === true,
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:EventOutParameter',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:EventOutParameter' &&
+        value.source === 'ackId' &&
+        value.transient === true,
+    )
+  })
+
+  const sendEventXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  const sendEventXmlState = await page.evaluate((xml) => {
+    const flowableNamespace = 'http://flowable.org/bpmn'
+    const bpmnNamespace = 'http://www.omg.org/spec/BPMN/20100524/MODEL'
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const serviceTask = [...xmlDocument.getElementsByTagNameNS(bpmnNamespace, 'serviceTask')].find(
+      (element) => element.getAttribute('id') === 'UserTask_approve',
+    )
+    const extension = (name) =>
+      [...serviceTask.getElementsByTagNameNS(flowableNamespace, name)][0]
+    const parameter = (name) => {
+      const element = extension(name)
+      return element
+        ? {
+            source: element.getAttribute('source') || null,
+            sourceExpression: element.getAttribute('sourceExpression') || null,
+            target: element.getAttribute('target') || null,
+            transient: element.getAttribute('transient') || null,
+          }
+        : null
+    }
+    return {
+      type: serviceTask?.getAttributeNS(flowableNamespace, 'type') || null,
+      eventType: extension('eventType')?.textContent || null,
+      triggerEventType: extension('triggerEventType')?.textContent || null,
+      channelKey: extension('channelKey')?.textContent || null,
+      systemChannel: Boolean(extension('systemChannel')),
+      sendSynchronously: extension('sendSynchronously')?.textContent || null,
+      eventIn: parameter('eventInParameter'),
+      eventOut: parameter('eventOutParameter'),
+    }
+  }, sendEventXml)
+  assert(
+    JSON.stringify(sendEventXmlState) ===
+      JSON.stringify({
+        type: 'send-event',
+        eventType: 'order-updated',
+        triggerEventType: 'order-acknowledged',
+        channelKey: 'orders-out',
+        systemChannel: true,
+        sendSynchronously: 'true',
+        eventIn: {
+          source: null,
+          sourceExpression: '${order.id}',
+          target: 'orderId',
+          transient: 'true',
+        },
+        eventOut: {
+          source: 'ackId',
+          sourceExpression: null,
+          target: 'acknowledgementId',
+          transient: 'true',
+        },
+      }),
+    `发送事件 XML 语义不完整：${JSON.stringify(sendEventXmlState)}`,
+  )
+  const sendEventRoundTrip = await page.evaluate(async (fixture) => {
+    const result = await window.flowableProcessModeler.importXML(
+      fixture,
+      'send-event-ui-roundtrip.bpmn20.xml',
+    )
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve')
+    window.bpmnModeler.get('selection').select(task)
+    const extensions = task.businessObject.extensionElements?.values || []
+    const body = (type) => extensions.find((value) => value.$type === type)?.body || null
+    const eventIn = extensions.find((value) => value.$type === 'flowable:EventInParameter')
+    const eventOut = extensions.find((value) => value.$type === 'flowable:EventOutParameter')
+    return {
+      warnings: result.warnings.map((warning) => warning.message || String(warning)),
+      type: task.businessObject.get('flowable:type'),
+      eventType: body('flowable:EventType'),
+      channelKey: body('flowable:ChannelKey'),
+      systemChannel: extensions.some((value) => value.$type === 'flowable:SystemChannel'),
+      sendSynchronously: body('flowable:SendSynchronously'),
+      eventIn: {
+        sourceExpression: eventIn?.sourceExpression,
+        target: eventIn?.target,
+        transient: eventIn?.transient,
+      },
+      eventOut: {
+        source: eventOut?.source,
+        target: eventOut?.target,
+        transient: eventOut?.transient,
+      },
+    }
+  }, sendEventXml)
+  assert(
+    sendEventRoundTrip.warnings.length === 0 &&
+      sendEventRoundTrip.type === 'send-event' &&
+      sendEventRoundTrip.eventType === 'order-updated' &&
+      sendEventRoundTrip.channelKey === 'orders-out' &&
+      sendEventRoundTrip.systemChannel &&
+      sendEventRoundTrip.sendSynchronously === 'true' &&
+      JSON.stringify(sendEventRoundTrip.eventIn) ===
+        JSON.stringify({
+          sourceExpression: '${order.id}',
+          target: 'orderId',
+          transient: true,
+        }) &&
+      JSON.stringify(sendEventRoundTrip.eventOut) ===
+        JSON.stringify({
+          source: 'ackId',
+          target: 'acknowledgementId',
+          transient: true,
+        }),
+    `发送事件 XML 往返后发生变化：${JSON.stringify(sendEventRoundTrip)}`,
+  )
+
+  const sendEventRecoveryWarnings = await page.evaluate(
+    async (fixture) =>
+      (await window.flowableProcessModeler.importXML(fixture, 'send-event-recovery.bpmn20.xml'))
+        .warnings.length,
+    rollbackBaseline.xml,
+  )
+  assert(sendEventRecoveryWarnings === 0, '发送事件用例后的基准恢复产生警告')
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  const inheritVariablesCallActivity = await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const current = modeler.get('elementRegistry').get('UserTask_approve')
+    const replacement = modeler.get('bpmnReplace').replaceElement(current, {
+      type: 'bpmn:CallActivity',
+    })
+    modeler.get('selection').select(replacement)
+    return { id: replacement.id, type: replacement.type }
+  })
+  assert(
+    inheritVariablesCallActivity.id === 'UserTask_approve' &&
+      inheritVariablesCallActivity.type === 'bpmn:CallActivity',
+    '继承变量测试未能创建 Call Activity',
+  )
+
+  const inheritVariablesSwitch = page.locator(
+    '[data-testid="call-activity-inherit-variables"]',
+  )
+  await inheritVariablesSwitch.waitFor({ state: 'visible' })
+  const inheritVariablesInput = inheritVariablesSwitch.locator('input[role="switch"]')
+  assert(!(await inheritVariablesInput.isChecked()), 'Call Activity 的继承流程变量未默认关闭')
+
+  const calledElementTypeControl = page.locator(
+    '[data-testid="call-activity-called-element-type"]',
+  )
+  await calledElementTypeControl.waitFor({ state: 'visible' })
+  const calledElementKeyOption = calledElementTypeControl.locator('label').filter({
+    hasText: /^流程定义 Key$/,
+  })
+  const calledElementIdOption = calledElementTypeControl.locator('label').filter({
+    hasText: /^流程定义 ID$/,
+  })
+  const calledElementKeyInput = calledElementKeyOption.locator('input[type="radio"]')
+  const calledElementIdInput = calledElementIdOption.locator('input[type="radio"]')
+  assert(await calledElementKeyInput.isChecked(), '新建 Call Activity 未默认使用流程定义 Key')
+  assert(!(await calledElementIdInput.isChecked()), '新建 Call Activity 错误选中了流程定义 ID')
+
+  const calledElementInput = page.locator('[data-testid="call-activity-called-element"]')
+  const sameDeploymentSwitch = page.locator('[data-testid="call-activity-same-deployment"]')
+  const localOutSwitch = page.locator('[data-testid="call-activity-local-out"]')
+  const completeAsyncSwitch = page.locator('[data-testid="call-activity-complete-async"]')
+  const idVariableNameInput = page.locator('[data-testid="call-activity-id-variable-name"]')
+  const sameDeploymentInput = sameDeploymentSwitch.locator('input[role="switch"]')
+  const localOutInput = localOutSwitch.locator('input[role="switch"]')
+  const completeAsyncInput = completeAsyncSwitch.locator('input[role="switch"]')
+  assert(!(await sameDeploymentInput.isChecked()), 'Call Activity 的同部署查找未默认关闭')
+  assert(!(await localOutInput.isChecked()), 'Call Activity 的局部输出未默认关闭')
+  assert(!(await completeAsyncInput.isChecked()), 'Call Activity 的异步完成未默认关闭')
+  assert((await idVariableNameInput.inputValue()) === '', 'Call Activity 的实例 ID 变量未默认为空')
+
+  const defaultCallActivityXmlState = await page.evaluate(async () => {
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const callActivity = [...xmlDocument.getElementsByTagNameNS(
+      'http://www.omg.org/spec/BPMN/20100524/MODEL',
+      'callActivity',
+    )].find((element) => element.getAttribute('id') === 'UserTask_approve')
+    const hasFlowableAttribute = (name) =>
+      Boolean(callActivity?.hasAttributeNS('http://flowable.org/bpmn', name))
+    return {
+      found: Boolean(callActivity),
+      hasCalledElementType: hasFlowableAttribute('calledElementType'),
+      hasSameDeployment: hasFlowableAttribute('sameDeployment'),
+      hasLocalOut: hasFlowableAttribute('useLocalScopeForOutParameters'),
+      hasCompleteAsync: hasFlowableAttribute('completeAsync'),
+      hasIdVariableName: hasFlowableAttribute('idVariableName'),
+      hasInheritVariables: hasFlowableAttribute('inheritVariables'),
+    }
+  })
+  assert(
+    defaultCallActivityXmlState.found &&
+      !defaultCallActivityXmlState.hasCalledElementType &&
+      !defaultCallActivityXmlState.hasSameDeployment &&
+      !defaultCallActivityXmlState.hasLocalOut &&
+      !defaultCallActivityXmlState.hasCompleteAsync &&
+      !defaultCallActivityXmlState.hasIdVariableName &&
+      !defaultCallActivityXmlState.hasInheritVariables,
+    `新建 Call Activity 序列化了默认属性：${JSON.stringify(defaultCallActivityXmlState)}`,
+  )
+
+  await calledElementInput.fill('Process_called_by_smoke')
+  await calledElementInput.press('Tab')
+  await calledElementIdOption.click()
+  await sameDeploymentSwitch.click()
+  await localOutSwitch.click()
+  await completeAsyncSwitch.click()
+  await idVariableNameInput.fill('calledProcessInstanceId')
+  await idVariableNameInput.press('Tab')
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      activity.calledElement === 'Process_called_by_smoke' &&
+      activity.get('flowable:calledElementType') === 'id' &&
+      activity.get('flowable:sameDeployment') === true &&
+      activity.get('flowable:useLocalScopeForOutParameters') === true &&
+      activity.get('flowable:completeAsync') === true &&
+      activity.get('flowable:idVariableName') === 'calledProcessInstanceId'
+    )
+  })
+  assert(await calledElementIdInput.isChecked(), 'Call Activity 未保持流程定义 ID 选择')
+  assert(await sameDeploymentInput.isChecked(), 'Call Activity 未保持同部署查找开启')
+  assert(await localOutInput.isChecked(), 'Call Activity 未保持局部输出开启')
+  assert(await completeAsyncInput.isChecked(), 'Call Activity 未保持异步完成开启')
+
+  const enabledCallActivityState = await page.evaluate(async () => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const callActivity = [...xmlDocument.getElementsByTagNameNS(
+      'http://www.omg.org/spec/BPMN/20100524/MODEL',
+      'callActivity',
+    )].find((element) => element.getAttribute('id') === 'UserTask_approve')
+    const flowableAttribute = (name) =>
+      callActivity?.getAttributeNS('http://flowable.org/bpmn', name) ?? null
+    return {
+      model: {
+        calledElement: activity.calledElement,
+        calledElementType: activity.get('flowable:calledElementType'),
+        sameDeployment: activity.get('flowable:sameDeployment'),
+        useLocalScopeForOutParameters: activity.get('flowable:useLocalScopeForOutParameters'),
+        completeAsync: activity.get('flowable:completeAsync'),
+        idVariableName: activity.get('flowable:idVariableName'),
+      },
+      xml: {
+        calledElement: callActivity?.getAttribute('calledElement') ?? null,
+        calledElementType: flowableAttribute('calledElementType'),
+        sameDeployment: flowableAttribute('sameDeployment'),
+        useLocalScopeForOutParameters: flowableAttribute('useLocalScopeForOutParameters'),
+        completeAsync: flowableAttribute('completeAsync'),
+        idVariableName: flowableAttribute('idVariableName'),
+      },
+    }
+  })
+  const expectedCallActivityModel = {
+    calledElement: 'Process_called_by_smoke',
+    calledElementType: 'id',
+    sameDeployment: true,
+    useLocalScopeForOutParameters: true,
+    completeAsync: true,
+    idVariableName: 'calledProcessInstanceId',
+  }
+  const expectedCallActivityXml = {
+    calledElement: 'Process_called_by_smoke',
+    calledElementType: 'id',
+    sameDeployment: 'true',
+    useLocalScopeForOutParameters: 'true',
+    completeAsync: 'true',
+    idVariableName: 'calledProcessInstanceId',
+  }
+  assert(
+    JSON.stringify(enabledCallActivityState.model) === JSON.stringify(expectedCallActivityModel),
+    `Call Activity 开启后的模型属性不正确：${JSON.stringify(enabledCallActivityState.model)}`,
+  )
+  assert(
+    JSON.stringify(enabledCallActivityState.xml) === JSON.stringify(expectedCallActivityXml),
+    `Call Activity 开启后的 XML 属性不正确：${JSON.stringify(enabledCallActivityState.xml)}`,
+  )
+
+  await calledElementKeyOption.click()
+  await sameDeploymentSwitch.click()
+  await localOutSwitch.click()
+  await completeAsyncSwitch.click()
+  await idVariableNameInput.fill('')
+  await idVariableNameInput.press('Tab')
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (
+      !activity.get('flowable:calledElementType') &&
+      activity.get('flowable:sameDeployment') !== true &&
+      activity.get('flowable:useLocalScopeForOutParameters') !== true &&
+      activity.get('flowable:completeAsync') !== true &&
+      !activity.get('flowable:idVariableName')
+    )
+  })
+  assert(await calledElementKeyInput.isChecked(), 'Call Activity 清理后未恢复流程定义 Key')
+  const clearedCallActivityState = await page.evaluate(async () => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const callActivity = [...xmlDocument.getElementsByTagNameNS(
+      'http://www.omg.org/spec/BPMN/20100524/MODEL',
+      'callActivity',
+    )].find((element) => element.getAttribute('id') === 'UserTask_approve')
+    const hasFlowableAttribute = (name) =>
+      Boolean(callActivity?.hasAttributeNS('http://flowable.org/bpmn', name))
+    return {
+      model: {
+        calledElementType: activity.get('flowable:calledElementType') ?? null,
+        sameDeployment: Boolean(activity.get('flowable:sameDeployment')),
+        useLocalScopeForOutParameters: Boolean(
+          activity.get('flowable:useLocalScopeForOutParameters'),
+        ),
+        completeAsync: Boolean(activity.get('flowable:completeAsync')),
+        idVariableName: activity.get('flowable:idVariableName') ?? null,
+      },
+      xml: {
+        calledElementType: hasFlowableAttribute('calledElementType'),
+        sameDeployment: hasFlowableAttribute('sameDeployment'),
+        useLocalScopeForOutParameters: hasFlowableAttribute('useLocalScopeForOutParameters'),
+        completeAsync: hasFlowableAttribute('completeAsync'),
+        idVariableName: hasFlowableAttribute('idVariableName'),
+      },
+    }
+  })
+  assert(
+    JSON.stringify(clearedCallActivityState.model) ===
+      JSON.stringify({
+        calledElementType: null,
+        sameDeployment: false,
+        useLocalScopeForOutParameters: false,
+        completeAsync: false,
+        idVariableName: null,
+      }),
+    `Call Activity 关闭后的模型属性未清理：${JSON.stringify(clearedCallActivityState.model)}`,
+  )
+  assert(
+    !Object.values(clearedCallActivityState.xml).some(Boolean),
+    `Call Activity 关闭后的 XML 属性未删除：${JSON.stringify(clearedCallActivityState.xml)}`,
+  )
+
+  const invalidCalledElementTypeProblems = await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const activity = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('modeling').updateProperties(activity, {
+      'flowable:calledElementType': 'version',
+    })
+    return window.flowableProcessModeler.validate()
+  })
+  assert(
+    invalidCalledElementTypeProblems.some(
+      (problem) =>
+        problem.elementId === 'UserTask_approve' &&
+        problem.level === 'error' &&
+        problem.message === '调用活动的被调用流程类型必须为 key 或 id',
+    ),
+    '非法 Call Activity 被调用流程类型未返回精确校验错误',
+  )
+  const restoredCalledElementTypeState = await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const activity = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('modeling').updateProperties(activity, {
+      'flowable:calledElementType': undefined,
+    })
+    return {
+      calledElementType: activity.businessObject.get('flowable:calledElementType') ?? null,
+      problems: window.flowableProcessModeler.validate(),
+    }
+  })
+  assert(
+    restoredCalledElementTypeState.calledElementType === null &&
+      !restoredCalledElementTypeState.problems.some(
+        (problem) => problem.message === '调用活动的被调用流程类型必须为 key 或 id',
+      ),
+    'Call Activity 被调用流程类型恢复默认 key 后仍被判定为非法',
+  )
+
+  const addInputMappingButton = page.locator('[data-testid="add-input-mapping"]')
+  const addOutputMappingButton = page.locator('[data-testid="add-output-mapping"]')
+  await addInputMappingButton.click()
+  let mappingDialog = page.locator('.el-dialog:visible')
+  await mappingDialog.getByText('输入参数映射', { exact: true }).waitFor()
+  let mappingSourceType = mappingDialog.locator('[data-testid="mapping-source-type"]')
+  assert(
+    (await mappingSourceType.getByText('变量集合', { exact: true }).count()) === 0 &&
+      (await mappingDialog.getByText('使用局部变量', { exact: true }).count()) === 0 &&
+      (await mappingDialog.locator('[data-testid="mapping-transient"]').count()) === 0,
+    '新建 Call Activity 映射弹窗仍暴露变量集合、局部变量或 transient 入口',
+  )
+  await mappingSourceType.getByText('变量', { exact: true }).click()
+  await mappingDialog.locator('[data-testid="mapping-source"]').fill('requestPayload')
+  await mappingDialog.locator('[data-testid="mapping-target"]').fill('calledRequest')
+  await mappingDialog.locator('[data-testid="save-mapping"]').click()
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (activity.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:In' &&
+        value.source === 'requestPayload' &&
+        value.target === 'calledRequest' &&
+        value.transient !== true,
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(activity.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:In' && value.source === 'requestPayload',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (activity.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:In' &&
+        value.source === 'requestPayload' &&
+        value.transient !== true,
+    )
+  })
+
+  await addOutputMappingButton.click()
+  mappingDialog = page.locator('.el-dialog:visible')
+  await mappingDialog.getByText('输出参数映射', { exact: true }).waitFor()
+  mappingSourceType = mappingDialog.locator('[data-testid="mapping-source-type"]')
+  await mappingSourceType.getByText('变量', { exact: true }).click()
+  await mappingDialog.locator('[data-testid="mapping-source"]').fill('calledResult')
+  await mappingDialog.locator('[data-testid="mapping-target"]').fill('responsePayload')
+  assert(
+    (await mappingDialog.locator('[data-testid="mapping-transient"]').count()) === 0,
+    '新建 Call Activity 输出映射仍暴露 transient 开关',
+  )
+  await mappingDialog.locator('[data-testid="save-mapping"]').click()
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (activity.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:Out' &&
+        value.source === 'calledResult' &&
+        value.target === 'responsePayload' &&
+        value.transient !== true,
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(activity.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:Out' && value.source === 'calledResult',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (activity.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:Out' &&
+        value.source === 'calledResult' &&
+        value.transient !== true,
+    )
+  })
+
+  let inputMappingRow = page.locator('[data-testid="input-mapping-row"]').filter({
+    hasText: 'requestPayload',
+  })
+  let outputMappingRow = page.locator('[data-testid="output-mapping-row"]').filter({
+    hasText: 'calledResult',
+  })
+  assert(!(await inputMappingRow.innerText()).includes('transient'), '新建输入映射错误显示 transient 状态')
+  assert(!(await outputMappingRow.innerText()).includes('transient'), '新建输出映射错误显示 transient 状态')
+
+  const transientMappingsState = await page.evaluate(async () => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const extensions = activity.extensionElements?.values || []
+    const input = extensions.find(
+      (value) => value.$type === 'flowable:In' && value.source === 'requestPayload',
+    )
+    const output = extensions.find(
+      (value) => value.$type === 'flowable:Out' && value.source === 'calledResult',
+    )
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const inputXml = [...xmlDocument.getElementsByTagNameNS('http://flowable.org/bpmn', 'in')].find(
+      (element) => element.getAttribute('source') === 'requestPayload',
+    )
+    const outputXml = [
+      ...xmlDocument.getElementsByTagNameNS('http://flowable.org/bpmn', 'out'),
+    ].find((element) => element.getAttribute('source') === 'calledResult')
+    const mappingState = (mapping) =>
+      mapping
+        ? {
+            source: mapping.source,
+            target: mapping.target,
+            transient: mapping.transient === true,
+            local: mapping.local === true,
+          }
+        : null
+    const xmlState = (element) =>
+      element
+        ? {
+            source: element.getAttribute('source'),
+            target: element.getAttribute('target'),
+            transient: element.getAttribute('transient'),
+            hasLocal: element.hasAttribute('local'),
+          }
+        : null
+    return {
+      input: mappingState(input),
+      output: mappingState(output),
+      inputXml: xmlState(inputXml),
+      outputXml: xmlState(outputXml),
+    }
+  })
+  assert(
+    JSON.stringify(transientMappingsState) ===
+      JSON.stringify({
+        input: {
+          source: 'requestPayload',
+          target: 'calledRequest',
+          transient: false,
+          local: false,
+        },
+        output: {
+          source: 'calledResult',
+          target: 'responsePayload',
+          transient: false,
+          local: false,
+        },
+        inputXml: {
+          source: 'requestPayload',
+          target: 'calledRequest',
+          transient: null,
+          hasLocal: false,
+        },
+        outputXml: {
+          source: 'calledResult',
+          target: 'responsePayload',
+          transient: null,
+          hasLocal: false,
+        },
+      }),
+    `新建 Call Activity 映射错误序列化了 transient：${JSON.stringify(transientMappingsState)}`,
+  )
+
+  const importedTransientCallActivity = await page.evaluate(async () => {
+    const bridge = window.flowableProcessModeler
+    const xml = await bridge.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const flowableNamespace = 'http://flowable.org/bpmn'
+    const input = [...xmlDocument.getElementsByTagNameNS(flowableNamespace, 'in')].find(
+      (element) => element.getAttribute('source') === 'requestPayload',
+    )
+    const output = [...xmlDocument.getElementsByTagNameNS(flowableNamespace, 'out')].find(
+      (element) => element.getAttribute('source') === 'calledResult',
+    )
+    input.setAttribute('transient', 'true')
+    output.setAttribute('transient', 'true')
+    const result = await bridge.importXML(
+      new XMLSerializer().serializeToString(xmlDocument),
+      'call-activity-imported-transient.bpmn20.xml',
+    )
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve')
+    window.bpmnModeler.get('selection').select(activity)
+    const extensions = activity.businessObject.extensionElements?.values || []
+    return {
+      warnings: result.warnings.map((warning) => warning.message || String(warning)),
+      inputTransient: extensions.find(
+        (value) => value.$type === 'flowable:In' && value.source === 'requestPayload',
+      )?.transient,
+      outputTransient: extensions.find(
+        (value) => value.$type === 'flowable:Out' && value.source === 'calledResult',
+      )?.transient,
+    }
+  })
+  assert(
+    importedTransientCallActivity.warnings.length === 0 &&
+      importedTransientCallActivity.inputTransient === true &&
+      importedTransientCallActivity.outputTransient === true,
+    `Call Activity 导入 transient 映射失败：${JSON.stringify(importedTransientCallActivity)}`,
+  )
+  inputMappingRow = page.locator('[data-testid="input-mapping-row"]').filter({
+    hasText: 'requestPayload',
+  })
+  outputMappingRow = page.locator('[data-testid="output-mapping-row"]').filter({
+    hasText: 'calledResult',
+  })
+  assert(
+    (await inputMappingRow.innerText()).includes('已导入 transient（按普通变量处理）') &&
+      (await outputMappingRow.innerText()).includes('已导入 transient（按普通变量处理）'),
+    'Call Activity 导入 transient 后列表未显示执行语义提示',
+  )
+
+  await inputMappingRow.getByRole('button', { name: '编辑输入参数' }).click()
+  mappingDialog = page.locator('.el-dialog:visible')
+  await mappingDialog.getByText('输入参数映射', { exact: true }).waitFor()
+  assert(
+    (await mappingDialog.locator('[data-testid="mapping-transient"]').count()) === 0,
+    '编辑 Call Activity 导入映射时仍暴露 transient 开关',
+  )
+  const importedTransientWarning = mappingDialog.locator('.el-alert').filter({
+    hasText: '按普通变量处理 transient',
+  })
+  await importedTransientWarning.waitFor()
+  assert(
+    (await importedTransientWarning.innerText()).includes('本次编辑会原样保留该属性'),
+    'Call Activity 导入 transient 提示未说明编辑保留语义',
+  )
+  await mappingDialog.locator('[data-testid="mapping-target"]').fill('calledRequestImported')
+  await mappingDialog.locator('[data-testid="save-mapping"]').click()
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const input = (activity.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:In' && value.source === 'requestPayload',
+    )
+    return input?.target === 'calledRequestImported' && input.transient === true
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const input = (activity.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:In' && value.source === 'requestPayload',
+    )
+    return input?.target === 'calledRequest' && input.transient === true
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const input = (activity.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:In' && value.source === 'requestPayload',
+    )
+    return input?.target === 'calledRequestImported' && input.transient === true
+  })
+  const preservedImportedTransientXml = await page.evaluate(async () => {
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const input = [...xmlDocument.getElementsByTagNameNS('http://flowable.org/bpmn', 'in')].find(
+      (element) => element.getAttribute('source') === 'requestPayload',
+    )
+    const output = [...xmlDocument.getElementsByTagNameNS('http://flowable.org/bpmn', 'out')].find(
+      (element) => element.getAttribute('source') === 'calledResult',
+    )
+    return {
+      inputTarget: input?.getAttribute('target') || null,
+      inputTransient: input?.getAttribute('transient') || null,
+      outputTransient: output?.getAttribute('transient') || null,
+    }
+  })
+  assert(
+    JSON.stringify(preservedImportedTransientXml) ===
+      JSON.stringify({
+        inputTarget: 'calledRequestImported',
+        inputTransient: 'true',
+        outputTransient: 'true',
+      }),
+    `编辑 Call Activity 映射时未原样保留导入 transient：${JSON.stringify(preservedImportedTransientXml)}`,
+  )
+
+  await outputMappingRow.getByRole('button', { name: '删除输出参数' }).click()
+  await page.locator('.el-message-box:visible').getByRole('button', { name: '确定' }).click()
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(activity.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:Out' && value.source === 'calledResult',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (activity.extensionElements?.values || []).some(
+      (value) =>
+        value.$type === 'flowable:Out' &&
+        value.source === 'calledResult' &&
+        value.transient === true,
+    )
+  })
+  outputMappingRow = page.locator('[data-testid="output-mapping-row"]').filter({
+    hasText: 'calledResult',
+  })
+  assert(
+    (await outputMappingRow.innerText()).includes('已导入 transient（按普通变量处理）'),
+    '撤销删除后导入 transient 输出映射未恢复',
+  )
+
+  await inheritVariablesSwitch.click()
+  await page.waitForFunction(() => {
+    const activity = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return activity.get('flowable:inheritVariables') === true
+  })
+  assert(await inheritVariablesInput.isChecked(), 'Call Activity 的继承流程变量开关未保持开启')
+  const enabledInheritVariablesXmlState = await page.evaluate(async () => {
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const callActivity = [...xmlDocument.getElementsByTagNameNS(
+      'http://www.omg.org/spec/BPMN/20100524/MODEL',
+      'callActivity',
+    )].find((element) => element.getAttribute('id') === 'UserTask_approve')
+    return {
+      found: Boolean(callActivity),
+      inheritVariables: callActivity?.getAttributeNS(
+        'http://flowable.org/bpmn',
+        'inheritVariables',
+      ),
+    }
+  })
+  assert(
+    enabledInheritVariablesXmlState.found &&
+      enabledInheritVariablesXmlState.inheritVariables === 'true',
+    'Call Activity 开启继承变量后未序列化 flowable:inheritVariables="true"',
+  )
+
+  const callActivityRecoveryWarnings = await page.evaluate(
+    async (fixture) =>
+      (await window.flowableProcessModeler.importXML(fixture, 'call-activity-recovery.bpmn20.xml'))
+        .warnings.length,
+    rollbackBaseline.xml,
+  )
+  assert(callActivityRecoveryWarnings === 0, 'Call Activity 用例后的基准恢复产生警告')
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  await page.evaluate(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve')
+    window.bpmnModeler.get('selection').select(task)
+  })
+  const addCustomResourceButton = page.locator('[data-testid="add-custom-resource"]')
+  await addCustomResourceButton.waitFor({ state: 'visible' })
+  await addCustomResourceButton.click()
+  let customResourceDialog = page.locator('.el-dialog:visible')
+  await customResourceDialog.getByText('新增自定义身份链接', { exact: true }).waitFor()
+  await customResourceDialog
+    .locator('[data-testid="custom-resource-name"]')
+    .fill('businessAdministrator')
+  await customResourceDialog
+    .locator('[data-testid="custom-resource-expression"]')
+    .fill('user(${manager}), group(management)')
+  await customResourceDialog.locator('[data-testid="save-custom-resource"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const resource = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+    const expression = resource?.resourceAssignmentExpression?.get('bpmn:formalExpression')
+    return (
+      resource?.name === 'businessAdministrator' &&
+      expression?.body === 'user(${manager}), group(management)'
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+  })
+  assert(
+    (await page.locator('[data-testid="custom-resource-row"]').count()) === 0,
+    '撤销新增自定义身份链接后列表仍有数据',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return (task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:CustomResource' && value.name === 'businessAdministrator',
+    )
+  })
+
+  const customResourceWithUnknownAttributesXml = await page.evaluate(async () => {
+    const xml = await window.flowableProcessModeler.getXML()
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const bpmnNamespace = 'http://www.omg.org/spec/BPMN/20100524/MODEL'
+    const flowableNamespace = 'http://flowable.org/bpmn'
+    const vendorNamespace = 'urn:smoke:identity'
+    xmlDocument.documentElement.setAttributeNS(
+      'http://www.w3.org/2000/xmlns/',
+      'xmlns:vendor',
+      vendorNamespace,
+    )
+    const resource = [...xmlDocument.getElementsByTagNameNS(flowableNamespace, 'customResource')]
+      .find((element) => element.getAttribute('name') === 'businessAdministrator')
+    const assignment = resource.getElementsByTagNameNS(
+      bpmnNamespace,
+      'resourceAssignmentExpression',
+    )[0]
+    const expression = assignment.getElementsByTagNameNS(bpmnNamespace, 'formalExpression')[0]
+    resource.setAttributeNS(vendorNamespace, 'vendor:resourceHint', 'keep-resource')
+    assignment.setAttributeNS(vendorNamespace, 'vendor:assignmentHint', 'keep-assignment')
+    expression.setAttributeNS(vendorNamespace, 'vendor:expressionHint', 'keep-expression')
+    return new XMLSerializer().serializeToString(xmlDocument)
+  })
+  const customResourceUnknownImport = await page.evaluate(async (fixture) => {
+    const result = await window.flowableProcessModeler.importXML(
+      fixture,
+      'custom-resource-unknown-attributes.bpmn20.xml',
+    )
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve')
+    window.bpmnModeler.get('selection').select(task)
+    const resource = (task.businessObject.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+    const assignment = resource?.resourceAssignmentExpression
+    const expression = assignment?.get('bpmn:formalExpression')
+    return {
+      warnings: result.warnings.map((warning) => warning.message || String(warning)),
+      name: resource?.name,
+      expression: expression?.body,
+      resourceHint: resource?.get('vendor:resourceHint'),
+      assignmentHint: assignment?.get('vendor:assignmentHint'),
+      expressionHint: expression?.get('vendor:expressionHint'),
+    }
+  }, customResourceWithUnknownAttributesXml)
+  assert(
+    customResourceUnknownImport.warnings.length === 0 &&
+      JSON.stringify(customResourceUnknownImport) ===
+        JSON.stringify({
+          warnings: [],
+          name: 'businessAdministrator',
+          expression: 'user(${manager}), group(management)',
+          resourceHint: 'keep-resource',
+          assignmentHint: 'keep-assignment',
+          expressionHint: 'keep-expression',
+        }),
+    `自定义身份链接三层未知属性导入失败：${JSON.stringify(customResourceUnknownImport)}`,
+  )
+
+  let customResourceRow = page.locator('[data-testid="custom-resource-row"]').filter({
+    hasText: 'businessAdministrator',
+  })
+  await customResourceRow.waitFor({ state: 'visible' })
+  assert(
+    (await customResourceRow.innerText()).includes('user(${manager}), group(management)'),
+    '导入自定义身份链接后列表未回显表达式',
+  )
+  await customResourceRow.getByRole('button', { name: '编辑自定义身份链接' }).click()
+  customResourceDialog = page.locator('.el-dialog:visible')
+  await customResourceDialog.getByText('编辑自定义身份链接', { exact: true }).waitFor()
+  assert(
+    (await customResourceDialog.locator('[data-testid="custom-resource-name"]').inputValue()) ===
+      'businessAdministrator' &&
+      (await customResourceDialog
+        .locator('[data-testid="custom-resource-expression"]')
+        .inputValue()) === 'user(${manager}), group(management)',
+    '编辑自定义身份链接时未回显 name 或 expression',
+  )
+  await customResourceDialog
+    .locator('[data-testid="custom-resource-name"]')
+    .fill('processOwner')
+  await customResourceDialog
+    .locator('[data-testid="custom-resource-expression"]')
+    .fill('user(${processOwner})')
+  await customResourceDialog.locator('[data-testid="save-custom-resource"]').click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const resource = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+    const assignment = resource?.resourceAssignmentExpression
+    const expression = assignment?.get('bpmn:formalExpression')
+    return (
+      resource?.name === 'processOwner' &&
+      expression?.body === 'user(${processOwner})' &&
+      resource.get('vendor:resourceHint') === 'keep-resource' &&
+      assignment.get('vendor:assignmentHint') === 'keep-assignment' &&
+      expression.get('vendor:expressionHint') === 'keep-expression'
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const resource = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+    return (
+      resource?.name === 'businessAdministrator' &&
+      resource.resourceAssignmentExpression?.get('bpmn:formalExpression')?.body ===
+        'user(${manager}), group(management)' &&
+      resource.get('vendor:resourceHint') === 'keep-resource'
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const resource = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+    const assignment = resource?.resourceAssignmentExpression
+    const expression = assignment?.get('bpmn:formalExpression')
+    return (
+      resource?.name === 'processOwner' &&
+      expression?.body === 'user(${processOwner})' &&
+      resource.get('vendor:resourceHint') === 'keep-resource' &&
+      assignment.get('vendor:assignmentHint') === 'keep-assignment' &&
+      expression.get('vendor:expressionHint') === 'keep-expression'
+    )
+  })
+
+  customResourceRow = page.locator('[data-testid="custom-resource-row"]').filter({
+    hasText: 'processOwner',
+  })
+  await customResourceRow.waitFor({ state: 'visible' })
+  assert(
+    (await customResourceRow.innerText()).includes('user(${processOwner})'),
+    '编辑自定义身份链接后列表未同步 name 和 expression',
+  )
+  await customResourceRow.getByRole('button', { name: '删除自定义身份链接' }).click()
+  await page.locator('.el-message-box:visible').getByRole('button', { name: '确定' }).click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const resource = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+    return resource?.name === 'processOwner' && resource.get('vendor:resourceHint') === 'keep-resource'
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
+    const resource = (task.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+    return resource?.name === 'processOwner' && resource.get('vendor:resourceHint') === 'keep-resource'
+  })
+
+  const customResourceXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  const customResourceXmlState = await page.evaluate((xml) => {
+    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
+    const bpmnNamespace = 'http://www.omg.org/spec/BPMN/20100524/MODEL'
+    const flowableNamespace = 'http://flowable.org/bpmn'
+    const vendorNamespace = 'urn:smoke:identity'
+    const resource = [...xmlDocument.getElementsByTagNameNS(flowableNamespace, 'customResource')]
+      .find((element) =>
+        ['processOwner', null].includes(
+          element.getAttribute('name') || element.getAttributeNS(flowableNamespace, 'name'),
+        ),
+      )
+    const assignment = resource?.getElementsByTagNameNS(
+      bpmnNamespace,
+      'resourceAssignmentExpression',
+    )[0]
+    const expression = assignment?.getElementsByTagNameNS(bpmnNamespace, 'formalExpression')[0]
+    return {
+      name: resource?.getAttribute('name') || resource?.getAttributeNS(flowableNamespace, 'name'),
+      expression: expression?.textContent || null,
+      resourceHint: resource?.getAttributeNS(vendorNamespace, 'resourceHint') || null,
+      assignmentHint: assignment?.getAttributeNS(vendorNamespace, 'assignmentHint') || null,
+      expressionHint: expression?.getAttributeNS(vendorNamespace, 'expressionHint') || null,
+    }
+  }, customResourceXml)
+  assert(
+    JSON.stringify(customResourceXmlState) ===
+      JSON.stringify({
+        name: 'processOwner',
+        expression: 'user(${processOwner})',
+        resourceHint: 'keep-resource',
+        assignmentHint: 'keep-assignment',
+        expressionHint: 'keep-expression',
+      }),
+    `自定义身份链接 XML 未保留编辑结果或三层未知属性：${JSON.stringify(customResourceXmlState)}`,
+  )
+  const customResourceRoundTrip = await page.evaluate(async (fixture) => {
+    const result = await window.flowableProcessModeler.importXML(
+      fixture,
+      'custom-resource-ui-roundtrip.bpmn20.xml',
+    )
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve')
+    window.bpmnModeler.get('selection').select(task)
+    const resource = (task.businessObject.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:CustomResource',
+    )
+    const assignment = resource?.resourceAssignmentExpression
+    const expression = assignment?.get('bpmn:formalExpression')
+    return {
+      warnings: result.warnings.map((warning) => warning.message || String(warning)),
+      name: resource?.name,
+      expression: expression?.body,
+      resourceHint: resource?.get('vendor:resourceHint'),
+      assignmentHint: assignment?.get('vendor:assignmentHint'),
+      expressionHint: expression?.get('vendor:expressionHint'),
+    }
+  }, customResourceXml)
+  assert(
+    customResourceRoundTrip.warnings.length === 0 &&
+      JSON.stringify(customResourceRoundTrip) ===
+        JSON.stringify({
+          warnings: [],
+          name: 'processOwner',
+          expression: 'user(${processOwner})',
+          resourceHint: 'keep-resource',
+          assignmentHint: 'keep-assignment',
+          expressionHint: 'keep-expression',
+        }),
+    `自定义身份链接 XML 往返后发生变化：${JSON.stringify(customResourceRoundTrip)}`,
+  )
+  customResourceRow = page.locator('[data-testid="custom-resource-row"]').filter({
+    hasText: 'processOwner',
+  })
+  assert(
+    (await customResourceRow.innerText()).includes('user(${processOwner})'),
+    '自定义身份链接 XML 往返后 UI 未恢复',
+  )
+
+  const customResourceRecoveryWarnings = await page.evaluate(
+    async (fixture) =>
+      (await window.flowableProcessModeler.importXML(fixture, 'custom-resource-recovery.bpmn20.xml'))
+        .warnings.length,
+    rollbackBaseline.xml,
+  )
+  assert(customResourceRecoveryWarnings === 0, '自定义身份链接用例后的基准恢复产生警告')
+  await waitForExtensionProperty(page, 'UserTask_approve', editedExtensionProperty)
+
+  const legacyNamespaceFixtures = [
+    {
+      name: 'flowable-prefix',
+      xml: customExtensionXml.replace(
+        'http://flowable.org/bpmn',
+        'http://activiti.org/bpmn',
+      ).replace(
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
+        'xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://activiti.org/bpmn https://example.test/activiti-bpmn.xsd http://www.omg.org/spec/BPMN/20100524/MODEL https://example.test/BPMN20.xsd"',
+      ),
+    },
+    {
+      name: 'activiti-prefix',
+      xml: customExtensionXml
+        .replace(
+          'xmlns:flowable="http://flowable.org/bpmn"',
+          'xmlns:activiti="http://activiti.org/bpmn"',
+        )
+        .replaceAll('flowable:', 'activiti:'),
+    },
+  ]
+  for (const fixture of legacyNamespaceFixtures) {
+    const state = await page.evaluate(async ({ xml, name }) => {
+      const result = await window.flowableProcessModeler.importXML(
+        xml,
+        `legacy-${name}.bpmn20.xml`,
+      )
+      const task = window.bpmnModeler
+        .get('elementRegistry')
+        .get('UserTask_custom').businessObject
+      return {
+        warnings: result.warnings.map((warning) => warning.message || String(warning)),
+        extensionTypes: (task.extensionElements?.values || []).map(
+          (value) => value.$type,
+        ),
+        xml: await window.flowableProcessModeler.getXML(),
+      }
+    }, fixture)
+    assert(
+      JSON.stringify(state.warnings) ===
+        JSON.stringify([
+          '已将旧 Activiti 扩展命名空间规范化为 http://flowable.org/bpmn',
+        ]),
+      `${fixture.name} 旧命名空间没有返回精确兼容提示：${JSON.stringify(state.warnings)}`,
+    )
+    assert(
+      state.extensionTypes.includes('flowable:AssigneeType') &&
+        state.extensionTypes.includes('flowable:StaticAssigneeVariables'),
+      `${fixture.name} 旧命名空间扩展没有恢复为 typed Flowable 元素`,
+    )
+    assert(
+      !state.xml.includes('http://activiti.org/bpmn') &&
+        state.xml.includes('xmlns:flowable="http://flowable.org/bpmn"') &&
+        state.xml.includes('<flowable:assigneeType>static</flowable:assigneeType>'),
+      `${fixture.name} 旧命名空间导出后没有规范化为 Flowable URI`,
+    )
+    if (fixture.name === 'flowable-prefix') {
+      assert(
+        state.xml.includes(
+          'xsi:schemaLocation="http://flowable.org/bpmn https://example.test/activiti-bpmn.xsd http://www.omg.org/spec/BPMN/20100524/MODEL https://example.test/BPMN20.xsd"',
+        ),
+        '旧 Activiti schemaLocation 命名空间配对没有规范化',
+      )
+    }
+  }
+
+  const concurrentNamespaceImports = await page.evaluate(
+    async ({ legacyXml, canonicalXml }) => {
+      const bridge = window.flowableProcessModeler
+      const legacyImport = bridge.importXML(
+        legacyXml,
+        'concurrent-legacy.bpmn20.xml',
+      )
+      const canonicalImport = bridge.importXML(
+        canonicalXml,
+        'concurrent-canonical.bpmn20.xml',
+      )
+      const [legacyResult, canonicalResult] = await Promise.all([
+        legacyImport,
+        canonicalImport,
+      ])
+      return {
+        legacyWarnings: legacyResult.warnings.map(
+          (warning) => warning.message || String(warning),
+        ),
+        canonicalWarnings: canonicalResult.warnings.map(
+          (warning) => warning.message || String(warning),
+        ),
+        finalProcessExists: Boolean(
+          window.bpmnModeler.get('elementRegistry').get('Process_concurrent_final'),
+        ),
+        xml: await bridge.getXML(),
+      }
+    },
+    {
+      legacyXml: legacyNamespaceFixtures[1].xml,
+      canonicalXml: customExtensionXml.replaceAll(
+        'Process_custom_extensions',
+        'Process_concurrent_final',
+      ),
+    },
+  )
+  assert(
+    JSON.stringify(concurrentNamespaceImports.legacyWarnings) ===
+      JSON.stringify([
+        '已将旧 Activiti 扩展命名空间规范化为 http://flowable.org/bpmn',
+      ]) &&
+      concurrentNamespaceImports.canonicalWarnings.length === 0 &&
+      concurrentNamespaceImports.finalProcessExists &&
+      concurrentNamespaceImports.xml.includes('id="Process_concurrent_final"') &&
+      !concurrentNamespaceImports.xml.includes('http://activiti.org/bpmn'),
+    '并发导入没有隔离兼容提示或保持最后一次请求结果',
+  )
+
+  const literalLegacyUriFixture = customExtensionXml
+    .replace(
+      'targetNamespace="http://flowable.org/processdef"',
+      'targetNamespace="http://activiti.org/bpmn"',
+    )
+    .replace(
+      /(<bpmn:process id="Process_custom_extensions"[^>]*>)/,
+      '$1\n    <bpmn:documentation>http://activiti.org/bpmn</bpmn:documentation>',
+    )
+  const literalLegacyUriState = await page.evaluate(async (fixture) => {
+    const result = await window.flowableProcessModeler.importXML(
+      fixture,
+      'literal-legacy-uri.bpmn20.xml',
+    )
+    return {
+      warnings: result.warnings.map((warning) => warning.message || String(warning)),
+      xml: await window.flowableProcessModeler.getXML(),
+    }
+  }, literalLegacyUriFixture)
+  assert(
+    literalLegacyUriState.warnings.length === 0 &&
+      literalLegacyUriState.xml.includes(
+        'targetNamespace="http://activiti.org/bpmn"',
+      ) &&
+      literalLegacyUriState.xml.includes(
+        '<bpmn:documentation>http://activiti.org/bpmn</bpmn:documentation>',
+      ),
+    'targetNamespace 或正文中的旧 URI 被错误迁移',
+  )
+
+  const malformedLegacyRollback = await page.evaluate(async () => {
+    const bridge = window.flowableProcessModeler
+    const before = await bridge.getXML()
+    const malformed = before
+      .replace(
+        'xmlns:flowable="http://flowable.org/bpmn"',
+        'xmlns:activiti="http://activiti.org/bpmn"',
+      )
+      .replaceAll('flowable:', 'activiti:')
+      .replace('</bpmn:definitions>', '<bpmn:broken></bpmn:definitions>')
+    let rejected = false
+    try {
+      await bridge.importXML(malformed, 'malformed-legacy.bpmn20.xml')
+    } catch {
+      rejected = true
+    }
+    const after = await bridge.getXML()
+    return {
+      rejected,
+      unchanged: before === after,
+      processExists: Boolean(
+        window.bpmnModeler.get('elementRegistry').get('Process_custom_extensions'),
+      ),
+    }
+  })
+  assert(
+    malformedLegacyRollback.rejected &&
+      malformedLegacyRollback.unchanged &&
+      malformedLegacyRollback.processExists,
+    '旧命名空间 malformed XML 没有拒绝并完整回滚当前流程',
+  )
+
+  const p0ModdleRoundTrip = await page.evaluate(async (fixture) => {
+    const moddle = window.bpmnModeler.get('moddle')
+
+    const readState = (definitions) => {
+      const process = definitions.rootElements.find(
+        (element) => element.id === 'Process_p0_extensions',
+      )
+      const byId = (id) => process.flowElements.find((element) => element.id === id)
+      const start = byId('Start_registry')
+      const multiTask = byId('Task_multi_instance')
+      const boundary = byId('Boundary_variable')
+      const sendTask = byId('Task_send_event')
+      const httpTask = byId('Task_http')
+      const loop = multiTask.loopCharacteristics
+      const aggregation = loop.extensionElements.values.find(
+        (value) => value.$type === 'flowable:VariableAggregation',
+      )
+      const requestHandler = httpTask.extensionElements.values.find(
+        (value) => value.$type === 'flowable:HttpRequestHandler',
+      )
+      const listener = process.extensionElements.values.find(
+        (value) => value.$type === 'flowable:EventListener',
+      )
+      return {
+        types: [
+          ...process.extensionElements.values,
+          ...start.extensionElements.values,
+          ...loop.extensionElements.values,
+          ...boundary.extensionElements.values,
+          ...sendTask.extensionElements.values,
+          ...httpTask.extensionElements.values,
+        ].map((value) => value.$type),
+        aggregationVariableTypes: aggregation
+          .get('bpmn:variable')
+          .map((variable) => variable.$type),
+        aggregationSourceExpression: aggregation.get('bpmn:variable')[1].sourceExpression,
+        noWaitStatesAsyncLeave: loop.get('flowable:noWaitStatesAsyncLeave'),
+        listenerDelegateExpression: listener.delegateExpression,
+        scriptLanguage: requestHandler.script.language,
+        scriptResultVariable: requestHandler.script.resultVariable,
+      }
+    }
+
+    const first = await moddle.fromXML(fixture)
+    const firstState = readState(first.rootElement)
+    const xml = (await moddle.toXML(first.rootElement, { format: true })).xml
+    const second = await moddle.fromXML(xml)
+    return {
+      firstWarnings: first.warnings.map((warning) => warning.message),
+      secondWarnings: second.warnings.map((warning) => warning.message),
+      firstState,
+      secondState: readState(second.rootElement),
+      xml,
+    }
+  }, p0ExtensionXml)
+  const requiredP0Types = [
+    'flowable:EventListener',
+    'flowable:HistoryLevel',
+    'flowable:EventType',
+    'flowable:EventCorrelationParameter',
+    'flowable:EventInParameter',
+    'flowable:EventOutParameter',
+    'flowable:VariableListenerEventDefinition',
+    'flowable:Collection',
+    'flowable:VariableAggregation',
+    'flowable:HttpRequestHandler',
+    'flowable:HttpResponseHandler',
+  ]
+  assert(
+    p0ModdleRoundTrip.firstWarnings.length === 0 &&
+      p0ModdleRoundTrip.secondWarnings.length === 0,
+    `P0 扩展 moddle 往返产生警告：${JSON.stringify({
+      first: p0ModdleRoundTrip.firstWarnings,
+      second: p0ModdleRoundTrip.secondWarnings,
+    })}`,
+  )
+  for (const type of requiredP0Types) {
+    assert(
+      p0ModdleRoundTrip.firstState.types.includes(type) &&
+        p0ModdleRoundTrip.secondState.types.includes(type),
+      `${type} 没有在浏览器 moddle 往返中保持 typed`,
+    )
+  }
+  assert(
+    JSON.stringify(p0ModdleRoundTrip.firstState) ===
+      JSON.stringify(p0ModdleRoundTrip.secondState) &&
+      p0ModdleRoundTrip.firstState.aggregationVariableTypes.every(
+        (type) => type === 'flowable:Variable',
+      ) &&
+      p0ModdleRoundTrip.firstState.aggregationSourceExpression === '${score * 2}' &&
+      p0ModdleRoundTrip.firstState.noWaitStatesAsyncLeave === true &&
+      p0ModdleRoundTrip.firstState.listenerDelegateExpression === '${auditListener}' &&
+      p0ModdleRoundTrip.firstState.scriptLanguage === 'groovy' &&
+      p0ModdleRoundTrip.firstState.scriptResultVariable === 'requestPayload',
+    'P0 扩展的嵌套属性在浏览器 moddle 往返后发生变化',
+  )
+  assert(
+    p0ModdleRoundTrip.xml.includes('<bpmn:variable source="approved" target="value" />') &&
+      !p0ModdleRoundTrip.xml.includes('<flowable:variable '),
+    '多实例聚合 variable 子元素的 BPMN 命名空间不正确',
+  )
+  mkdirSync('artifacts', { recursive: true })
+  writeFileSync(
+    'artifacts/flowable-p0-extensions-roundtrip.bpmn20.xml',
+    p0ModdleRoundTrip.xml,
+    'utf8',
+  )
+
+  const preservationImportWarnings = await page.evaluate(
+    async (fixture) =>
+      (
+        await window.flowableProcessModeler.importXML(
+          fixture,
+          'multi-instance-timer-preservation.bpmn20.xml',
+        )
+      ).warnings.map((warning) => warning.message || String(warning)),
+    multiInstanceTimerPreservationXml,
+  )
+  assert(
+    preservationImportWarnings.length === 0,
+    `原位编辑 fixture 导入产生警告：${JSON.stringify(preservationImportWarnings)}`,
+  )
+  await page.waitForFunction(
+    () =>
+      window.bpmnModeler.get('canvas').getRootElement().businessObject.id ===
+        'Process_edit_preservation' &&
+      Boolean(window.bpmnModeler.get('elementRegistry').get('Boundary_timer_cycle')),
+  )
+
+  await page.evaluate(() => window.bpmnModeler.get('selection').select(null))
+  const eagerExecutionSwitch = page.locator('[data-testid="process-eager-execution"]')
+  const eagerExecutionInput = eagerExecutionSwitch.locator('input[role="switch"]')
+  await eagerExecutionSwitch.waitFor({ state: 'visible' })
+  assert(
+    !(await eagerExecutionInput.isChecked()),
+    'canonical eager=false 未优先于旧 eager=true 回显',
+  )
+  await eagerExecutionSwitch.click()
+  await page.waitForFunction(() => {
+    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
+    return (
+      process.get('flowable:isEagerExecutionFetching') === true &&
+      process.get('flowable:enableEagerExecutionTreeFetching') === undefined
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
+    return (
+      process.get('flowable:isEagerExecutionFetching') === false &&
+      process.get('flowable:enableEagerExecutionTreeFetching') === true
+    )
+  })
+  assert(!(await eagerExecutionInput.isChecked()), 'eager 规范化撤销后未恢复冲突属性')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
+    return (
+      process.get('flowable:isEagerExecutionFetching') === true &&
+      process.get('flowable:enableEagerExecutionTreeFetching') === undefined
+    )
+  })
+
+  await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('Task_multi_handler')
+    modeler.get('selection').select(task)
+    const loop = task.businessObject.loopCharacteristics
+    const collection = loop.extensionElements.values.find(
+      (value) => value.$type === 'flowable:Collection',
+    )
+    const aggregation = loop.extensionElements.values.find(
+      (value) => value.$type === 'flowable:VariableAggregation',
+    )
+    window.__handlerMultiInstanceProbe = {
+      loop,
+      extensionElements: loop.extensionElements,
+      collection,
+      aggregation,
+      aggregationVariable: aggregation.get('bpmn:variable')[0],
+      completionCondition: loop.completionCondition,
+    }
+  })
+  const multiInstanceSection = page.locator('.el-collapse-item').filter({
+    has: page.locator('.el-collapse-item__header', { hasText: '多实例' }),
+  })
+  if (!(await multiInstanceSection.evaluate((element) => element.classList.contains('is-active')))) {
+    await multiInstanceSection.locator('.el-collapse-item__header').click()
+  }
+  const multiInstanceType = page.locator('[data-testid="multi-instance-type"]')
+  const multiInstanceCollection = page.locator('[data-testid="multi-instance-collection"]')
+  const completionConditionInput = multiInstanceSection
+    .locator('.el-form-item')
+    .filter({ hasText: '完成条件' })
+    .locator('textarea')
+  await multiInstanceCollection.waitFor({ state: 'visible' })
+  assert(
+    (await multiInstanceCollection.inputValue()) === '${items}',
+    'nested Collection expression 未回显到多实例集合输入框',
+  )
+  assert(
+    (await completionConditionInput.inputValue()) === '${nrOfCompletedInstances > 0}',
+    '多实例完成条件未回显',
+  )
+
+  await multiInstanceType.locator('.el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: /^串行多实例$/ })
+    .click()
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: true,
+    collection: '${items}',
+    completionCondition: '${nrOfCompletedInstances > 0}',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: false,
+    collection: '${items}',
+    completionCondition: '${nrOfCompletedInstances > 0}',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: true,
+    collection: '${items}',
+    completionCondition: '${nrOfCompletedInstances > 0}',
+  })
+
+  await multiInstanceCollection.fill('${updatedItems}')
+  await multiInstanceCollection.press('Tab')
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: true,
+    collection: '${updatedItems}',
+    completionCondition: '${nrOfCompletedInstances > 0}',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: true,
+    collection: '${items}',
+    completionCondition: '${nrOfCompletedInstances > 0}',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: true,
+    collection: '${updatedItems}',
+    completionCondition: '${nrOfCompletedInstances > 0}',
+  })
+
+  await completionConditionInput.fill('${nrOfCompletedInstances >= 3}')
+  await completionConditionInput.press('Tab')
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: true,
+    collection: '${updatedItems}',
+    completionCondition: '${nrOfCompletedInstances >= 3}',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: true,
+    collection: '${updatedItems}',
+    completionCondition: '${nrOfCompletedInstances > 0}',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForHandlerMultiInstanceState(page, {
+    isSequential: true,
+    collection: '${updatedItems}',
+    completionCondition: '${nrOfCompletedInstances >= 3}',
+  })
+
+  await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('Task_multi_cardinality')
+    modeler.get('selection').select(task)
+    const loop = task.businessObject.loopCharacteristics
+    window.__cardinalityMultiInstanceProbe = {
+      loop,
+      extensionElements: loop.extensionElements,
+      aggregation: loop.extensionElements.values.find(
+        (value) => value.$type === 'flowable:VariableAggregation',
+      ),
+      loopCardinality: loop.loopCardinality,
+      completionCondition: loop.completionCondition,
+    }
+  })
+  if (!(await multiInstanceSection.evaluate((element) => element.classList.contains('is-active')))) {
+    await multiInstanceSection.locator('.el-collapse-item__header').click()
+  }
+  const loopCardinalityInput = multiInstanceSection
+    .locator('.el-form-item')
+    .filter({ hasText: '循环基数' })
+    .locator('input')
+  await loopCardinalityInput.waitFor({ state: 'visible' })
+  assert(
+    (await loopCardinalityInput.inputValue()) === '${itemCount}',
+    '多实例循环基数未回显',
+  )
+  await loopCardinalityInput.fill('${updatedItemCount}')
+  await loopCardinalityInput.press('Tab')
+  await waitForCardinalityMultiInstanceState(page, '${updatedItemCount}')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForCardinalityMultiInstanceState(page, '${itemCount}')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForCardinalityMultiInstanceState(page, '${updatedItemCount}')
+
+  await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('Task_multi_string_handler')
+    modeler.get('selection').select(task)
+    const loop = task.businessObject.loopCharacteristics
+    window.__stringHandlerMultiInstanceProbe = {
+      loop,
+      extensionElements: loop.extensionElements,
+      collection: loop.extensionElements.values.find(
+        (value) => value.$type === 'flowable:Collection',
+      ),
+    }
+  })
+  if (!(await multiInstanceSection.evaluate((element) => element.classList.contains('is-active')))) {
+    await multiInstanceSection.locator('.el-collapse-item__header').click()
+  }
+  await multiInstanceCollection.waitFor({ state: 'visible' })
+  assert(
+    (await multiInstanceCollection.inputValue()) === 'seed-handler-input',
+    'nested Collection string 未回显到多实例集合输入框',
+  )
+  await multiInstanceCollection.fill('updated-handler-input')
+  await multiInstanceCollection.press('Tab')
+  await waitForStringHandlerMultiInstanceState(page, 'updated-handler-input')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForStringHandlerMultiInstanceState(page, 'seed-handler-input')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForStringHandlerMultiInstanceState(page, 'updated-handler-input')
+
+  await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const boundary = modeler.get('elementRegistry').get('Boundary_timer_cycle')
+    modeler.get('selection').select(boundary)
+    const definition = boundary.businessObject.eventDefinitions[0]
+    window.__timerPreservationProbe = {
+      definition,
+      timeCycle: definition.timeCycle,
+    }
+  })
+  const timerExpressionInput = page.locator('[data-testid="timer-expression"]')
+  const timerEndDateInput = page.locator('[data-testid="timer-end-date"]')
+  const timerBusinessCalendarInput = page.locator(
+    '[data-testid="timer-business-calendar"]',
+  )
+  await timerExpressionInput.waitFor({ state: 'visible' })
+  assert(
+    (await timerExpressionInput.inputValue()) === 'R3/PT10M' &&
+      (await timerEndDateInput.inputValue()) === '${cycleEnd}' &&
+      (await timerBusinessCalendarInput.inputValue()) === 'workCalendar',
+    'timeCycle 正文、结束时间或业务日历未回显',
+  )
+
+  await timerExpressionInput.fill('R5/PT15M')
+  await timerExpressionInput.press('Tab')
+  await waitForTimerPreservationState(page, {
+    body: 'R5/PT15M',
+    endDate: '${cycleEnd}',
+    businessCalendar: 'workCalendar',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForTimerPreservationState(page, {
+    body: 'R3/PT10M',
+    endDate: '${cycleEnd}',
+    businessCalendar: 'workCalendar',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForTimerPreservationState(page, {
+    body: 'R5/PT15M',
+    endDate: '${cycleEnd}',
+    businessCalendar: 'workCalendar',
+  })
+
+  await timerEndDateInput.fill('${updatedCycleEnd}')
+  await timerEndDateInput.press('Tab')
+  await waitForTimerPreservationState(page, {
+    body: 'R5/PT15M',
+    endDate: '${updatedCycleEnd}',
+    businessCalendar: 'workCalendar',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForTimerPreservationState(page, {
+    body: 'R5/PT15M',
+    endDate: '${cycleEnd}',
+    businessCalendar: 'workCalendar',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForTimerPreservationState(page, {
+    body: 'R5/PT15M',
+    endDate: '${updatedCycleEnd}',
+    businessCalendar: 'workCalendar',
+  })
+
+  await timerBusinessCalendarInput.fill('holidayCalendar')
+  await timerBusinessCalendarInput.press('Tab')
+  await waitForTimerPreservationState(page, {
+    body: 'R5/PT15M',
+    endDate: '${updatedCycleEnd}',
+    businessCalendar: 'holidayCalendar',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await waitForTimerPreservationState(page, {
+    body: 'R5/PT15M',
+    endDate: '${updatedCycleEnd}',
+    businessCalendar: 'workCalendar',
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await waitForTimerPreservationState(page, {
+    body: 'R5/PT15M',
+    endDate: '${updatedCycleEnd}',
+    businessCalendar: 'holidayCalendar',
+  })
+
+  await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('Task_expression_preservation')
+    const listeners = task.businessObject.extensionElements.values.filter(
+      (value) => value.$type === 'flowable:ExecutionListener',
+    )
+    window.__serviceListenerProbe = {
+      task: task.businessObject,
+      scriptListener: listeners.find((listener) => listener.type === 'script'),
+      transactionListener: listeners.find(
+        (listener) => listener.delegateExpression === '${transactionListener}',
+      ),
+    }
+    window.__serviceListenerProbe.originalScript =
+      window.__serviceListenerProbe.scriptListener.script
+    modeler.get('selection').select(task)
+  })
+
+  const serviceImplementationType = page.locator(
+    '[data-testid="service-implementation-type"]',
+  )
+  const serviceResultVariable = page.locator('[data-testid="service-result-variable"]')
+  const serviceResultLocalScope = page.locator('[data-testid="service-result-local-scope"]')
+  const serviceResultTransient = page.locator('[data-testid="service-result-transient"]')
+  await serviceResultVariable.waitFor({ state: 'visible' })
+  assert(
+    (await serviceResultVariable.inputValue()) === 'legacyCalculationResult' &&
+      (await serviceResultLocalScope.locator('input[role="switch"]').isChecked()) &&
+      (await serviceResultTransient.locator('input[role="switch"]').isChecked()),
+    'legacy ServiceTask 结果变量配置未回显',
+  )
+
+  await serviceResultVariable.fill('calculationResult')
+  await serviceResultVariable.press('Tab')
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation').businessObject
+    return (
+      task.get('flowable:resultVariableName') === 'calculationResult' &&
+      task.get('flowable:resultVariable') === undefined &&
+      task.get('flowable:useLocalScopeForResultVariable') === true &&
+      task.get('flowable:storeResultVariableAsTransient') === true
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation').businessObject
+    return (
+      task.get('flowable:resultVariableName') === undefined &&
+      task.get('flowable:resultVariable') === 'legacyCalculationResult'
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:resultVariableName') === 'calculationResult',
+  )
+
+  await serviceResultLocalScope.click()
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:useLocalScopeForResultVariable') !== true,
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:useLocalScopeForResultVariable') === true,
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:useLocalScopeForResultVariable') !== true,
+  )
+  await serviceResultLocalScope.click()
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:useLocalScopeForResultVariable') === true,
+  )
+
+  await serviceResultTransient.click()
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:storeResultVariableAsTransient') !== true,
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:storeResultVariableAsTransient') === true,
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:storeResultVariableAsTransient') !== true,
+  )
+  await serviceResultTransient.click()
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:storeResultVariableAsTransient') === true,
+  )
+
+  await serviceImplementationType.locator('.el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: /^Java 类$/ })
+    .click()
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation').businessObject
+    return (
+      task.get('flowable:class') === '${calculationService.calculate(execution)}' &&
+      task.get('flowable:expression') === undefined &&
+      task.get('flowable:resultVariableName') === undefined &&
+      task.get('flowable:useLocalScopeForResultVariable') !== true &&
+      task.get('flowable:storeResultVariableAsTransient') !== true
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const task = window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation').businessObject
+    return (
+      task.get('flowable:class') === undefined &&
+      task.get('flowable:expression') === '${calculationService.calculate(execution)}' &&
+      task.get('flowable:resultVariableName') === 'calculationResult' &&
+      task.get('flowable:useLocalScopeForResultVariable') === true &&
+      task.get('flowable:storeResultVariableAsTransient') === true
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:class') !== undefined,
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() =>
+    window.bpmnModeler
+      .get('elementRegistry')
+      .get('Task_expression_preservation')
+      .businessObject.get('flowable:expression') ===
+      '${calculationService.calculate(execution)}',
+  )
+
+  const listenersSection = page.locator('.el-collapse-item').filter({
+    has: page.locator('.el-collapse-item__header', { hasText: '监听器' }),
+  })
+  const listenersHeader = listenersSection.locator('.el-collapse-item__header')
+  if ((await listenersHeader.getAttribute('aria-expanded')) !== 'true') {
+    await listenersHeader.click()
+  }
+  let scriptListenerRow = listenersSection
+    .locator('[data-testid="execution-listener-row"]')
+    .filter({ hasText: '脚本：groovy' })
+  await scriptListenerRow.getByRole('button', { name: '编辑执行监听器' }).click()
+  assert(
+    (await page.locator('[data-testid="listener-script-language"]').inputValue()) ===
+      'groovy' &&
+      (await page
+        .locator('[data-testid="listener-script-result-variable"]')
+        .inputValue()) === 'listenerResult' &&
+      (await page.locator('[data-testid="listener-script-body"]').inputValue()) ===
+        "return 'original'",
+    '脚本监听器未完整回显',
+  )
+  await page.locator('[data-testid="listener-script-language"]').fill('javascript')
+  await page
+    .locator('[data-testid="listener-script-result-variable"]')
+    .fill('updatedListenerResult')
+  await page.locator('[data-testid="listener-script-body"]').fill("return 'updated'")
+  await page.locator('[data-testid="save-listener"]').click()
+  await page.waitForFunction(() => {
+    const probe = window.__serviceListenerProbe
+    const listener = probe.task.extensionElements.values.find(
+      (value) => value.type === 'script',
+    )
+    return (
+      listener === probe.scriptListener &&
+      listener.script !== probe.originalScript &&
+      listener.script.language === 'javascript' &&
+      listener.script.resultVariable === 'updatedListenerResult' &&
+      listener.script.value === "return 'updated'" &&
+      listener.class === undefined &&
+      listener.expression === undefined &&
+      listener.delegateExpression === undefined &&
+      listener.onTransaction === undefined &&
+      (listener.fields || []).length === 0
+    )
+  })
+  await page.evaluate(() => {
+    const probe = window.__serviceListenerProbe
+    probe.updatedScript = probe.scriptListener.script
+    window.bpmnModeler.get('commandStack').undo()
+  })
+  await page.waitForFunction(() => {
+    const probe = window.__serviceListenerProbe
+    return (
+      probe.scriptListener.script === probe.originalScript &&
+      probe.scriptListener.script.language === 'groovy'
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const probe = window.__serviceListenerProbe
+    return (
+      probe.scriptListener.script === probe.updatedScript &&
+      probe.scriptListener.script.language === 'javascript'
+    )
+  })
+
+  const transactionListenerRow = listenersSection
+    .locator('[data-testid="execution-listener-row"]')
+    .filter({ hasText: '代理表达式' })
+  await transactionListenerRow
+    .getByRole('button', { name: '编辑执行监听器' })
+    .click()
+  await page.locator('[data-testid="listener-on-transaction"] .el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: /^回滚后 rolled-back$/ })
+    .click()
+  await page.locator('[data-testid="listener-resolver-type"] .el-select__wrapper').click()
+  await page
+    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
+    .filter({ hasText: /^Java 类$/ })
+    .click()
+  await page
+    .locator('[data-testid="listener-resolver-implementation"]')
+    .fill('com.example.ListenerPropertiesResolver')
+  await page.locator('[data-testid="save-listener"]').click()
+  await page.waitForFunction(() => {
+    const probe = window.__serviceListenerProbe
+    const listener = probe.transactionListener
+    return (
+      listener.onTransaction === 'rolled-back' &&
+      listener.customPropertiesResolverClass ===
+        'com.example.ListenerPropertiesResolver' &&
+      listener.customPropertiesResolverExpression === undefined &&
+      listener.customPropertiesResolverDelegateExpression === undefined &&
+      (listener.fields || []).length === 0
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const listener = window.__serviceListenerProbe.transactionListener
+    return (
+      listener.onTransaction === 'committed' &&
+      listener.customPropertiesResolverClass === undefined &&
+      listener.customPropertiesResolverDelegateExpression ===
+        '${listenerPropertiesResolver}'
+    )
+  })
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() => {
+    const listener = window.__serviceListenerProbe.transactionListener
+    return (
+      listener.onTransaction === 'rolled-back' &&
+      listener.customPropertiesResolverClass ===
+        'com.example.ListenerPropertiesResolver'
+    )
+  })
+
+  const preservationXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  const handlerLoopAttributes = preservationXml.match(
+    /<bpmn:userTask id="Task_multi_handler"[\s\S]*?<bpmn:multiInstanceLoopCharacteristics\b([^>]*)>/,
+  )?.[1]
+  assert(handlerLoopAttributes, '处理器多实例未写回 XML')
+  assert(
+    !/\bflowable:collection\s*=/.test(handlerLoopAttributes),
+    'nested Collection 编辑后错误地产生了简单 flowable:collection 属性',
+  )
+  const stringHandlerTaskXml = preservationXml.match(
+    /<bpmn:userTask id="Task_multi_string_handler"[\s\S]*?<\/bpmn:userTask>/,
+  )?.[0]
+  const stringHandlerLoopAttributes = stringHandlerTaskXml?.match(
+    /<bpmn:multiInstanceLoopCharacteristics\b([^>]*)>/,
+  )?.[1]
+  assert(
+    stringHandlerTaskXml &&
+      stringHandlerLoopAttributes &&
+      !/\bflowable:collection\s*=/.test(stringHandlerLoopAttributes) &&
+      stringHandlerTaskXml.includes(
+        '<flowable:collection class="com.example.StringCollectionHandler">',
+      ) &&
+      stringHandlerTaskXml.includes(
+        '<flowable:string>updated-handler-input</flowable:string>',
+      ) &&
+      !stringHandlerTaskXml.includes('<flowable:expression>'),
+    'nested Collection string 编辑后发生表示转换或属性丢失',
+  )
+  assert(
+    handlerLoopAttributes.includes('flowable:noWaitStatesAsyncLeave="true"') &&
+      preservationXml.includes('<flowable:collection delegateExpression="${collectionHandler}">') &&
+      preservationXml.includes('<flowable:expression>${updatedItems}</flowable:expression>') &&
+      preservationXml.includes('<flowable:variableAggregation target="reviews"') &&
+      preservationXml.includes('flowable:businessCalendarName="holidayCalendar"') &&
+      preservationXml.includes(
+        '<bpmn:timeCycle flowable:endDate="${updatedCycleEnd}">R5/PT15M</bpmn:timeCycle>',
+      ),
+    '多实例或定时器原位编辑后的 XML 语义不完整',
+  )
+  assert(
+    preservationXml.includes('flowable:isEagerExecutionFetching="true"') &&
+      !preservationXml.includes('flowable:enableEagerExecutionTreeFetching=') &&
+      preservationXml.includes('flowable:resultVariableName="calculationResult"') &&
+      !preservationXml.includes('flowable:resultVariable="legacyCalculationResult"') &&
+      preservationXml.includes('flowable:useLocalScopeForResultVariable="true"') &&
+      preservationXml.includes('flowable:storeResultVariableAsTransient="true"') &&
+      preservationXml.includes(
+        '<flowable:script language="javascript" resultVariable="updatedListenerResult">return \'updated\'</flowable:script>',
+      ) &&
+      preservationXml.includes('onTransaction="rolled-back"') &&
+      preservationXml.includes(
+        'customPropertiesResolverClass="com.example.ListenerPropertiesResolver"',
+      ) &&
+      !preservationXml.includes('customPropertiesResolverDelegateExpression='),
+    '流程、ServiceTask 或监听器 P1 编辑后的 XML 语义不完整',
+  )
+
+  const preservationRoundTrip = await page.evaluate(async (fixture) => {
+    const result = await window.flowableProcessModeler.importXML(
+      fixture,
+      'multi-instance-timer-preservation-roundtrip.bpmn20.xml',
+    )
+    const registry = window.bpmnModeler.get('elementRegistry')
+    const handlerLoop = registry.get('Task_multi_handler').businessObject.loopCharacteristics
+    const collection = handlerLoop.extensionElements.values.find(
+      (value) => value.$type === 'flowable:Collection',
+    )
+    const aggregation = handlerLoop.extensionElements.values.find(
+      (value) => value.$type === 'flowable:VariableAggregation',
+    )
+    const cardinalityLoop = registry.get('Task_multi_cardinality').businessObject.loopCharacteristics
+    const stringHandlerLoop = registry.get(
+      'Task_multi_string_handler',
+    ).businessObject.loopCharacteristics
+    const stringCollection = stringHandlerLoop.extensionElements.values.find(
+      (value) => value.$type === 'flowable:Collection',
+    )
+    const timer = registry.get('Boundary_timer_cycle').businessObject.eventDefinitions[0]
+    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
+    const serviceTask = registry.get('Task_expression_preservation').businessObject
+    const serviceListeners = serviceTask.extensionElements.values.filter(
+      (value) => value.$type === 'flowable:ExecutionListener',
+    )
+    const scriptListener = serviceListeners.find((listener) => listener.type === 'script')
+    const transactionListener = serviceListeners.find(
+      (listener) => listener.delegateExpression === '${transactionListener}',
+    )
+    return {
+      warnings: result.warnings.map((warning) => warning.message || String(warning)),
+      eagerExecution: process.get('flowable:isEagerExecutionFetching'),
+      handler: {
+        sequential: handlerLoop.isSequential,
+        noWait: handlerLoop.get('flowable:noWaitStatesAsyncLeave'),
+        simpleCollection: handlerLoop.get('flowable:collection'),
+        collectionExpression: collection.expression,
+        collectionDelegateExpression: collection.delegateExpression,
+        aggregationTarget: aggregation.target,
+        completionCondition: handlerLoop.completionCondition.body,
+      },
+      cardinality: cardinalityLoop.loopCardinality.body,
+      stringHandler: {
+        noWait: stringHandlerLoop.get('flowable:noWaitStatesAsyncLeave'),
+        simpleCollection: stringHandlerLoop.get('flowable:collection'),
+        className: stringCollection.class,
+        expression: stringCollection.expression,
+        string: stringCollection.string,
+      },
+      timer: {
+        body: timer.timeCycle.body,
+        endDate: timer.timeCycle.get('flowable:endDate'),
+        businessCalendar: timer.get('flowable:businessCalendarName'),
+      },
+      service: {
+        expression: serviceTask.get('flowable:expression'),
+        resultVariableName: serviceTask.get('flowable:resultVariableName'),
+        hasLegacyResultVariable:
+          serviceTask.get('flowable:resultVariable') !== undefined,
+        local: serviceTask.get('flowable:useLocalScopeForResultVariable'),
+        transient: serviceTask.get('flowable:storeResultVariableAsTransient'),
+      },
+      scriptListener: {
+        event: scriptListener.event,
+        type: scriptListener.type,
+        language: scriptListener.script.language,
+        resultVariable: scriptListener.script.resultVariable,
+        body: scriptListener.script.value,
+        fieldCount: (scriptListener.fields || []).length,
+      },
+      transactionListener: {
+        event: transactionListener.event,
+        implementation: transactionListener.delegateExpression,
+        onTransaction: transactionListener.onTransaction,
+        resolverClass: transactionListener.customPropertiesResolverClass,
+        hasResolverExpression:
+          transactionListener.customPropertiesResolverExpression !== undefined,
+        hasResolverDelegate:
+          transactionListener.customPropertiesResolverDelegateExpression !== undefined,
+      },
+    }
+  }, preservationXml)
+  assert(
+    preservationRoundTrip.warnings.length === 0 &&
+      preservationRoundTrip.eagerExecution === true &&
+      JSON.stringify(preservationRoundTrip.handler) ===
+        JSON.stringify({
+          sequential: true,
+          noWait: true,
+          collectionExpression: '${updatedItems}',
+          collectionDelegateExpression: '${collectionHandler}',
+          aggregationTarget: 'reviews',
+          completionCondition: '${nrOfCompletedInstances >= 3}',
+      }) &&
+      preservationRoundTrip.cardinality === '${updatedItemCount}' &&
+      JSON.stringify(preservationRoundTrip.stringHandler) ===
+        JSON.stringify({
+          noWait: true,
+          className: 'com.example.StringCollectionHandler',
+          string: 'updated-handler-input',
+        }) &&
+      JSON.stringify(preservationRoundTrip.timer) ===
+        JSON.stringify({
+          body: 'R5/PT15M',
+          endDate: '${updatedCycleEnd}',
+          businessCalendar: 'holidayCalendar',
+        }) &&
+      JSON.stringify(preservationRoundTrip.service) ===
+        JSON.stringify({
+          expression: '${calculationService.calculate(execution)}',
+          resultVariableName: 'calculationResult',
+          hasLegacyResultVariable: false,
+          local: true,
+          transient: true,
+        }) &&
+      JSON.stringify(preservationRoundTrip.scriptListener) ===
+        JSON.stringify({
+          event: 'start',
+          type: 'script',
+          language: 'javascript',
+          resultVariable: 'updatedListenerResult',
+          body: "return 'updated'",
+          fieldCount: 0,
+        }) &&
+      JSON.stringify(preservationRoundTrip.transactionListener) ===
+        JSON.stringify({
+          event: 'end',
+          implementation: '${transactionListener}',
+          onTransaction: 'rolled-back',
+          resolverClass: 'com.example.ListenerPropertiesResolver',
+          hasResolverExpression: false,
+          hasResolverDelegate: false,
+        }),
+    `P1 原位编辑往返后发生变化：${JSON.stringify(preservationRoundTrip)}`,
+  )
+
+  const customImportWarningCount = await page.evaluate(
+    async (fixture) =>
+      (await window.flowableProcessModeler.importXML(fixture, 'custom-extensions.bpmn20.xml')).warnings.length,
+    customExtensionXml,
+  )
+  assert(customImportWarningCount === 0, '自定义 Flowable 扩展导入产生兼容警告')
+
+  const firstStructuredSemantics = await readCustomStructuredSemantics(page)
+  assertStructuredCustomSemantics(firstStructuredSemantics, '第一次导入后')
+  const customValidationProblems = await page.evaluate(() => window.flowableProcessModeler.validate())
+  for (const elementId of ['MessageCatch_custom', 'SignalCatch_custom', 'ErrorBoundary_custom']) {
+    assert(
+      !customValidationProblems.some(
+        (problem) => problem.elementId === elementId && problem.level === 'error',
+      ),
+      `${elementId} 的合法 Flowable 事件配置被校验器误报`,
+    )
+  }
+  assert(
+    customValidationProblems.some(
+      (problem) =>
+        problem.elementId === 'UserTask_custom' &&
+        problem.level === 'warning' &&
+        problem.message === 'Flowable 仅在服务任务和调用活动中执行异常映射',
+    ),
+    '非 Service Task/Call Activity 上的异常映射没有给出执行语义提示',
+  )
+
+  const customExtensions = await page.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    const task = registry.get('UserTask_custom').businessObject
+    const start = registry.get('StartEvent_custom').businessObject
+    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
+    return {
+      task: (task.extensionElements?.values || []).map((value) => ({
+        type: value.$type,
+        body: value.body,
+      })),
+      process: (process.extensionElements?.values || []).map((value) => ({
+        type: value.$type,
+        body: value.body,
+      })),
+      rootDefinitions: window.bpmnModeler
+        .getDefinitions()
+        .rootElements.filter((value) => ['bpmn:Message', 'bpmn:Signal', 'bpmn:Error'].includes(value.$type))
+        .map((value) => ({
+          type: value.$type,
+          id: value.id,
+          name: value.name,
+          errorCode: value.errorCode,
+          scope: value.get?.('flowable:scope'),
+          errorMessage: value.get?.('flowable:errorMessage'),
+        })),
+      messageRef: start.eventDefinitions?.[0]?.messageRef?.id,
+    }
+  })
+
+  const expectedTaskExtensions = new Map([
+    ['flowable:AssigneeType', 'static'],
+    [
+      'flowable:StaticAssigneeVariables',
+      '{"users":[{"id":"u-001","name":"张三"}],"expression":"approvalUsers"}',
+    ],
+    ['flowable:IdmAssignee', '{"id":"leader","name":"部门负责人"}'],
+    ['flowable:IdmCandidateUsers', '[{"id":"u-002","name":"李四"}]'],
+    ['flowable:IdmCandidateGroups', '[{"id":"g-001","name":"财务组"}]'],
+    ['flowable:NextSequenceFlow', '{"mode":"free"}'],
+    ['flowable:NextUser', '{"variable":"nextApprover"}'],
+    ['flowable:ModelBpmnExtension', '{"version":1}'],
+    ['flowable:NodeFormExp', '{"amount":"3","comment":"2"}'],
+    ['flowable:MultiInstanceVariables', '{"collection":"participants"}'],
+  ])
+
+  for (const [type, body] of expectedTaskExtensions) {
+    const extension = customExtensions.task.find((item) => item.type === type)
+    assert(extension, `${type} 导入后丢失`)
+    assert(extension.body === body, `${type} body 导入后发生变化`)
+  }
+  assert(
+    customExtensions.process.some(
+      (item) => item.type === 'flowable:ProcessNameExp' && item.body === 'businessName',
+    ),
+    'flowable:ProcessNameExp 导入后丢失',
+  )
+
+  await page.evaluate(() => window.bpmnModeler.get('selection').select(null))
+  const processNameInput = page.locator('[data-testid="process-name-exp"]')
+  assert((await processNameInput.inputValue()) === 'businessName', 'ProcessNameExp 未在流程属性中回显')
+  await processNameInput.fill('${businessTitle}')
+  await processNameInput.press('Tab')
+  await page.waitForFunction(() => {
+    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
+    return (process.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:ProcessNameExp' && value.body === '${businessTitle}',
+    )
+  })
+
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() =>
+    (window.bpmnModeler.get('canvas').getRootElement().businessObject.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:ProcessNameExp' && value.body === 'businessName',
+    ),
+  )
+  assert((await processNameInput.inputValue()) === 'businessName', 'ProcessNameExp 撤销后未回显原值')
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
+  await page.waitForFunction(() =>
+    (window.bpmnModeler.get('canvas').getRootElement().businessObject.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:ProcessNameExp' && value.body === '${businessTitle}',
+    ),
+  )
+
+  await processNameInput.fill('')
+  await processNameInput.press('Tab')
+  await page.waitForFunction(() =>
+    !(window.bpmnModeler.get('canvas').getRootElement().businessObject.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:ProcessNameExp',
+    ),
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() =>
+    (window.bpmnModeler.get('canvas').getRootElement().businessObject.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:ProcessNameExp' && value.body === '${businessTitle}',
+    ),
+  )
+
+  assert(customExtensions.messageRef === 'Message_custom', '消息事件未保留全局消息引用')
+  assert(
+    customExtensions.rootDefinitions.some(
+      (item) => item.type === 'bpmn:Signal' && item.id === 'Signal_custom' && item.scope === 'global',
+    ),
+    '全局 Signal 或 flowable:scope 往返失败',
+  )
+  assert(
+    customExtensions.rootDefinitions.some(
+      (item) =>
+        item.type === 'bpmn:Error' &&
+        item.id === 'Error_custom' &&
+        item.errorCode === 'BUSINESS_ERROR' &&
+        item.errorMessage === '业务处理失败',
+    ),
+    '全局 Error 扩展属性往返失败',
+  )
+
+  const hiddenTaskRendered = await page.evaluate(() =>
+    Boolean(window.bpmnModeler.get('elementRegistry').get('ReceiveTask_hidden')),
+  )
+  assert(!hiddenTaskRendered, '无 DI 的 ReceiveTask 不应出现在 elementRegistry')
+  const hiddenMessageRow = page.locator('.list-item').filter({ hasText: 'Message_hidden' })
+  await hiddenMessageRow.locator('button').last().click()
+  assert(await hiddenMessageRow.isVisible(), '删除检查漏掉了无 DI 流程中的消息引用')
+  assert((await page.locator('.el-message-box:visible').count()) === 0, '被引用的全局消息仍打开了删除确认')
+
+  await page.evaluate(() => {
+    const registry = window.bpmnModeler.get('elementRegistry')
+    window.bpmnModeler.get('selection').select(registry.get('StartEvent_custom'))
+  })
+  assert(
+    (await page.locator('[data-testid="event-message-ref"]').innerText()).includes('业务消息'),
+    '消息事件属性面板未回显全局消息引用',
+  )
+
+  await page.evaluate(() => {
+    const start = window.bpmnModeler.get('elementRegistry').get('StartEvent_custom')
+    const signalDefinition = window.bpmnModeler
+      .get('bpmnFactory')
+      .create('bpmn:SignalEventDefinition')
+    signalDefinition.$parent = start.businessObject
+    window.bpmnModeler.get('modeling').updateProperties(start, {
+      eventDefinitions: [signalDefinition],
+    })
+  })
+  const missingSignalProblems = await page.evaluate(() => window.flowableProcessModeler.validate())
+  assert(
+    missingSignalProblems.some(
+      (problem) =>
+        problem.elementId === 'StartEvent_custom' &&
+        problem.level === 'error' &&
+        problem.message === '信号事件必须配置信号引用或信号表达式',
+    ),
+    '未引用全局信号定义的 SignalEventDefinition 没有被校验拦截',
+  )
+  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
+  await page.waitForFunction(() => {
+    const start = window.bpmnModeler.get('elementRegistry').get('StartEvent_custom').businessObject
+    return start.eventDefinitions?.[0]?.messageRef?.id === 'Message_custom'
+  })
+
+  const customXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  for (const type of expectedTaskExtensions.keys()) {
+    const localName = type.slice('flowable:'.length)
+    const tagName = localName[0].toLowerCase() + localName.slice(1)
+    assert(customXml.includes(`<flowable:${tagName}>`), `${type} 未写回 XML`)
+  }
+  assert(
+    customXml.includes(
+      '<flowable:staticAssigneeVariables>{"users":[{"id":"u-001","name":"张三"}],"expression":"approvalUsers"}</flowable:staticAssigneeVariables>',
+    ),
+    'StaticAssigneeVariables JSON body 未完整写回 XML',
+  )
+  assert(
+    customXml.includes('<flowable:processNameExp>${businessTitle}</flowable:processNameExp>'),
+    'ProcessNameExp 未通过流程属性写回 XML',
+  )
+  assertStructuredCustomXml(customXml, '第一次导出时')
+
+  const secondImportWarningCount = await page.evaluate(
+    async (fixture) => (await window.bpmnModeler.importXML(fixture)).warnings.length,
+    customXml,
+  )
+  assert(secondImportWarningCount === 0, '自定义扩展第二次导入产生兼容警告')
+  await page.waitForFunction(() => {
+    const root = window.bpmnModeler.get('canvas').getRootElement()
+    const selection = window.bpmnModeler.get('selection').get()
+    return root.businessObject.id === 'Process_custom_extensions' && selection.length === 0
+  })
+  await page.locator('.designer-header').getByText('自定义扩展往返', { exact: true }).waitFor()
+  assert(
+    (await processNameInput.inputValue()) === '${businessTitle}',
+    '裸 modeler.importXML 后流程属性面板未同步',
+  )
+  const secondCustomXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
+  const secondStructuredSemantics = await readCustomStructuredSemantics(page)
+  assertStructuredCustomSemantics(secondStructuredSemantics, '第二次导入后')
+  assertStructuredCustomXml(secondCustomXml, '第二次导出时')
+  const secondRoundTripExtensions = await page.evaluate(() => {
+    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_custom').businessObject
+    return (task.extensionElements?.values || []).map((value) => ({
+      type: value.$type,
+      body: value.body,
+    }))
+  })
+  for (const type of ['flowable:AssigneeType', 'flowable:StaticAssigneeVariables']) {
+    const expectedBody = expectedTaskExtensions.get(type)
+    const extension = secondRoundTripExtensions.find((item) => item.type === type)
+    assert(extension?.body === expectedBody, `${type} 第二次往返后语义内容发生变化`)
+  }
+  const secondProcessNameExp = await page.evaluate(() => {
+    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
+    return (process.extensionElements?.values || []).find(
+      (value) => value.$type === 'flowable:ProcessNameExp',
+    )?.body
+  })
+  assert(secondProcessNameExp === '${businessTitle}', 'ProcessNameExp 第二次往返后语义内容发生变化')
+  assert(
+    secondCustomXml.includes(
+      '<flowable:staticAssigneeVariables>{"users":[{"id":"u-001","name":"张三"}],"expression":"approvalUsers"}</flowable:staticAssigneeVariables>',
+    ),
+    'StaticAssigneeVariables 第二次往返后丢失',
+  )
+  mkdirSync('artifacts', { recursive: true })
+  writeFileSync('artifacts/custom-extensions-roundtrip.bpmn20.xml', secondCustomXml, 'utf8')
+
+  const desktopPage = await browser.newPage({ viewport: { width: 1600, height: 960 } })
+  trackRuntimeErrors(desktopPage, runtimeErrors)
+  await desktopPage.goto(origin, { waitUntil: 'networkidle' })
+  await desktopPage.waitForSelector('.djs-container')
+  await desktopPage.screenshot({ path: 'artifacts/ui-desktop.png', fullPage: true })
+  await desktopPage.close()
+
+  const mobilePage = await browser.newPage({ viewport: { width: 390, height: 844 } })
+  trackRuntimeErrors(mobilePage, runtimeErrors)
+  await mobilePage.goto(origin, { waitUntil: 'networkidle' })
+  await mobilePage.waitForSelector('.djs-container')
+  const mobileViewport = await mobilePage.evaluate(() => ({
+    scrollWidth: document.documentElement.scrollWidth,
+    clientWidth: document.documentElement.clientWidth,
+  }))
+  assert(
+    mobileViewport.scrollWidth <= mobileViewport.clientWidth,
+    `移动端存在横向溢出：${mobileViewport.scrollWidth} > ${mobileViewport.clientWidth}`,
+  )
+  await mobilePage.screenshot({ path: 'artifacts/ui-mobile.png', fullPage: true })
+  await mobilePage.close()
+
+  assert(runtimeErrors.length === 0, `浏览器运行时错误：\n${runtimeErrors.join('\n')}`)
+
+  console.log(
+    JSON.stringify(
+      {
+        ok: true,
+        elements: initial.elements,
+        paletteEntries: initial.palette,
+        xmlLength: xml.length,
+        metadataXmlLength: metadataXml.length,
+        customExtensionXmlLength: secondCustomXml.length,
+        customExtensionCount: customExtensions.task.length,
+        validationProblems: problems.length,
+        mobileViewport,
+      },
+      null,
+      2,
+    ),
+  )
+} finally {
+  await browser?.close()
+  stopServer()
+}

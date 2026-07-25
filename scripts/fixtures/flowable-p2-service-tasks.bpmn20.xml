@@ -1,0 +1,140 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:flowable="http://flowable.org/bpmn"
+             id="Definitions_p2_service_tasks"
+             targetNamespace="http://flowable.org/test/p2-service-tasks">
+  <process id="Process_p2_service_tasks" name="P2 BPMN service tasks" isExecutable="true">
+    <startEvent id="Start_p2" />
+
+    <serviceTask id="Task_expression"
+                 name="Expression service"
+                 flowable:expression="${orderService.process(execution)}"
+                 flowable:resultVariableName="serviceResult"
+                 flowable:useLocalScopeForResultVariable="true"
+                 flowable:storeResultVariableAsTransient="true"
+                 flowable:triggerable="true" />
+
+    <serviceTask id="Task_mail" name="Mail service" flowable:type="mail">
+      <extensionElements>
+        <flowable:field name="to"><flowable:string>ops@example.test</flowable:string></flowable:field>
+        <flowable:field name="text"><flowable:string>Order ready</flowable:string></flowable:field>
+      </extensionElements>
+    </serviceTask>
+
+    <serviceTask id="Task_shell" name="Shell service" flowable:type="shell">
+      <extensionElements>
+        <flowable:field name="command"><flowable:string>echo order-ready</flowable:string></flowable:field>
+        <flowable:field name="wait"><flowable:string>true</flowable:string></flowable:field>
+      </extensionElements>
+    </serviceTask>
+
+    <serviceTask id="Task_dmn" name="DMN service" flowable:type="dmn">
+      <extensionElements>
+        <flowable:field name="decisionTableReferenceKey"><flowable:string>order-decision</flowable:string></flowable:field>
+      </extensionElements>
+    </serviceTask>
+
+    <serviceTask id="Task_http" name="HTTP service" flowable:type="http">
+      <extensionElements>
+        <flowable:field name="requestMethod"><flowable:string>GET</flowable:string></flowable:field>
+        <flowable:field name="requestUrl"><flowable:expression>${orderEndpoint}</flowable:expression></flowable:field>
+      </extensionElements>
+    </serviceTask>
+
+    <serviceTask id="Task_send_channel"
+                 name="Send through channel"
+                 flowable:type="send-event"
+                 flowable:triggerable="true">
+      <extensionElements>
+        <flowable:eventType>order-updated</flowable:eventType>
+        <flowable:triggerEventType>order-acknowledged</flowable:triggerEventType>
+        <flowable:eventInParameter sourceExpression="${order.id}"
+                                   sourceType="string"
+                                   target="orderId"
+                                   targetType="string" />
+        <flowable:eventOutParameter source="ackId"
+                                    sourceType="string"
+                                    target="acknowledgementId"
+                                    targetType="string"
+                                    transient="true" />
+        <flowable:channelKey>orders-out</flowable:channelKey>
+        <flowable:sendSynchronously>true</flowable:sendSynchronously>
+      </extensionElements>
+    </serviceTask>
+
+    <serviceTask id="Task_send_system" name="Send through system channel" flowable:type="send-event">
+      <extensionElements>
+        <flowable:eventType>audit-recorded</flowable:eventType>
+        <flowable:systemChannel />
+      </extensionElements>
+    </serviceTask>
+
+    <serviceTask id="Task_external_worker"
+                 name="External worker"
+                 flowable:type="external-worker"
+                 flowable:topic="orders" />
+    <serviceTask id="Task_external_legacy"
+                 name="Legacy external worker"
+                 flowable:type="external"
+                 flowable:topic="legacy-orders" />
+    <serviceTask id="Task_mule" name="Mule service" flowable:type="mule" />
+    <serviceTask id="Task_camel" name="Camel service" flowable:type="camel" />
+
+    <userTask id="Task_custom_resources" name="Custom identity links">
+      <extensionElements>
+        <flowable:customResource name="businessAdministrator">
+          <resourceAssignmentExpression>
+            <formalExpression>user(kermit), user(${adminUser}), group(management), group(${adminGroup})</formalExpression>
+          </resourceAssignmentExpression>
+        </flowable:customResource>
+        <flowable:customResource name="observer">
+          <resourceAssignmentExpression>
+            <formalExpression>user(gonzo), group(auditors)</formalExpression>
+          </resourceAssignmentExpression>
+        </flowable:customResource>
+      </extensionElements>
+    </userTask>
+
+    <callActivity id="Call_review"
+                  name="Review order"
+                  calledElement="Process_p2_called"
+                  flowable:calledElementType="key"
+                  flowable:processInstanceName="${reviewProcessName}"
+                  flowable:businessKey="${businessKey}"
+                  flowable:inheritBusinessKey="true"
+                  flowable:inheritVariables="true"
+                  flowable:sameDeployment="true"
+                  flowable:useLocalScopeForOutParameters="true"
+                  flowable:completeAsync="true"
+                  flowable:fallbackToDefaultTenant="true"
+                  flowable:idVariableName="reviewProcessInstanceId">
+      <extensionElements>
+        <flowable:in sourceExpression="${order}" target="reviewOrder" />
+        <flowable:out source="reviewStatus" target="orderReviewStatus" transient="true" />
+      </extensionElements>
+    </callActivity>
+
+    <endEvent id="End_p2" />
+
+    <sequenceFlow id="Flow_p2_01" sourceRef="Start_p2" targetRef="Task_expression" />
+    <sequenceFlow id="Flow_p2_02" sourceRef="Task_expression" targetRef="Task_mail" />
+    <sequenceFlow id="Flow_p2_03" sourceRef="Task_mail" targetRef="Task_shell" />
+    <sequenceFlow id="Flow_p2_04" sourceRef="Task_shell" targetRef="Task_dmn" />
+    <sequenceFlow id="Flow_p2_05" sourceRef="Task_dmn" targetRef="Task_http" />
+    <sequenceFlow id="Flow_p2_06" sourceRef="Task_http" targetRef="Task_send_channel" />
+    <sequenceFlow id="Flow_p2_07" sourceRef="Task_send_channel" targetRef="Task_send_system" />
+    <sequenceFlow id="Flow_p2_08" sourceRef="Task_send_system" targetRef="Task_external_worker" />
+    <sequenceFlow id="Flow_p2_09" sourceRef="Task_external_worker" targetRef="Task_external_legacy" />
+    <sequenceFlow id="Flow_p2_10" sourceRef="Task_external_legacy" targetRef="Task_mule" />
+    <sequenceFlow id="Flow_p2_11" sourceRef="Task_mule" targetRef="Task_camel" />
+    <sequenceFlow id="Flow_p2_12" sourceRef="Task_camel" targetRef="Task_custom_resources" />
+    <sequenceFlow id="Flow_p2_13" sourceRef="Task_custom_resources" targetRef="Call_review" />
+    <sequenceFlow id="Flow_p2_14" sourceRef="Call_review" targetRef="End_p2" />
+  </process>
+
+  <process id="Process_p2_called" name="P2 called process" isExecutable="true">
+    <startEvent id="Start_called" />
+    <endEvent id="End_called" />
+    <sequenceFlow id="Flow_called" sourceRef="Start_called" targetRef="End_called" />
+  </process>
+</definitions>

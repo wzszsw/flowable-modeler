@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:flowable="http://flowable.org/bpmn"
+             xmlns:vendor="urn:example:identity"
+             targetNamespace="http://flowable.org/test/custom-resource">
+  <process id="Process_custom_resource" isExecutable="true">
+    <startEvent id="Start_custom_resource" />
+    <sequenceFlow id="Flow_to_user_task" sourceRef="Start_custom_resource" targetRef="Task_custom_resource" />
+    <userTask id="Task_custom_resource" name="Custom identity links">
+      <extensionElements>
+        <flowable:customResource name="businessAdministrator"
+                                 vendor:legacyHint="keep-business-admin"
+                                 vendor:policy="${businessAdminPolicy}">
+          <resourceAssignmentExpression vendor:assignmentHint="keep-assignment"
+                                        vendor:source="identity-service">
+            <formalExpression vendor:expressionHint="keep-expression"
+                              vendor:dialect="flowable-identity">user(${userVar}), group(${groupVar})</formalExpression>
+          </resourceAssignmentExpression>
+        </flowable:customResource>
+        <flowable:customResource flowable:name="manager"
+                                 vendor:legacyHint="keep-manager"
+                                 vendor:policy="manager-policy">
+          <resourceAssignmentExpression>
+            <formalExpression>user(kermit), group(management), group(${reviewerGroup})</formalExpression>
+          </resourceAssignmentExpression>
+        </flowable:customResource>
+      </extensionElements>
+    </userTask>
+    <sequenceFlow id="Flow_to_end" sourceRef="Task_custom_resource" targetRef="End_custom_resource" />
+    <endEvent id="End_custom_resource" />
+  </process>
+</definitions>

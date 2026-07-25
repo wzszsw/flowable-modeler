@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<definitions xmlns="http://www.omg.org/spec/BPMN/20100524/MODEL"
+             xmlns:flowable="http://flowable.org/bpmn"
+             id="Definitions_p2_invalid_service_task"
+             targetNamespace="http://flowable.org/test/p2-invalid-service-task">
+  <process id="Process_p2_invalid_service_task" isExecutable="true">
+    <startEvent id="Start_invalid" />
+    <serviceTask id="Task_rest" name="Unadapted REST task" flowable:type="rest" />
+    <endEvent id="End_invalid" />
+    <sequenceFlow id="Flow_invalid_1" sourceRef="Start_invalid" targetRef="Task_rest" />
+    <sequenceFlow id="Flow_invalid_2" sourceRef="Task_rest" targetRef="End_invalid" />
+  </process>
+</definitions>

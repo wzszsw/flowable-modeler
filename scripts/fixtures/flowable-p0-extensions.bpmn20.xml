@@ -1,0 +1,128 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  xmlns:flowable="http://flowable.org/bpmn"
+  targetNamespace="http://flowable.org/test">
+  <bpmn:process id="Process_p0_extensions" isExecutable="true"
+    flowable:isEagerExecutionFetching="true">
+    <bpmn:extensionElements>
+      <flowable:historyLevel>activity</flowable:historyLevel>
+      <flowable:eventListener events="ENTITY_CREATED" entityType="task"
+        delegateExpression="${auditListener}" onTransaction="COMMITTED" />
+      <flowable:eventListener events="TASK_COMPLETED" throwEvent="message"
+        messageName="taskCompleted" />
+    </bpmn:extensionElements>
+
+    <bpmn:startEvent id="Start_registry">
+      <bpmn:extensionElements>
+        <flowable:eventType>order-created</flowable:eventType>
+        <flowable:eventName>Order created</flowable:eventName>
+        <flowable:eventOutParameter source="customerId" sourceType="string"
+          target="customerId" targetType="string" transient="true" />
+        <flowable:eventCorrelationParameter name="customerId" type="string"
+          value="${customerId}" />
+        <flowable:channelKey>orders-in</flowable:channelKey>
+        <flowable:channelName>Orders inbound</flowable:channelName>
+        <flowable:channelType>jms</flowable:channelType>
+        <flowable:channelDestination>orders.queue</flowable:channelDestination>
+        <flowable:serializerType>json</flowable:serializerType>
+        <flowable:deserializerType>json</flowable:deserializerType>
+        <flowable:keyDetectionType>jsonPointer</flowable:keyDetectionType>
+        <flowable:keyDetectionValue>/customer/id</flowable:keyDetectionValue>
+        <flowable:startEventCorrelationConfiguration>storeAsUniqueReferenceId</flowable:startEventCorrelationConfiguration>
+      </bpmn:extensionElements>
+    </bpmn:startEvent>
+
+    <bpmn:userTask id="Task_multi_instance">
+      <bpmn:extensionElements>
+        <flowable:includeInHistory>true</flowable:includeInHistory>
+      </bpmn:extensionElements>
+      <bpmn:multiInstanceLoopCharacteristics isSequential="false"
+        flowable:elementVariable="item"
+        flowable:elementIndexVariable="itemIndex"
+        flowable:noWaitStatesAsyncLeave="true">
+        <bpmn:extensionElements>
+          <flowable:collection flowable:delegateExpression="${collectionHandler}">
+            <flowable:expression>${items}</flowable:expression>
+          </flowable:collection>
+          <flowable:variableAggregation target="reviews"
+            delegateExpression="${variableAggregator}"
+            storeAsTransientVariable="true"
+            createOverviewVariable="true">
+            <bpmn:variable source="approved" target="value" />
+            <bpmn:variable sourceExpression="${score * 2}" targetExpression="${targetKey}" />
+          </flowable:variableAggregation>
+        </bpmn:extensionElements>
+        <bpmn:loopCardinality>${itemCount}</bpmn:loopCardinality>
+      </bpmn:multiInstanceLoopCharacteristics>
+    </bpmn:userTask>
+
+    <bpmn:boundaryEvent id="Boundary_variable" attachedToRef="Task_multi_instance">
+      <bpmn:extensionElements>
+        <flowable:variableListenerEventDefinition variableName="approvalState"
+          variableChangeType="update-create" />
+      </bpmn:extensionElements>
+    </bpmn:boundaryEvent>
+
+    <bpmn:intermediateCatchEvent id="Timer_cycle">
+      <bpmn:timerEventDefinition flowable:businessCalendarName="workCalendar">
+        <bpmn:timeCycle flowable:endDate="${timerEndDate}">R5/PT15M</bpmn:timeCycle>
+      </bpmn:timerEventDefinition>
+    </bpmn:intermediateCatchEvent>
+
+    <bpmn:serviceTask id="Task_expression"
+      flowable:expression="${orderService.calculate(execution)}"
+      flowable:resultVariableName="calculationResult"
+      flowable:useLocalScopeForResultVariable="true"
+      flowable:storeResultVariableAsTransient="true">
+      <bpmn:extensionElements>
+        <flowable:executionListener event="start" type="script">
+          <flowable:script language="groovy" resultVariable="listenerResult"><![CDATA[
+            execution.setVariable('scriptListenerInvoked', true)
+            return 'listener-complete'
+          ]]></flowable:script>
+        </flowable:executionListener>
+        <flowable:executionListener event="end"
+          delegateExpression="${transactionListener}"
+          onTransaction="committed"
+          customPropertiesResolverDelegateExpression="${listenerPropertiesResolver}" />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="Task_send_event" flowable:type="send-event"
+      flowable:triggerable="true">
+      <bpmn:extensionElements>
+        <flowable:eventType>order-updated</flowable:eventType>
+        <flowable:eventName>Order updated</flowable:eventName>
+        <flowable:triggerEventType>order-acknowledged</flowable:triggerEventType>
+        <flowable:triggerEventName>Order acknowledged</flowable:triggerEventName>
+        <flowable:eventInParameter sourceExpression="${order.id}" sourceType="string"
+          target="orderId" targetType="string" />
+        <flowable:eventOutParameter source="ackId" sourceType="string"
+          target="acknowledgementId" targetType="string" transient="true" />
+        <flowable:triggerEventCorrelationParameter name="orderId" type="string"
+          value="${order.id}" />
+        <flowable:channelKey>orders-out</flowable:channelKey>
+        <flowable:channelName>Orders outbound</flowable:channelName>
+        <flowable:triggerChannelKey>orders-ack</flowable:triggerChannelKey>
+        <flowable:triggerChannelName>Order acknowledgements</flowable:triggerChannelName>
+        <flowable:triggerChannelType>jms</flowable:triggerChannelType>
+        <flowable:triggerChannelDestination>orders.ack.queue</flowable:triggerChannelDestination>
+        <flowable:sendSynchronously>true</flowable:sendSynchronously>
+        <flowable:systemChannel />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+
+    <bpmn:serviceTask id="Task_http" flowable:type="http">
+      <bpmn:extensionElements>
+        <flowable:includeInHistory>true</flowable:includeInHistory>
+        <flowable:field name="url" stringValue="https://example.test/orders" />
+        <flowable:httpRequestHandler type="script">
+          <flowable:script language="groovy" resultVariable="requestPayload"><![CDATA[
+            return execution.getVariable('order')
+          ]]></flowable:script>
+        </flowable:httpRequestHandler>
+        <flowable:httpResponseHandler delegateExpression="${responseHandler}" />
+      </bpmn:extensionElements>
+    </bpmn:serviceTask>
+  </bpmn:process>
+</bpmn:definitions>

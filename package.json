@@ -1,0 +1,42 @@
+{
+  "name": "flowable-modeler",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "run-p type-check \"build-only {@}\" --",
+    "preview": "vite preview",
+    "build-only": "vite build",
+    "type-check": "vue-tsc --build",
+    "test:moddle": "node --experimental-strip-types scripts/moddle-roundtrip.mjs",
+    "test:smoke": "npm run test:moddle && npm run build-only && node scripts/smoke.mjs",
+    "test:flowable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-flowable.ps1"
+  },
+  "dependencies": {
+    "@element-plus/icons-vue": "^2.3.2",
+    "bpmn-js": "^18.22.0",
+    "bpmn-js-token-simulation": "^0.40.0",
+    "diagram-js-grid": "^2.0.1",
+    "diagram-js-minimap": "^5.4.0",
+    "element-plus": "^2.14.3",
+    "lucide-vue-next": "^0.577.0",
+    "vue": "^3.5.40"
+  },
+  "devDependencies": {
+    "@tsconfig/node24": "^24.0.4",
+    "@types/node": "^24.13.3",
+    "@unocss/reset": "^66.7.5",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "@vue/tsconfig": "^0.9.1",
+    "npm-run-all2": "^9.0.2",
+    "playwright-core": "^1.62.0",
+    "typescript": "~6.0.0",
+    "unocss": "^66.7.5",
+    "vite": "^8.1.5",
+    "vue-tsc": "^3.3.7"
+  },
+  "engines": {
+    "node": "^22.18.0 || >=24.12.0"
+  }
+}
