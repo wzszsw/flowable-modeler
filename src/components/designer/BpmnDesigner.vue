@@ -26,8 +26,8 @@ import {
 } from '@/i18n/locales/designer'
 import flowableDescriptor from '@/modeler/flowableDescriptor'
 import { createDefaultDiagram } from '@/modeler/defaultDiagram'
-import { isEmbeddedMode, type FlowableHostAdapter } from '@/modeler/integration'
-import { resolveHostServiceTaskTypeNames } from '@/modeler/serviceTaskTypes'
+import { FLOWABLE_FORMS_ENABLED } from '@/config/features'
+import { isEmbeddedMode } from '@/modeler/integration'
 import type { BpmnBusinessObject, DiagramElement, ValidationProblem } from '@/modeler/types'
 import { validateElements } from '@/modeler/validation'
 import { normalizeLegacyActivitiNamespace } from '@/modeler/xmlCompatibility'
@@ -197,9 +197,6 @@ const modeler = shallowRef<Modeler | null>(null)
 const rootElement = shallowRef<DiagramElement | null>(null)
 const selectedElement = shallowRef<DiagramElement | null>(null)
 const selectedElements = shallowRef<DiagramElement[]>([])
-const hostAdapter = shallowRef<FlowableHostAdapter | null>(null)
-const hostAdapterGeneration = ref(0)
-
 const embeddedMode = isEmbeddedMode()
 
 const ready = ref(false)
@@ -953,10 +950,6 @@ function exposeIntegrationBridge(instance: Modeler) {
       return [...problems.value]
     },
     saveModel,
-    configureHost: (adapter) => {
-      hostAdapterGeneration.value += 1
-      hostAdapter.value = adapter ? markRaw(adapter) : null
-    },
   }
 }
 
@@ -1393,7 +1386,7 @@ function runValidation(showDrawer = true) {
   clearValidationMarkers()
   const registry = service<ElementRegistryService>('elementRegistry')
   problems.value = validateElements(registry.getAll(), {
-    allowedServiceTaskTypes: resolveHostServiceTaskTypeNames(hostAdapter.value),
+    formsEnabled: FLOWABLE_FORMS_ENABLED,
   })
   applyValidationMarkers(problems.value)
 
@@ -1772,8 +1765,6 @@ defineExpose({
             :modeler="ready ? modeler : null"
             :element="ready ? selectedElement : null"
             :revision="commandRevision"
-            :host-adapter="hostAdapter"
-            :host-adapter-generation="hostAdapterGeneration"
             @changed="commandRevision += 1"
           />
         </section>

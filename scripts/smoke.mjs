@@ -98,25 +98,12 @@ const customExtensionXml = `<?xml version="1.0" encoding="UTF-8"?>
   <bpmn:signal id="Signal_custom" name="业务信号" flowable:scope="global" />
   <bpmn:error id="Error_custom" name="业务错误" errorCode="BUSINESS_ERROR" flowable:errorMessage="业务处理失败" />
   <bpmn:process id="Process_custom_extensions" name="自定义扩展往返" isExecutable="true">
-    <bpmn:extensionElements>
-      <flowable:ProcessNameExp>businessName</flowable:ProcessNameExp>
-    </bpmn:extensionElements>
     <bpmn:startEvent id="StartEvent_custom">
       <bpmn:outgoing>Flow_start_task</bpmn:outgoing>
       <bpmn:messageEventDefinition id="MessageEventDefinition_custom" messageRef="Message_custom" />
     </bpmn:startEvent>
     <bpmn:userTask id="UserTask_custom" name="业务审批">
       <bpmn:extensionElements>
-        <flowable:AssigneeType>static</flowable:AssigneeType>
-        <flowable:StaticAssigneeVariables>{"users":[{"id":"u-001","name":"张三"}],"expression":"approvalUsers"}</flowable:StaticAssigneeVariables>
-        <flowable:IdmAssignee>{"id":"leader","name":"部门负责人"}</flowable:IdmAssignee>
-        <flowable:IdmCandidateUsers>[{"id":"u-002","name":"李四"}]</flowable:IdmCandidateUsers>
-        <flowable:IdmCandidateGroups>[{"id":"g-001","name":"财务组"}]</flowable:IdmCandidateGroups>
-        <flowable:NextSequenceFlow>{"mode":"free"}</flowable:NextSequenceFlow>
-        <flowable:NextUser>{"variable":"nextApprover"}</flowable:NextUser>
-        <flowable:ModelBpmnExtension>{"version":1}</flowable:ModelBpmnExtension>
-        <flowable:NodeFormExp>{"amount":"3","comment":"2"}</flowable:NodeFormExp>
-        <flowable:MultiInstanceVariables>{"collection":"participants"}</flowable:MultiInstanceVariables>
         <flowable:properties>
           <flowable:property id="Property_fixture" name="fixtureProperty" value="fixture-value" />
         </flowable:properties>
@@ -217,8 +204,7 @@ const multiInstanceTimerPreservationXml = `<?xml version="1.0" encoding="UTF-8"?
   id="Definitions_edit_preservation"
   targetNamespace="http://flowable.org/test">
   <bpmn:process id="Process_edit_preservation" name="原位编辑回归" isExecutable="true"
-    flowable:isEagerExecutionFetching="false"
-    flowable:enableEagerExecutionTreeFetching="true">
+    flowable:isEagerExecutionFetching="false">
     <bpmn:startEvent id="Start_edit_preservation">
       <bpmn:outgoing>Flow_edit_start_handler</bpmn:outgoing>
     </bpmn:startEvent>
@@ -1784,57 +1770,26 @@ try {
   assert(hostedDesignerFrame, '宿主页中的设计器 iframe 未加载')
   await hostedDesignerFrame.waitForSelector('.djs-container')
   await hostedDesignerFrame.waitForFunction(() => Boolean(window.flowableProcessModeler))
-  await iframeHostPage.evaluate(() => {
-    const childWindow = document.querySelector('iframe').contentWindow
-    window.__crossRealmHostCalls = { select: [] }
-    const clone = (value) => structuredClone(value)
-    childWindow.flowableProcessModeler.configureHost({
-      selectNodeForms(context) {
-        window.__crossRealmHostCalls.select.push(clone(context))
-        return [
-          {
-            id: undefined,
-            code: 'crossRealmForm',
-            name: '跨窗口表单',
-            title: null,
-            categoryCode: undefined,
-            categoryName: null,
-            hostMetadata: {
-              source: 'parent-window',
-              routing: { tenant: 'cross-realm' },
-            },
-          },
-        ]
-      },
-    })
-  })
   await hostedDesignerFrame.evaluate(() => {
     const registry = window.bpmnModeler.get('elementRegistry')
     window.bpmnModeler.get('selection').select(registry.get('UserTask_approve'))
   })
-  const hostedFormSection = hostedDesignerFrame.locator('.el-collapse-item').filter({
-    has: hostedDesignerFrame.locator('.el-collapse-item__header', { hasText: '表单配置' }),
-  })
-  await hostedFormSection.locator('.el-collapse-item__header').click()
-  await hostedFormSection.locator('[data-testid="select-node-forms-from-host"]').click()
-  await hostedDesignerFrame.waitForFunction(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    const extension = (task.extensionElements?.values || []).find(
-      (value) => value.$type === 'flowable:NodeFormExp',
-    )
-    return extension?.body?.includes('crossRealmForm')
-  })
-  const hostedNodeFormXml = await hostedDesignerFrame.evaluate(() =>
-    window.flowableProcessModeler.getXML(),
+  assert(
+    (await hostedDesignerFrame.locator('.designer-shell.is-embedded').count()) === 1,
+    'iframe 嵌入模式未生效',
   )
-  assert(hostedNodeFormXml.includes('crossRealmForm'), '父窗口表单选择结果未写入 iframe BPMN')
-  assert(hostedNodeFormXml.includes('parent-window'), '跨窗口未知表单字段未保留')
-  assert(!hostedNodeFormXml.includes('"title"'), '跨窗口空可选表单字段未被省略')
-
-  const crossRealmHostCalls = await iframeHostPage.evaluate(() =>
-    structuredClone(window.__crossRealmHostCalls),
+  assert(
+    (await hostedDesignerFrame.evaluate(
+      () => typeof window.flowableProcessModeler.configureHost,
+    )) === 'undefined',
+    '设计器仍暴露自定义宿主能力入口 configureHost',
   )
-  assert(crossRealmHostCalls.select.length === 1, '父窗口未收到可克隆的表单选择上下文')
+  assert(
+    (await hostedDesignerFrame.locator('.el-collapse-item').filter({
+      has: hostedDesignerFrame.locator('.el-collapse-item__header', { hasText: '表单配置' }),
+    }).count()) === 0,
+    '默认构建仍显示表单配置入口',
+  )
   await iframeHostPage.close()
 
   const modelApi = createMockModelerApi()
@@ -2692,355 +2647,17 @@ try {
   assert(xml.includes('xmlns:flowable="http://flowable.org/bpmn"'), 'Flowable namespace 不正确')
   assert(xml.includes('flowable:assignee="${manager}"'), '用户任务办理人未写回 XML')
 
-  await page.locator('[data-testid="assignment-mode"] .el-select__wrapper').click()
-  await page
-    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
-    .filter({ hasText: '静态分配 static' })
-    .click()
-
-  const staticAssignmentJson = '[{"name":"A&B","tabKey":"user","value":"manager"}]'
-  await page.locator('[data-testid="static-assignee-json"]').fill(staticAssignmentJson)
-  await page.locator('[data-testid="save-static-assignee-json"]').click()
-  await page.waitForFunction(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    return (task.extensionElements?.values || []).some(
-      (value) => value.$type === 'flowable:StaticAssigneeVariables',
-    )
-  })
-
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
-  const undoMetadataXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(!undoMetadataXml.includes('flowable:staticAssigneeVariables'), '业务 JSON 撤销失败')
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
-
-  const nodeFormInput = page.locator('[data-testid="node-form-exp-json"]')
-  const formSection = page.locator('.el-collapse-item').filter({
-    has: page.locator('.el-collapse-item__header', { hasText: '表单配置' }),
-  })
-  await formSection.locator('.el-collapse-item__header').click()
-  const nodeFormSelectionTab = formSection.getByRole('tab', { name: '已选表单', exact: true })
-  const nodeFormJsonTab = formSection.getByRole('tab', { name: '高级 JSON', exact: true })
-  await nodeFormJsonTab.click()
-  await nodeFormInput.waitFor({ state: 'visible' })
-  const unsavedNodeFormJson = '[{"code":"unsavedForm","name":"未提交输入"}]'
-  await nodeFormInput.fill(unsavedNodeFormJson)
-
-  const freeApprovalSection = page.locator('.el-collapse-item').filter({
-    has: page.locator('.el-collapse-item__header', { hasText: '自由审批' }),
-  })
-  await freeApprovalSection.locator('.el-collapse-item__header').click()
-  const freeApprovalStructuredTab = freeApprovalSection.getByRole('tab', {
-    name: '结构化配置',
-    exact: true,
-  })
-  const freeApprovalJsonTab = freeApprovalSection.getByRole('tab', {
-    name: '高级 JSON',
-    exact: true,
-  })
-  await freeApprovalJsonTab.click()
-  const seededNextUser = {
-    name: '指定审批人',
-    code: 'nextApprover',
-    multiple: 'false',
-    hostMetadata: {
-      source: 'host-library',
-      routing: { strategy: 'retain', levels: [1, 2] },
-    },
-  }
-  const nextUserJson = JSON.stringify([seededNextUser])
-  const nextUserInput = page.locator('[data-testid="next-user-json"]')
-  await nextUserInput.waitFor({ state: 'visible' })
-  await nextUserInput.fill(nextUserJson)
-  await page.locator('[data-testid="save-next-user-json"]').click()
   assert(
-    (await nodeFormInput.inputValue()) === unsavedNodeFormJson,
-    '保存其他业务扩展时覆盖了未提交的 NodeFormExp 输入',
-  )
-
-  const seededNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  await freeApprovalStructuredTab.click()
-  const nextUserRow = freeApprovalSection.locator('[data-testid="next-user-row"]').first()
-  await nextUserRow.waitFor({ state: 'visible' })
-  await nextUserRow.getByRole('button', { name: '编辑下一审批人' }).click()
-  const editedNextUser = {
-    ...seededNextUser,
-    name: '指定审批人（已编辑）',
-    code: 'nextApproverEdited',
-    multiple: true,
-  }
-  await page.locator('[data-testid="free-approval-name"]').fill(editedNextUser.name)
-  await page.locator('[data-testid="free-approval-code"]').fill(editedNextUser.code)
-  await page.locator('[data-testid="free-approval-multiple"]').click()
-  await page.locator('[data-testid="save-free-approval"]').click()
-  await page.waitForFunction((expected) => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    const extension = (task.extensionElements?.values || []).find(
-      (value) => value.$type === 'flowable:NextUser',
-    )
-    return extension?.body && JSON.stringify(JSON.parse(extension.body)) === JSON.stringify([expected])
-  }, editedNextUser)
-
-  const editedNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(editedNextUserXml !== seededNextUserXml, '结构化编辑 NextUser 未修改 BPMN XML')
-  assert(
-    editedNextUserXml.includes('"strategy": "retain"'),
-    '结构化编辑 NextUser 时丢失未知嵌套字段',
-  )
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
-  const undoNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(undoNextUserXml === seededNextUserXml, '结构化编辑 NextUser 撤销后未恢复原始 XML')
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
-  const redoNextUserXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(redoNextUserXml === editedNextUserXml, '结构化编辑 NextUser 重做后未恢复编辑后的 XML')
-
-  const nextSequenceFlow = { name: '审批通过', code: 'Flow_approved' }
-  await freeApprovalSection.locator('[data-testid="add-next-sequence-flow"]').click()
-  await page.locator('[data-testid="free-approval-name"]').fill(nextSequenceFlow.name)
-  await page.locator('[data-testid="free-approval-code"]').fill(nextSequenceFlow.code)
-  await page.locator('[data-testid="save-free-approval"]').click()
-  await page.waitForFunction((expected) => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    const extension = (task.extensionElements?.values || []).find(
-      (value) => value.$type === 'flowable:NextSequenceFlow',
-    )
-    return extension?.body && JSON.stringify(JSON.parse(extension.body)) === JSON.stringify([expected])
-  }, nextSequenceFlow)
-
-  const addedNextSequenceFlowXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(
-    addedNextSequenceFlowXml.includes('<flowable:nextSequenceFlow>') &&
-      addedNextSequenceFlowXml.includes('"code": "Flow_approved"'),
-    '结构化新增 NextSequenceFlow 未写入 BPMN XML',
-  )
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
-  const undoNextSequenceFlowXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(
-    undoNextSequenceFlowXml === editedNextUserXml &&
-      !undoNextSequenceFlowXml.includes('<flowable:nextSequenceFlow>'),
-    '结构化新增 NextSequenceFlow 撤销失败',
-  )
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
-  const redoNextSequenceFlowXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(
-    redoNextSequenceFlowXml === addedNextSequenceFlowXml,
-    '结构化新增 NextSequenceFlow 重做后未恢复 XML',
-  )
-
-  await page.evaluate(() => {
-    const registry = window.bpmnModeler.get('elementRegistry')
-    window.bpmnModeler.get('selection').select(registry.get('StartEvent_apply'))
-  })
-  await page.locator('.element-summary').getByText('提交申请', { exact: true }).waitFor()
-  await page.evaluate(() => {
-    const registry = window.bpmnModeler.get('elementRegistry')
-    window.bpmnModeler.get('selection').select(registry.get('UserTask_approve'))
-  })
-  await page.locator('.element-summary').getByText('部门审批', { exact: true }).waitFor()
-  const formSectionHeader = formSection.locator('.el-collapse-item__header')
-  assert(
-    (await formSectionHeader.getAttribute('aria-expanded')) === 'false',
-    '切换元素后表单配置没有按聚焦策略收起',
-  )
-  await formSectionHeader.click()
-  await nodeFormJsonTab.click()
-  await nodeFormInput.waitFor({ state: 'visible' })
-  assert(
-    (await nodeFormInput.inputValue()) === unsavedNodeFormJson,
-    '切换元素后未恢复 NodeFormExp 未提交输入',
-  )
-
-  const nodeFormJson = '[{"code":"leaveForm","name":"请假申请表","tenant":"default"}]'
-  await nodeFormInput.fill(nodeFormJson)
-  await page.locator('[data-testid="save-node-form-exp-json"]').click()
-  await page.waitForFunction(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    return (task.extensionElements?.values || []).some(
-      (value) => value.$type === 'flowable:NodeFormExp' && value.body.includes('leaveForm'),
-    )
-  })
-  await nodeFormSelectionTab.click()
-  const syncNodeFormButton = page.locator('[data-testid="sync-node-form-key"]')
-  await syncNodeFormButton.waitFor({ state: 'visible' })
-  await syncNodeFormButton.press('Enter')
-
-  const metadataXmlBeforeSync = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(
-    metadataXmlBeforeSync.includes('flowable:assignee="${manager}"'),
-    '保存 static 元数据时不应静默覆盖基础办理人字段',
+    (await page.locator('.el-collapse-item').filter({
+      has: page.locator('.el-collapse-item__header', { hasText: '表单配置' }),
+    }).count()) === 0,
+    '默认构建仍显示表单配置入口',
   )
   assert(
-    metadataXmlBeforeSync.includes('<flowable:assigneeType>static</flowable:assigneeType>'),
-    'AssigneeType 未通过属性面板写回 XML',
+    (await page.evaluate(() => typeof window.flowableProcessModeler.configureHost)) ===
+      'undefined',
+    '设计器仍暴露 configureHost',
   )
-  assert(
-    metadataXmlBeforeSync.includes(
-      '<flowable:staticAssigneeVariables>[{"name":"A&amp;B","tabKey":"user","value":"manager"}]</flowable:staticAssigneeVariables>',
-    ),
-    'StaticAssigneeVariables 未通过属性面板完整写回 XML',
-  )
-  assert(
-    metadataXmlBeforeSync.includes('<flowable:nextUser>') &&
-      metadataXmlBeforeSync.includes('"code": "nextApproverEdited"') &&
-      metadataXmlBeforeSync.includes('"strategy": "retain"'),
-    'NextUser 未通过属性面板写回 XML',
-  )
-  assert(
-    metadataXmlBeforeSync.includes('<flowable:nextSequenceFlow>') &&
-      metadataXmlBeforeSync.includes('"code": "Flow_approved"'),
-    'NextSequenceFlow 未通过结构化配置写回 XML',
-  )
-  assert(
-    metadataXmlBeforeSync.includes(
-      '<flowable:nodeFormExp>[{"code":"leaveForm","name":"请假申请表","tenant":"default"}]</flowable:nodeFormExp>',
-    ),
-    'NodeFormExp 未通过属性面板写回 XML',
-  )
-  assert(metadataXmlBeforeSync.includes('flowable:formKey="leaveForm"'), 'NodeFormExp code 未同步到 formKey')
-
-  await page.locator('[data-testid="sync-static-assignment"]').click()
-  const metadataXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  assert(metadataXml.includes('flowable:assignee="manager"'), '静态分配 value 未显式同步到办理人')
-
-  const hostSelectedNodeForm = {
-    id: 'Form_host_leave',
-    code: 'hostLeaveForm',
-    name: '宿主请假表单',
-    title: '请假申请',
-    categoryCode: 'hr',
-    categoryName: '人事流程',
-    hostMetadata: {
-      source: 'host-library',
-      routing: { tenant: 'acme', versions: [1, 2] },
-    },
-  }
-  const staleHostSelectedNodeForm = {
-    code: 'staleHostForm',
-    name: '过期宿主表单',
-  }
-  await page.evaluate(() => {
-    window.__staleNodeFormSelectionSettled = false
-    window.__nodeFormHostAdapter = {
-      selectNodeForms() {
-        return new Promise((resolve) => {
-          window.__resolveStaleNodeFormSelection = resolve
-        }).finally(() => {
-          setTimeout(() => {
-            window.__staleNodeFormSelectionSettled = true
-          }, 0)
-        })
-      },
-    }
-    window.flowableProcessModeler.configureHost(window.__nodeFormHostAdapter)
-  })
-
-  const selectNodeFormsButton = formSection.locator(
-    '[data-testid="select-node-forms-from-host"]',
-  )
-  await selectNodeFormsButton.waitFor({ state: 'visible' })
-  await selectNodeFormsButton.click()
-  await page.waitForFunction(() => typeof window.__resolveStaleNodeFormSelection === 'function')
-
-  const pendingNodeFormJson = '[{"code":"pendingForm","name":"未提交表单输入"}]'
-  await nodeFormJsonTab.click()
-  await nodeFormInput.fill(pendingNodeFormJson)
-  await page.evaluate(
-    ({ selectedForm, staleForm }) => {
-      window.__nodeFormHostCalls = { select: [] }
-      const clone = (value) => structuredClone(value)
-      const adapter = window.__nodeFormHostAdapter
-      adapter.selectNodeForms = (context) => {
-        window.__nodeFormHostCalls.select.push(clone(context))
-        return [clone(selectedForm)]
-      }
-      window.flowableProcessModeler.configureHost(adapter)
-      window.__resolveStaleNodeFormSelection([clone(staleForm)])
-    },
-    {
-      selectedForm: hostSelectedNodeForm,
-      staleForm: staleHostSelectedNodeForm,
-    },
-  )
-  await page.waitForFunction(() => window.__staleNodeFormSelectionSettled)
-  const stateAfterStaleSelection = await page.evaluate(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    const extension = (task.extensionElements?.values || []).find(
-      (value) => value.$type === 'flowable:NodeFormExp',
-    )
-    const pendingInputElement = document.querySelector('[data-testid="node-form-exp-json"]')
-    return {
-      committed: extension?.body ? JSON.parse(extension.body) : [],
-      pendingInput:
-        pendingInputElement?.value ?? pendingInputElement?.querySelector('textarea')?.value,
-    }
-  })
-  assert(
-    stateAfterStaleSelection.committed[0]?.code === 'leaveForm',
-    '旧宿主适配器的异步结果覆盖了已提交 NodeFormExp',
-  )
-  assert(
-    stateAfterStaleSelection.pendingInput === pendingNodeFormJson,
-    '旧宿主适配器的异步结果覆盖了未提交 NodeFormExp 输入',
-  )
-
-  await nodeFormSelectionTab.click()
-  await selectNodeFormsButton.click()
-  await page.waitForFunction((expected) => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    const extension = (task.extensionElements?.values || []).find(
-      (value) => value.$type === 'flowable:NodeFormExp',
-    )
-    if (!extension?.body) return false
-    try {
-      return JSON.stringify(JSON.parse(extension.body)) === JSON.stringify([expected])
-    } catch {
-      return false
-    }
-  }, hostSelectedNodeForm)
-  const selectedNodeForms = await page.evaluate(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    const extension = (task.extensionElements?.values || []).find(
-      (value) => value.$type === 'flowable:NodeFormExp',
-    )
-    return JSON.parse(extension.body)
-  })
-  assert(
-    JSON.stringify(selectedNodeForms) === JSON.stringify([hostSelectedNodeForm]),
-    `宿主表单选择结果未完整保留未知嵌套字段：${JSON.stringify(selectedNodeForms)}`,
-  )
-
-  await syncNodeFormButton.click()
-  await page.waitForFunction(
-    (expectedFormKey) =>
-      window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject.formKey ===
-      expectedFormKey,
-    hostSelectedNodeForm.code,
-  )
-
-  const xmlBeforeInvalidHostSelection = await page.evaluate(() =>
-    window.flowableProcessModeler.getXML(),
-  )
-  await page.evaluate(() => {
-    window.flowableProcessModeler.configureHost({
-      selectNodeForms(context) {
-        structuredClone(context)
-        return [{ code: 123, name: { label: '错误表单名' } }]
-      },
-    })
-  })
-  await selectNodeFormsButton.waitFor({ state: 'visible' })
-  await selectNodeFormsButton.click()
-  await page
-    .locator('.el-message--error:visible')
-    .filter({ hasText: '非空字符串 code' })
-    .waitFor()
-  const xmlAfterInvalidHostSelection = await page.evaluate(() =>
-    window.flowableProcessModeler.getXML(),
-  )
-  assert(
-    xmlAfterInvalidHostSelection === xmlBeforeInvalidHostSelection,
-    '宿主返回非字符串 code/name 时仍修改了 NodeFormExp',
-  )
-  await page.evaluate(() => window.flowableProcessModeler.configureHost(null))
 
   const problems = await page.evaluate(() => window.flowableProcessModeler.validate())
   assert(Array.isArray(problems), '流程校验没有返回结果数组')
@@ -3650,54 +3267,6 @@ try {
     )
   })
 
-  const legacyAsyncCompatibilityState = await page.evaluate(async () => {
-    const modeler = window.bpmnModeler
-    const task = modeler.get('elementRegistry').get('UserTask_approve')
-    modeler.get('modeling').updateProperties(task, {
-      'flowable:exclusive': false,
-      'flowable:asyncLeaveExclusive': false,
-      'flowable:jobCategory': 'legacyCategory',
-      'flowable:leaveJobCategory': 'legacyLeaveCategory',
-    })
-    return {
-      problems: window.flowableProcessModeler.validate(),
-      xml: await window.flowableProcessModeler.getXML(),
-    }
-  })
-  for (const message of [
-    'exclusive="false" 仅在 flowable:async="true" 时生效',
-    'asyncLeaveExclusive="false" 仅在 flowable:asyncLeave="true" 时生效',
-    'flowable:jobCategory 属性不会被 Flowable 6.8.1 读取，请改用 jobCategory 扩展元素',
-    'flowable:leaveJobCategory 属性不会被 Flowable 6.8.1 读取',
-  ]) {
-    assert(
-      legacyAsyncCompatibilityState.problems.some(
-        (problem) =>
-          problem.elementId === 'UserTask_approve' &&
-          problem.level === 'warning' &&
-          problem.message === message,
-      ),
-      `旧异步配置没有给出精确 warning：${message}`,
-    )
-  }
-  assert(
-    legacyAsyncCompatibilityState.xml.includes('flowable:jobCategory="legacyCategory"') &&
-      legacyAsyncCompatibilityState.xml.includes(
-        'flowable:leaveJobCategory="legacyLeaveCategory"',
-      ),
-    '旧作业分类属性没有在兼容导入路径中无损保留',
-  )
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
-  await page.waitForFunction(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    return (
-      task.get('flowable:jobCategory') === undefined &&
-      task.get('flowable:leaveJobCategory') === undefined &&
-      task.get('flowable:exclusive') === true &&
-      task.get('flowable:asyncLeaveExclusive') === true
-    )
-  })
-
   const mapExceptionServiceTask = await page.evaluate(() => {
     const modeler = window.bpmnModeler
     const current = modeler.get('elementRegistry').get('UserTask_approve')
@@ -3725,74 +3294,6 @@ try {
 
   const jobCategoryInput = page.locator('[data-testid="job-category"]')
   await jobCategoryInput.waitFor({ state: 'visible' })
-  await page.evaluate(() => {
-    const modeler = window.bpmnModeler
-    const task = modeler.get('elementRegistry').get('UserTask_approve')
-    modeler.get('modeling').updateProperties(task, {
-      'flowable:jobCategory': 'legacyCategory',
-      'flowable:leaveJobCategory': 'legacyLeaveCategory',
-      'flowable:asyncBefore': true,
-      'flowable:asyncAfter': true,
-    })
-  })
-  await page.waitForFunction(() => {
-    const input = document.querySelector('[data-testid="job-category"]')
-    return input?.value === 'legacyCategory'
-  })
-  assert(
-    (await jobCategoryInput.inputValue()) === 'legacyCategory',
-    '旧 flowable:jobCategory 属性没有回显到迁移入口',
-  )
-
-  await jobCategoryInput.fill('migrated-category')
-  await jobCategoryInput.press('Tab')
-  await page.waitForFunction(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    const category = (task.extensionElements?.values || []).find(
-      (value) => value.$type === 'flowable:JobCategory',
-    )
-    return (
-      category?.body === 'migrated-category' &&
-      task.get('flowable:jobCategory') === undefined
-    )
-  })
-  const migratedJobCategoryXml = await page.evaluate(() =>
-    window.flowableProcessModeler.getXML(),
-  )
-  assert(
-    migratedJobCategoryXml.includes(
-      '<flowable:jobCategory>migrated-category</flowable:jobCategory>',
-    ) &&
-      !/flowable:jobCategory\s*=/.test(migratedJobCategoryXml) &&
-      !/flowable:leaveJobCategory\s*=/.test(migratedJobCategoryXml),
-    '旧作业分类没有迁移为 Flowable 读取的扩展正文',
-  )
-
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
-  await page.waitForFunction(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    return (
-      !(task.extensionElements?.values || []).some(
-        (value) => value.$type === 'flowable:JobCategory',
-      ) &&
-      task.get('flowable:jobCategory') === 'legacyCategory' &&
-      task.get('flowable:leaveJobCategory') === 'legacyLeaveCategory'
-    )
-  })
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
-  await page.waitForFunction(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    return (
-      (task.extensionElements?.values || []).some(
-        (value) =>
-          value.$type === 'flowable:JobCategory' &&
-          value.body === 'migrated-category',
-      ) &&
-      task.get('flowable:jobCategory') === undefined &&
-      task.get('flowable:leaveJobCategory') === undefined
-    )
-  })
-
   const jobCategoryExpression = '${jobCategory}'
   await jobCategoryInput.fill(jobCategoryExpression)
   await jobCategoryInput.press('Tab')
@@ -3805,9 +3306,8 @@ try {
   await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
   await page.waitForFunction(() => {
     const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve').businessObject
-    return (task.extensionElements?.values || []).some(
-      (value) =>
-        value.$type === 'flowable:JobCategory' && value.body === 'migrated-category',
+    return !(task.extensionElements?.values || []).some(
+      (value) => value.$type === 'flowable:JobCategory',
     )
   })
   await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
@@ -3860,12 +3360,20 @@ try {
     '作业分类表达式未通过聚焦编辑提交路径恢复',
   )
 
+  await page.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const task = modeler.get('elementRegistry').get('UserTask_approve')
+    modeler.get('modeling').updateProperties(task, {
+      'flowable:async': true,
+      'flowable:asyncAfter': true,
+    })
+  })
   const asyncBeforeSwitch = page.locator('[data-testid="async-before"]')
   const asyncAfterSwitch = page.locator('[data-testid="async-after"]')
   assert(
     (await asyncBeforeSwitch.locator('input[type="checkbox"]').isChecked()) &&
       (await asyncAfterSwitch.locator('input[type="checkbox"]').isChecked()),
-    'asyncBefore/asyncAfter 兼容别名没有回显到异步开关',
+    'async/asyncAfter 没有回显到异步开关',
   )
   await asyncBeforeSwitch.click()
   await page.waitForFunction(() => {
@@ -3873,7 +3381,6 @@ try {
     return (
       task.get('flowable:async') === false &&
       task.get('flowable:asyncLeave') === true &&
-      task.get('flowable:asyncBefore') === false &&
       task.get('flowable:asyncAfter') === false
     )
   })
@@ -3923,7 +3430,6 @@ try {
       [
         'exclusive="false" 仅在 flowable:async="true" 时生效',
         'asyncLeaveExclusive="false" 仅在 flowable:asyncLeave="true" 时生效',
-        'flowable:jobCategory 属性不会被 Flowable 6.8.1 读取，请改用 jobCategory 扩展元素',
       ].includes(problem.message),
     ),
     '有效异步配置被错误标记为兼容性 warning',
@@ -4407,33 +3913,15 @@ try {
     '旧 external 类型导入后未回显主题',
   )
 
-  await page.evaluate(() => window.flowableProcessModeler.configureHost(null))
-  await page.locator('[data-testid="service-built-in-type"] .el-select__wrapper').click()
-  const unconfiguredServiceTaskOptions = await page
-    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
-    .allInnerTexts()
-  for (const label of [
-    'REST 服务',
-    '服务编排（SC）',
-    '消息队列',
-    '抄送任务',
-  ]) {
-    assert(
-      !unconfiguredServiceTaskOptions.includes(label),
-      `未配置宿主白名单时仍可新选 ${label}`,
-    )
-  }
-  await page.keyboard.press('Escape')
-
   const importedUnknownServiceType = await page.evaluate(async () => {
     const bridge = window.flowableProcessModeler
     const currentXml = await bridge.getXML()
     const unknownTypeXml = currentXml
-      .replace('flowable:type="external"', 'flowable:type="rest"')
+      .replace('flowable:type="external"', 'flowable:type="invented-runtime-type"')
       .replace(/\sflowable:topic="[^"]*"/, '')
     const result = await bridge.importXML(
       unknownTypeXml,
-      'host-service-task-type-unknown.bpmn20.xml',
+      'unsupported-service-task-type.bpmn20.xml',
     )
     const task = window.bpmnModeler.get('elementRegistry').get('UserTask_approve')
     window.bpmnModeler.get('selection').select(task)
@@ -4445,15 +3933,15 @@ try {
   })
   assert(
     importedUnknownServiceType.warnings.length === 0 &&
-      importedUnknownServiceType.type === 'rest' &&
+      importedUnknownServiceType.type === 'invented-runtime-type' &&
       importedUnknownServiceType.problems.some(
         (problem) =>
           problem.elementId === 'UserTask_approve' &&
           problem.level === 'error' &&
           problem.message ===
-            '服务任务类型 rest 不是当前支持的 Flowable 6.8.1 BPMN 类型，且宿主未声明运行时适配',
+            '服务任务类型 invented-runtime-type 不是 Flowable 6.8.1 支持的 BPMN 类型',
       ),
-    `导入宿主服务类型后未返回精确本地错误：${JSON.stringify(importedUnknownServiceType)}`,
+    `导入未知服务类型后未返回精确本地错误：${JSON.stringify(importedUnknownServiceType)}`,
   )
   await page.locator('.canvas-loading').waitFor({ state: 'hidden' })
   const importedServiceTypeSelect = page.locator('[data-testid="service-built-in-type"]')
@@ -4461,71 +3949,21 @@ try {
   await page.waitForFunction(() =>
     document
       .querySelector('[data-testid="service-built-in-type"]')
-      ?.textContent?.includes('导入类型：rest（宿主未授权）'),
+      ?.textContent?.includes('导入了 Flowable 不支持的类型：invented-runtime-type'),
   )
   await importedServiceTypeSelect.locator('.el-select__wrapper').click()
-  const unauthorizedServiceTaskDropdown = page.locator('.el-select-dropdown:visible')
-  await unauthorizedServiceTaskDropdown.waitFor({ state: 'visible' })
-  const unauthorizedRestOptions = await page
+  const unsupportedServiceTaskDropdown = page.locator('.el-select-dropdown:visible')
+  await unsupportedServiceTaskDropdown.waitFor({ state: 'visible' })
+  const unsupportedServiceTaskOptions = await page
     .locator('.el-select-dropdown:visible .el-select-dropdown__item')
     .allInnerTexts()
   assert(
-    unauthorizedRestOptions.includes('导入类型：rest（宿主未授权）') &&
-      !unauthorizedRestOptions.includes('REST 服务'),
-    `未授权的导入类型没有以只保留状态显示：${JSON.stringify(unauthorizedRestOptions)}`,
-  )
-  await page.keyboard.press('Escape')
-
-  await page.evaluate(() =>
-    window.flowableProcessModeler.configureHost({
-      customServiceTaskTypes: [{ type: 'rest', label: 'REST 服务' }],
-    }),
-  )
-  await page.waitForFunction(() =>
-    !window.flowableProcessModeler.validate().some(
-      (problem) =>
-        problem.elementId === 'UserTask_approve' &&
-        problem.message ===
-          '服务任务类型 rest 不是当前支持的 Flowable 6.8.1 BPMN 类型，且宿主未声明运行时适配',
+    unsupportedServiceTaskOptions.includes(
+      '导入了 Flowable 不支持的类型：invented-runtime-type',
     ),
-  )
-  await page.waitForFunction(() => {
-    const select = document.querySelector('[data-testid="service-built-in-type"]')
-    return select?.textContent?.includes('REST 服务') &&
-      !select.textContent.includes('导入类型：rest（宿主未授权）')
-  })
-  await page.locator('[data-testid="service-built-in-type"] .el-select__wrapper').click()
-  await page.locator('.el-select-dropdown:visible').waitFor({ state: 'visible' })
-  const configuredServiceTaskOptions = await page
-    .locator('.el-select-dropdown:visible .el-select-dropdown__item')
-    .allInnerTexts()
-  assert(
-    configuredServiceTaskOptions.includes('REST 服务') &&
-      !configuredServiceTaskOptions.includes('导入类型：rest（宿主未授权）') &&
-      !configuredServiceTaskOptions.includes('服务编排（SC）') &&
-      !configuredServiceTaskOptions.includes('消息队列') &&
-      !configuredServiceTaskOptions.includes('抄送任务'),
-    `宿主服务类型白名单没有精确生效：${JSON.stringify(configuredServiceTaskOptions)}`,
+    `未知导入类型没有以只保留状态显示：${JSON.stringify(unsupportedServiceTaskOptions)}`,
   )
   await page.keyboard.press('Escape')
-  assert(!(await externalWorkerTopic.isVisible()), '导入 REST 服务类型后仍显示外部工作器主题')
-  const importedRestXmlState = await page.evaluate(async () => {
-    const xml = await window.flowableProcessModeler.getXML()
-    const xmlDocument = new DOMParser().parseFromString(xml, 'application/xml')
-    const serviceTask = [...xmlDocument.getElementsByTagNameNS(
-      'http://www.omg.org/spec/BPMN/20100524/MODEL',
-      'serviceTask',
-    )].find((element) => element.getAttribute('id') === 'UserTask_approve')
-    return {
-      type: serviceTask?.getAttributeNS('http://flowable.org/bpmn', 'type'),
-      hasTopic: serviceTask?.hasAttributeNS('http://flowable.org/bpmn', 'topic') ?? true,
-    }
-  })
-  assert(
-    importedRestXmlState.type === 'rest' && !importedRestXmlState.hasTopic,
-    `导入 REST 服务类型的 XML 语义不正确：${JSON.stringify(importedRestXmlState)}`,
-  )
-  await page.evaluate(() => window.flowableProcessModeler.configureHost(null))
 
   const externalWorkerRecoveryWarnings = await page.evaluate(
     async (fixture) =>
@@ -5827,14 +5265,14 @@ try {
       `${fixture.name} 旧命名空间没有返回精确兼容提示：${JSON.stringify(state.warnings)}`,
     )
     assert(
-      state.extensionTypes.includes('flowable:AssigneeType') &&
-        state.extensionTypes.includes('flowable:StaticAssigneeVariables'),
+      state.extensionTypes.includes('flowable:Properties') &&
+        state.extensionTypes.includes('flowable:FormData'),
       `${fixture.name} 旧命名空间扩展没有恢复为 typed Flowable 元素`,
     )
     assert(
       !state.xml.includes('http://activiti.org/bpmn') &&
         state.xml.includes('xmlns:flowable="http://flowable.org/bpmn"') &&
-        state.xml.includes('<flowable:assigneeType>static</flowable:assigneeType>'),
+        state.xml.includes('<flowable:properties>'),
       `${fixture.name} 旧命名空间导出后没有规范化为 Flowable URI`,
     )
     if (fixture.name === 'flowable-prefix') {
@@ -6092,32 +5530,23 @@ try {
   await eagerExecutionSwitch.waitFor({ state: 'visible' })
   assert(
     !(await eagerExecutionInput.isChecked()),
-    'canonical eager=false 未优先于旧 eager=true 回显',
+    'isEagerExecutionFetching=false 未正确回显',
   )
   await eagerExecutionSwitch.click()
   await page.waitForFunction(() => {
     const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
-    return (
-      process.get('flowable:isEagerExecutionFetching') === true &&
-      process.get('flowable:enableEagerExecutionTreeFetching') === undefined
-    )
+    return process.get('flowable:isEagerExecutionFetching') === true
   })
   await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
   await page.waitForFunction(() => {
     const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
-    return (
-      process.get('flowable:isEagerExecutionFetching') === false &&
-      process.get('flowable:enableEagerExecutionTreeFetching') === true
-    )
+    return process.get('flowable:isEagerExecutionFetching') === false
   })
-  assert(!(await eagerExecutionInput.isChecked()), 'eager 规范化撤销后未恢复冲突属性')
+  assert(!(await eagerExecutionInput.isChecked()), 'eager 撤销后未恢复原值')
   await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
   await page.waitForFunction(() => {
     const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
-    return (
-      process.get('flowable:isEagerExecutionFetching') === true &&
-      process.get('flowable:enableEagerExecutionTreeFetching') === undefined
-    )
+    return process.get('flowable:isEagerExecutionFetching') === true
   })
 
   await page.evaluate(() => {
@@ -6698,7 +6127,6 @@ try {
   )
   assert(
     preservationXml.includes('flowable:isEagerExecutionFetching="true"') &&
-      !preservationXml.includes('flowable:enableEagerExecutionTreeFetching=') &&
       preservationXml.includes('flowable:resultVariableName="calculationResult"') &&
       !preservationXml.includes('flowable:resultVariable="legacyCalculationResult"') &&
       preservationXml.includes('flowable:useLocalScopeForResultVariable="true"') &&
@@ -6881,18 +6309,8 @@ try {
 
   const customExtensions = await page.evaluate(() => {
     const registry = window.bpmnModeler.get('elementRegistry')
-    const task = registry.get('UserTask_custom').businessObject
     const start = registry.get('StartEvent_custom').businessObject
-    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
     return {
-      task: (task.extensionElements?.values || []).map((value) => ({
-        type: value.$type,
-        body: value.body,
-      })),
-      process: (process.extensionElements?.values || []).map((value) => ({
-        type: value.$type,
-        body: value.body,
-      })),
       rootDefinitions: window.bpmnModeler
         .getDefinitions()
         .rootElements.filter((value) => ['bpmn:Message', 'bpmn:Signal', 'bpmn:Error'].includes(value.$type))
@@ -6907,74 +6325,6 @@ try {
       messageRef: start.eventDefinitions?.[0]?.messageRef?.id,
     }
   })
-
-  const expectedTaskExtensions = new Map([
-    ['flowable:AssigneeType', 'static'],
-    [
-      'flowable:StaticAssigneeVariables',
-      '{"users":[{"id":"u-001","name":"张三"}],"expression":"approvalUsers"}',
-    ],
-    ['flowable:IdmAssignee', '{"id":"leader","name":"部门负责人"}'],
-    ['flowable:IdmCandidateUsers', '[{"id":"u-002","name":"李四"}]'],
-    ['flowable:IdmCandidateGroups', '[{"id":"g-001","name":"财务组"}]'],
-    ['flowable:NextSequenceFlow', '{"mode":"free"}'],
-    ['flowable:NextUser', '{"variable":"nextApprover"}'],
-    ['flowable:ModelBpmnExtension', '{"version":1}'],
-    ['flowable:NodeFormExp', '{"amount":"3","comment":"2"}'],
-    ['flowable:MultiInstanceVariables', '{"collection":"participants"}'],
-  ])
-
-  for (const [type, body] of expectedTaskExtensions) {
-    const extension = customExtensions.task.find((item) => item.type === type)
-    assert(extension, `${type} 导入后丢失`)
-    assert(extension.body === body, `${type} body 导入后发生变化`)
-  }
-  assert(
-    customExtensions.process.some(
-      (item) => item.type === 'flowable:ProcessNameExp' && item.body === 'businessName',
-    ),
-    'flowable:ProcessNameExp 导入后丢失',
-  )
-
-  await page.evaluate(() => window.bpmnModeler.get('selection').select(null))
-  const processNameInput = page.locator('[data-testid="process-name-exp"]')
-  assert((await processNameInput.inputValue()) === 'businessName', 'ProcessNameExp 未在流程属性中回显')
-  await processNameInput.fill('${businessTitle}')
-  await processNameInput.press('Tab')
-  await page.waitForFunction(() => {
-    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
-    return (process.extensionElements?.values || []).some(
-      (value) => value.$type === 'flowable:ProcessNameExp' && value.body === '${businessTitle}',
-    )
-  })
-
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
-  await page.waitForFunction(() =>
-    (window.bpmnModeler.get('canvas').getRootElement().businessObject.extensionElements?.values || []).some(
-      (value) => value.$type === 'flowable:ProcessNameExp' && value.body === 'businessName',
-    ),
-  )
-  assert((await processNameInput.inputValue()) === 'businessName', 'ProcessNameExp 撤销后未回显原值')
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').redo())
-  await page.waitForFunction(() =>
-    (window.bpmnModeler.get('canvas').getRootElement().businessObject.extensionElements?.values || []).some(
-      (value) => value.$type === 'flowable:ProcessNameExp' && value.body === '${businessTitle}',
-    ),
-  )
-
-  await processNameInput.fill('')
-  await processNameInput.press('Tab')
-  await page.waitForFunction(() =>
-    !(window.bpmnModeler.get('canvas').getRootElement().businessObject.extensionElements?.values || []).some(
-      (value) => value.$type === 'flowable:ProcessNameExp',
-    ),
-  )
-  await page.evaluate(() => window.bpmnModeler.get('commandStack').undo())
-  await page.waitForFunction(() =>
-    (window.bpmnModeler.get('canvas').getRootElement().businessObject.extensionElements?.values || []).some(
-      (value) => value.$type === 'flowable:ProcessNameExp' && value.body === '${businessTitle}',
-    ),
-  )
 
   assert(customExtensions.messageRef === 'Message_custom', '消息事件未保留全局消息引用')
   assert(
@@ -7039,21 +6389,6 @@ try {
   })
 
   const customXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
-  for (const type of expectedTaskExtensions.keys()) {
-    const localName = type.slice('flowable:'.length)
-    const tagName = localName[0].toLowerCase() + localName.slice(1)
-    assert(customXml.includes(`<flowable:${tagName}>`), `${type} 未写回 XML`)
-  }
-  assert(
-    customXml.includes(
-      '<flowable:staticAssigneeVariables>{"users":[{"id":"u-001","name":"张三"}],"expression":"approvalUsers"}</flowable:staticAssigneeVariables>',
-    ),
-    'StaticAssigneeVariables JSON body 未完整写回 XML',
-  )
-  assert(
-    customXml.includes('<flowable:processNameExp>${businessTitle}</flowable:processNameExp>'),
-    'ProcessNameExp 未通过流程属性写回 XML',
-  )
   assertStructuredCustomXml(customXml, '第一次导出时')
 
   const secondImportWarningCount = await page.evaluate(
@@ -7067,39 +6402,10 @@ try {
     return root.businessObject.id === 'Process_custom_extensions' && selection.length === 0
   })
   await page.locator('.designer-header').getByText('自定义扩展往返', { exact: true }).waitFor()
-  assert(
-    (await processNameInput.inputValue()) === '${businessTitle}',
-    '裸 modeler.importXML 后流程属性面板未同步',
-  )
   const secondCustomXml = await page.evaluate(() => window.flowableProcessModeler.getXML())
   const secondStructuredSemantics = await readCustomStructuredSemantics(page)
   assertStructuredCustomSemantics(secondStructuredSemantics, '第二次导入后')
   assertStructuredCustomXml(secondCustomXml, '第二次导出时')
-  const secondRoundTripExtensions = await page.evaluate(() => {
-    const task = window.bpmnModeler.get('elementRegistry').get('UserTask_custom').businessObject
-    return (task.extensionElements?.values || []).map((value) => ({
-      type: value.$type,
-      body: value.body,
-    }))
-  })
-  for (const type of ['flowable:AssigneeType', 'flowable:StaticAssigneeVariables']) {
-    const expectedBody = expectedTaskExtensions.get(type)
-    const extension = secondRoundTripExtensions.find((item) => item.type === type)
-    assert(extension?.body === expectedBody, `${type} 第二次往返后语义内容发生变化`)
-  }
-  const secondProcessNameExp = await page.evaluate(() => {
-    const process = window.bpmnModeler.get('canvas').getRootElement().businessObject
-    return (process.extensionElements?.values || []).find(
-      (value) => value.$type === 'flowable:ProcessNameExp',
-    )?.body
-  })
-  assert(secondProcessNameExp === '${businessTitle}', 'ProcessNameExp 第二次往返后语义内容发生变化')
-  assert(
-    secondCustomXml.includes(
-      '<flowable:staticAssigneeVariables>{"users":[{"id":"u-001","name":"张三"}],"expression":"approvalUsers"}</flowable:staticAssigneeVariables>',
-    ),
-    'StaticAssigneeVariables 第二次往返后丢失',
-  )
   mkdirSync('artifacts', { recursive: true })
   writeFileSync('artifacts/custom-extensions-roundtrip.bpmn20.xml', secondCustomXml, 'utf8')
 
@@ -7149,9 +6455,7 @@ try {
         elements: initial.elements,
         paletteEntries: initial.palette,
         xmlLength: xml.length,
-        metadataXmlLength: metadataXml.length,
         customExtensionXmlLength: secondCustomXml.length,
-        customExtensionCount: customExtensions.task.length,
         validationProblems: problems.length,
         mobileViewport,
       },

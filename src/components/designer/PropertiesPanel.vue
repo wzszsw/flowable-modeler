@@ -4,8 +4,9 @@ import type { PropType } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type Modeler from 'bpmn-js/lib/Modeler'
 import { ElMessage, ElMessageBox } from 'element-plus'
-import { ArrowDown, ArrowUp, Delete, Edit, Plus, Search } from '@element-plus/icons-vue'
+import { ArrowDown, ArrowUp, Delete, Edit, Plus } from '@element-plus/icons-vue'
 
+import { FLOWABLE_FORMS_ENABLED } from '@/config/features'
 import {
   addExtensionValue,
   createFormalExpression,
@@ -24,17 +25,9 @@ import {
   updateExtensionValue,
   updateModdleProperties,
 } from '@/modeler/modeling'
-import type {
-  BusinessRecord,
-  BusinessValue,
-  FlowableHostAdapter,
-  NodeFormContext,
-  NodeFormRecord,
-} from '@/modeler/integration'
 import {
   FLOWABLE_BPMN_SERVICE_TASK_TYPES,
   FLOWABLE_SERVICE_TASK_TYPE_LABEL_KEYS,
-  resolveHostServiceTaskTypes,
 } from '@/modeler/serviceTaskTypes'
 import type {
   BpmnBusinessObject,
@@ -55,144 +48,15 @@ const props = defineProps({
     type: Number,
     default: 0,
   },
-  hostAdapter: {
-    type: Object as PropType<FlowableHostAdapter | null>,
-    default: null,
-  },
-  hostAdapterGeneration: {
-    type: Number,
-    default: 0,
-  },
 })
 
 const emit = defineEmits<{
   changed: []
 }>()
 
-const { t, locale } = useI18n()
-
-const jsonExamples = computed(() => ({
-  staticAssignee: JSON.stringify([
-    { name: t('properties.assignment.staticExampleName'), tabKey: 'user', value: 'user01' },
-  ]),
-  idmAssignee: JSON.stringify([
-    { code: 'user01', name: t('properties.assignment.idmAssigneeExampleName') },
-  ]),
-  idmCandidateUser: JSON.stringify([
-    { code: 'user02', name: t('properties.assignment.idmCandidateUserExampleName') },
-  ]),
-  idmCandidateGroup: JSON.stringify([
-    { sn: 'finance', name: t('properties.assignment.idmCandidateGroupExampleName') },
-  ]),
-  nextUser: JSON.stringify([
-    {
-      name: t('properties.freeApproval.nextUserExampleName'),
-      code: 'nextApprover',
-      multiple: false,
-    },
-  ]),
-  nextFlow: JSON.stringify([
-    { name: t('properties.freeApproval.nextFlowExampleName'), code: 'Flow_approved' },
-  ]),
-  nodeForm: JSON.stringify([
-    { code: 'leaveForm', name: t('properties.forms.nodeFormExampleName') },
-  ]),
-}))
+const { t } = useI18n()
 
 const activeSections = ref<string[]>(['general'])
-
-type AssignmentMode = 'legacy' | 'static' | 'idm'
-type JsonContainer = Record<string, unknown> | unknown[]
-type CommittedNodeFormState = {
-  activityId: string
-  processId: string
-  modelKey: string
-  formKey: string
-  selectedForms: BusinessRecord[]
-  extensionBody: string
-  signature: string
-}
-type JsonExtensionKey =
-  | 'staticAssigneeVariables'
-  | 'idmAssignee'
-  | 'idmCandidateUsers'
-  | 'idmCandidateGroups'
-  | 'nextUser'
-  | 'nextSequenceFlow'
-  | 'nodeFormExp'
-  | 'modelBpmnExtension'
-  | 'multiInstanceVariables'
-
-const jsonExtensionTypes: Record<JsonExtensionKey, string> = {
-  staticAssigneeVariables: 'flowable:StaticAssigneeVariables',
-  idmAssignee: 'flowable:IdmAssignee',
-  idmCandidateUsers: 'flowable:IdmCandidateUsers',
-  idmCandidateGroups: 'flowable:IdmCandidateGroups',
-  nextUser: 'flowable:NextUser',
-  nextSequenceFlow: 'flowable:NextSequenceFlow',
-  nodeFormExp: 'flowable:NodeFormExp',
-  modelBpmnExtension: 'flowable:ModelBpmnExtension',
-  multiInstanceVariables: 'flowable:MultiInstanceVariables',
-}
-
-const jsonExtensionLabelKeys: Record<JsonExtensionKey, string> = {
-  staticAssigneeVariables: 'properties.jsonExtensions.staticAssigneeVariables',
-  idmAssignee: 'properties.jsonExtensions.idmAssignee',
-  idmCandidateUsers: 'properties.jsonExtensions.idmCandidateUsers',
-  idmCandidateGroups: 'properties.jsonExtensions.idmCandidateGroups',
-  nextUser: 'properties.jsonExtensions.nextUser',
-  nextSequenceFlow: 'properties.jsonExtensions.nextSequenceFlow',
-  nodeFormExp: 'properties.jsonExtensions.nodeFormExp',
-  modelBpmnExtension: 'properties.jsonExtensions.modelBpmnExtension',
-  multiInstanceVariables: 'properties.jsonExtensions.multiInstanceVariables',
-}
-
-const jsonExtensionLabel = (key: JsonExtensionKey) => t(jsonExtensionLabelKeys[key])
-
-const jsonExtensionKeys = Object.keys(jsonExtensionTypes) as JsonExtensionKey[]
-
-const extensionJson = reactive<Record<JsonExtensionKey, string>>({
-  staticAssigneeVariables: '',
-  idmAssignee: '',
-  idmCandidateUsers: '',
-  idmCandidateGroups: '',
-  nextUser: '',
-  nextSequenceFlow: '',
-  nodeFormExp: '',
-  modelBpmnExtension: '',
-  multiInstanceVariables: '',
-})
-
-const extensionJsonErrors = reactive<Record<JsonExtensionKey, string>>({
-  staticAssigneeVariables: '',
-  idmAssignee: '',
-  idmCandidateUsers: '',
-  idmCandidateGroups: '',
-  nextUser: '',
-  nextSequenceFlow: '',
-  nodeFormExp: '',
-  modelBpmnExtension: '',
-  multiInstanceVariables: '',
-})
-
-const extensionJsonDirty = reactive<Record<JsonExtensionKey, boolean>>({
-  staticAssigneeVariables: false,
-  idmAssignee: false,
-  idmCandidateUsers: false,
-  idmCandidateGroups: false,
-  nextUser: false,
-  nextSequenceFlow: false,
-  nodeFormExp: false,
-  modelBpmnExtension: false,
-  multiInstanceVariables: false,
-})
-
-type JsonDrafts = Partial<Record<JsonExtensionKey, string>>
-const extensionJsonDrafts = new WeakMap<BpmnBusinessObject, JsonDrafts>()
-let extensionJsonOwner: BpmnBusinessObject | null = null
-let hydratingExtensionJson = false
-
-const unsupportedAssignmentMode = ref('')
 
 const form = reactive({
   id: '',
@@ -200,8 +64,6 @@ const form = reactive({
   documentation: '',
   isExecutable: true,
   isEagerExecutionFetching: false,
-  versionTag: '',
-  processNameExp: '',
   candidateStarterUsers: '',
   candidateStarterGroups: '',
   initiator: '',
@@ -215,7 +77,6 @@ const form = reactive({
   category: '',
   taskIdVariableName: '',
   taskCompleterVariableName: '',
-  assignmentMode: 'legacy' as AssignmentMode,
   formKey: '',
   formFieldValidation: true,
   sameDeployment: true,
@@ -392,33 +253,6 @@ const mapExceptionForm = reactive({
   rootCause: '',
 })
 
-const nodeFormMode = ref<'selection' | 'json'>('selection')
-const nodeFormDialogVisible = ref(false)
-const editingNodeFormIndex = ref(-1)
-const editingNodeFormOriginal = shallowRef<BusinessRecord | null>(null)
-const nodeFormHostLoading = ref(false)
-const nodeFormEditor = reactive({
-  id: '',
-  code: '',
-  name: '',
-  title: '',
-  categoryCode: '',
-  categoryName: '',
-})
-let nodeFormHostRequest = 0
-
-type FreeApprovalKind = 'nextUser' | 'nextSequenceFlow'
-const freeApprovalMode = ref<'structured' | 'json'>('structured')
-const freeApprovalDialogVisible = ref(false)
-const freeApprovalKind = ref<FreeApprovalKind>('nextUser')
-const editingFreeApprovalIndex = ref(-1)
-const editingFreeApprovalOriginal = shallowRef<BusinessRecord | null>(null)
-const freeApprovalEditor = reactive({
-  name: '',
-  code: '',
-  multiple: false,
-})
-
 type ServiceFieldSpec = {
   name: string
   label: string
@@ -454,36 +288,6 @@ const serviceFieldPresets = computed<Record<string, ServiceFieldSpec[]>>(() => (
     { name: 'errorCodeVariable', label: t('properties.serviceFields.errorCodeVariable'), valueType: 'string' },
     { name: 'directory', label: t('properties.serviceFields.workingDirectory'), valueType: 'string' },
   ],
-  sc: [
-    { name: 'serviceId', label: t('properties.serviceFields.serviceId'), valueType: 'string', required: true },
-    { name: 'url', label: t('properties.serviceFields.requestPath'), valueType: 'string', required: true },
-    {
-      name: 'method',
-      label: t('properties.serviceFields.requestMethod'),
-      valueType: 'string',
-      control: 'select',
-      options: methodOptions.slice(0, 2),
-      required: true,
-    },
-    { name: 'params', label: t('properties.serviceFields.requestParameters'), valueType: 'expression', control: 'textarea' },
-    { name: 'responseVariableName', label: t('properties.serviceFields.responseVariable'), valueType: 'string' },
-    { name: 'ignoreException', label: t('properties.serviceFields.ignoreException'), valueType: 'string', control: 'boolean' },
-  ],
-  rest: [
-    { name: 'requestUrl', label: t('properties.serviceFields.requestUrl'), valueType: 'string', required: true },
-    {
-      name: 'requestMethod',
-      label: t('properties.serviceFields.requestMethod'),
-      valueType: 'string',
-      control: 'select',
-      options: methodOptions,
-      required: true,
-    },
-    { name: 'requestHeaders', label: t('properties.serviceFields.requestHeaders'), valueType: 'string', control: 'textarea' },
-    { name: 'requestBody', label: t('properties.serviceFields.requestBody'), valueType: 'expression', control: 'textarea' },
-    { name: 'responseVariableName', label: t('properties.serviceFields.responseVariable'), valueType: 'string' },
-    { name: 'ignoreException', label: t('properties.serviceFields.ignoreException'), valueType: 'string', control: 'boolean' },
-  ],
   http: [
     { name: 'requestUrl', label: t('properties.serviceFields.requestUrl'), valueType: 'string', required: true },
     {
@@ -516,10 +320,6 @@ const serviceFieldPresets = computed<Record<string, ServiceFieldSpec[]>>(() => (
     { name: 'html', label: t('properties.serviceFields.htmlBody'), valueType: 'expression', control: 'textarea' },
     { name: 'charset', label: t('properties.serviceFields.charset'), valueType: 'string', placeholder: 'utf-8' },
   ],
-  mq: [
-    { name: 'queue', label: t('properties.serviceFields.queueName'), valueType: 'string', required: true },
-    { name: 'params', label: t('properties.serviceFields.messageParameters'), valueType: 'expression', control: 'textarea' },
-  ],
   dmn: [
     { name: 'decisionTableReferenceKey', label: t('properties.serviceFields.decisionTableKey'), valueType: 'string' },
     { name: 'decisionServiceReferenceKey', label: t('properties.serviceFields.decisionServiceKey'), valueType: 'string' },
@@ -535,10 +335,6 @@ const serviceFieldPresets = computed<Record<string, ServiceFieldSpec[]>>(() => (
       valueType: 'string',
       control: 'boolean',
     },
-  ],
-  copy: [
-    { name: 'transferToUserNos', label: t('properties.serviceFields.copyUsers'), valueType: 'string', required: true },
-    { name: 'messageType', label: t('properties.serviceFields.messageType'), valueType: 'string', placeholder: 'system' },
   ],
 }))
 
@@ -567,7 +363,9 @@ const isErrorEvent = computed(() => eventDefinitionType.value === 'bpmn:ErrorEve
 const isThrowingEvent = computed(() =>
   ['bpmn:EndEvent', 'bpmn:IntermediateThrowEvent'].includes(type.value),
 )
-const supportsForm = computed(() => isUserTask.value || isStartEvent.value)
+const supportsForm = computed(
+  () => FLOWABLE_FORMS_ENABLED && (isUserTask.value || isStartEvent.value),
+)
 const supportsMultiInstance = computed(() =>
   [
     'bpmn:Task',
@@ -656,14 +454,6 @@ const definitions = computed(() => {
   return current
 })
 
-const owningProcessId = computed(() => {
-  let current = businessObject.value || undefined
-  while (current && current.$type !== 'bpmn:Process') {
-    current = current.$parent as BpmnBusinessObject | undefined
-  }
-  return text(current?.id)
-})
-
 const globalDefinitions = computed(() => {
   props.revision
   const rootElements = (definitions.value?.rootElements as BpmnBusinessObject[] | undefined) || []
@@ -729,55 +519,9 @@ const mapExceptions = computed(() =>
   extensionValues.value.filter((value) => value.$type === 'flowable:MapException'),
 )
 const listenerCount = computed(() => executionListeners.value.length + taskListeners.value.length)
-const selectedNodeForms = computed(() => {
-  props.revision
-  if (!extensionJson.nodeFormExp.trim()) return [] as BusinessRecord[]
-  try {
-    const value = JSON.parse(extensionJson.nodeFormExp) as unknown
-    if (!Array.isArray(value)) return []
-    return value.filter(
-      (item): item is BusinessRecord =>
-        Boolean(item) && typeof item === 'object' && !Array.isArray(item),
-    )
-  } catch {
-    return []
-  }
-})
-const nodeFormStructuredError = computed(() => {
-  if (!extensionJson.nodeFormExp.trim()) return ''
-  try {
-    const value = JSON.parse(extensionJson.nodeFormExp) as unknown
-    if (!Array.isArray(value)) {
-      return t('properties.jsonExtensions.invalidArray', { label: 'NodeFormExp' })
-    }
-    if (value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
-      return t('properties.jsonExtensions.nonObjectItem', { label: 'NodeFormExp' })
-    }
-    return ''
-  } catch {
-    return t('properties.jsonExtensions.invalidSyntax', { label: 'NodeFormExp' })
-  }
-})
-const structuredNextUsers = computed(() => structuredJsonRecords(extensionJson.nextUser))
-const structuredNextSequenceFlows = computed(() =>
-  structuredJsonRecords(extensionJson.nextSequenceFlow),
-)
-const nextUserStructuredError = computed(() =>
-  inspectStructuredJsonArray(extensionJson.nextUser, 'NextUser'),
-)
-const nextSequenceFlowStructuredError = computed(() =>
-  inspectStructuredJsonArray(extensionJson.nextSequenceFlow, 'NextSequenceFlow'),
-)
-const freeApprovalCount = computed(
-  () => structuredNextUsers.value.length + structuredNextSequenceFlows.value.length,
-)
 const selectedServiceType = computed(() =>
   form.implementationType === 'type' ? form.implementation : '',
 )
-const hostServiceTaskTypes = computed(() => {
-  locale.value
-  return resolveHostServiceTaskTypes(props.hostAdapter)
-})
 const serviceTaskTypeOptions = computed(() => {
   const options: Array<{ value: string; label: string }> = FLOWABLE_BPMN_SERVICE_TASK_TYPES.map((value) => ({
     value,
@@ -785,8 +529,6 @@ const serviceTaskTypeOptions = computed(() => {
       ? t(FLOWABLE_SERVICE_TASK_TYPE_LABEL_KEYS[value]!)
       : value,
   }))
-  options.push(...hostServiceTaskTypes.value.map(({ type: value, label }) => ({ value, label })))
-
   const current = selectedServiceType.value.trim()
   if (current && !options.some((option) => option.value === current)) {
     options.push({
@@ -794,7 +536,7 @@ const serviceTaskTypeOptions = computed(() => {
       label:
         (FLOWABLE_SERVICE_TASK_TYPE_LABEL_KEYS[current]
           ? t(FLOWABLE_SERVICE_TASK_TYPE_LABEL_KEYS[current]!)
-          : t('properties.serviceTypes.unauthorizedImported', { type: current })),
+          : t('properties.serviceTypes.unsupportedImported', { type: current })),
     })
   }
   return options
@@ -821,337 +563,8 @@ const text = (value: unknown) => (value === undefined || value === null ? '' : S
 const booleanValue = (value: unknown, defaultValue = false) =>
   value === undefined || value === null ? defaultValue : value === true || value === 'true'
 
-function isPlainBusinessRecord(value: object) {
-  const prototype = Object.getPrototypeOf(value)
-  if (prototype === null) return true
-  if (Object.getPrototypeOf(prototype) !== null) return false
-
-  const constructor = Object.getOwnPropertyDescriptor(prototype, 'constructor')?.value
-  return (
-    typeof constructor === 'function' &&
-    Function.prototype.toString.call(constructor) === Function.prototype.toString.call(Object)
-  )
-}
-
-function hostErrorMessage(error: unknown, fallback: string) {
-  if (!error || (typeof error !== 'object' && typeof error !== 'function')) return fallback
-  try {
-    const message = (error as { message?: unknown }).message
-    return typeof message === 'string' && message.trim() ? message : fallback
-  } catch {
-    return fallback
-  }
-}
-
-function cloneBusinessValue(
-  value: unknown,
-  path: string,
-  ancestors = new WeakSet<object>(),
-): BusinessValue {
-  if (value === null || typeof value === 'string' || typeof value === 'boolean') return value
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) {
-      throw new Error(t('properties.messages.finiteNumber', { path }))
-    }
-    return value
-  }
-  if (!value || typeof value !== 'object') {
-    throw new Error(t('properties.messages.jsonRepresentable', { path }))
-  }
-  if (ancestors.has(value)) throw new Error(t('properties.messages.cyclicReference', { path }))
-
-  ancestors.add(value)
-  try {
-    if (Array.isArray(value)) {
-      const clone: BusinessValue[] = []
-      for (let index = 0; index < value.length; index += 1) {
-        if (!(index in value)) {
-          throw new Error(t('properties.messages.sparseArrayItem', { path, index }))
-        }
-        clone.push(cloneBusinessValue(value[index], `${path}[${index}]`, ancestors))
-      }
-      return clone
-    }
-
-    if (!isPlainBusinessRecord(value)) {
-      throw new Error(t('properties.messages.plainObject', { path }))
-    }
-
-    const clone: BusinessRecord = {}
-    for (const [key, item] of Object.entries(value)) {
-      if (item === undefined) continue
-      Object.defineProperty(clone, key, {
-        configurable: true,
-        enumerable: true,
-        writable: true,
-        value: cloneBusinessValue(item, `${path}.${key}`, ancestors),
-      })
-    }
-    return clone
-  } finally {
-    ancestors.delete(value)
-  }
-}
-
-function cloneBusinessRecord(value: unknown, path: string): BusinessRecord {
-  const clone = cloneBusinessValue(value, path)
-  if (!clone || typeof clone !== 'object' || Array.isArray(clone)) {
-    throw new Error(t('properties.messages.objectRequired', { path }))
-  }
-  return clone
-}
-
 function property(name: string) {
   return businessObject.value ? getBusinessProperty(businessObject.value, name) : undefined
-}
-
-function inspectJsonContainer(raw: string) {
-  if (!raw.trim()) return ''
-  try {
-    const parsed = JSON.parse(raw) as unknown
-    if (!Array.isArray(parsed) && (parsed === null || typeof parsed !== 'object')) {
-      return t('properties.jsonExtensions.topLevelRequired')
-    }
-    return ''
-  } catch (error) {
-    return t('properties.jsonExtensions.syntaxError', {
-      detail: error instanceof Error ? error.message : String(error),
-    })
-  }
-}
-
-function structuredJsonRecords(raw: string) {
-  if (!raw.trim()) return [] as BusinessRecord[]
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (!Array.isArray(value)) return []
-    return value.filter(
-      (item): item is BusinessRecord =>
-        Boolean(item) && typeof item === 'object' && !Array.isArray(item),
-    )
-  } catch {
-    return []
-  }
-}
-
-function committedNodeFormRecords(raw: string) {
-  if (!raw.trim()) return [] as BusinessRecord[]
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (
-      !Array.isArray(value) ||
-      value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))
-    ) {
-      return []
-    }
-    return value as BusinessRecord[]
-  } catch {
-    return []
-  }
-}
-
-function readCommittedNodeFormState(): CommittedNodeFormState {
-  const extensionBody = props.element
-    ? getExtensionBody(props.element, jsonExtensionTypes.nodeFormExp)
-    : ''
-  const formKey = text(
-    businessObject.value
-      ? getBusinessProperty(businessObject.value, 'flowable:formKey')
-      : undefined,
-  )
-  const activityId = text(businessObject.value?.id)
-  let current = businessObject.value || undefined
-  while (current && current.$type !== 'bpmn:Process') {
-    current = current.$parent as BpmnBusinessObject | undefined
-  }
-  const processId = text(current?.id)
-
-  return {
-    activityId,
-    processId,
-    modelKey: processId,
-    formKey,
-    selectedForms: committedNodeFormRecords(extensionBody),
-    extensionBody,
-    signature: JSON.stringify([activityId, processId, formKey, extensionBody]),
-  }
-}
-
-const optionalNodeFormStringFields = [
-  'id',
-  'title',
-  'categoryCode',
-  'categoryName',
-] as const
-
-function validateSelectedNodeForms(value: unknown): NodeFormRecord[] {
-  if (!Array.isArray(value)) {
-    throw new Error(t('properties.messages.hostFormsInvalid'))
-  }
-  if (value.length > 1) throw new Error(t('properties.messages.singleNodeFormOnly'))
-
-  return value.map((item, index) => {
-    const label = t('properties.messages.hostFormItem', { index: index + 1 })
-    if (!item || typeof item !== 'object' || Array.isArray(item)) {
-      throw new Error(t('properties.messages.itemObjectRequired', { label }))
-    }
-
-    const source = item as Record<string, unknown>
-    if (typeof source.code !== 'string' || !source.code.trim()) {
-      throw new Error(t('properties.messages.nonEmptyCodeRequired', { label }))
-    }
-    if (typeof source.name !== 'string' || !source.name.trim()) {
-      throw new Error(t('properties.messages.nonEmptyNameRequired', { label }))
-    }
-    for (const field of optionalNodeFormStringFields) {
-      if (
-        Object.hasOwn(source, field) &&
-        source[field] !== null &&
-        source[field] !== undefined &&
-        typeof source[field] !== 'string'
-      ) {
-        throw new Error(t('properties.messages.fieldStringRequired', { label, field }))
-      }
-    }
-
-    const record = cloneBusinessRecord(item, label)
-    for (const field of optionalNodeFormStringFields) {
-      if (source[field] === null || source[field] === undefined) delete record[field]
-    }
-    return record as NodeFormRecord
-  })
-}
-
-function nodeFormSelectionStateSignature() {
-  return JSON.stringify([
-    readCommittedNodeFormState().signature,
-    extensionJson.nodeFormExp,
-    form.formKey,
-  ])
-}
-
-function invalidateNodeFormHostRequest() {
-  nodeFormHostRequest += 1
-  nodeFormHostLoading.value = false
-}
-
-function inspectStructuredJsonArray(raw: string, label: string) {
-  if (!raw.trim()) return ''
-  try {
-    const value = JSON.parse(raw) as unknown
-    if (!Array.isArray(value)) return t('properties.jsonExtensions.invalidArray', { label })
-    if (value.some((item) => !item || typeof item !== 'object' || Array.isArray(item))) {
-      return t('properties.jsonExtensions.nonObjectItem', { label })
-    }
-    return ''
-  } catch {
-    return t('properties.jsonExtensions.invalidSyntax', { label })
-  }
-}
-
-watch(
-  () => jsonExtensionKeys.map((key) => extensionJson[key]),
-  (values, previousValues) => {
-    if (hydratingExtensionJson || !extensionJsonOwner) return
-
-    const drafts = { ...(extensionJsonDrafts.get(extensionJsonOwner) || {}) }
-    jsonExtensionKeys.forEach((key, index) => {
-      if (values[index] === previousValues[index]) return
-      const raw = values[index] || ''
-      extensionJsonDirty[key] = true
-      extensionJsonErrors[key] = inspectJsonContainer(raw)
-      drafts[key] = raw
-    })
-    extensionJsonDrafts.set(extensionJsonOwner, drafts)
-  },
-  { flush: 'sync' },
-)
-
-watch(locale, () => {
-  for (const key of jsonExtensionKeys) {
-    extensionJsonErrors[key] = inspectJsonContainer(extensionJson[key])
-  }
-})
-
-watch(
-  () => [extensionJson.nodeFormExp, form.formKey],
-  () => invalidateNodeFormHostRequest(),
-  { flush: 'sync' },
-)
-
-function clearJsonDraft(key: JsonExtensionKey) {
-  extensionJsonDirty[key] = false
-  if (!extensionJsonOwner) return
-
-  const drafts = extensionJsonDrafts.get(extensionJsonOwner)
-  if (!drafts || !Object.prototype.hasOwnProperty.call(drafts, key)) return
-  const nextDrafts = { ...drafts }
-  delete nextDrafts[key]
-  if (Object.keys(nextDrafts).length) extensionJsonDrafts.set(extensionJsonOwner, nextDrafts)
-  else extensionJsonDrafts.delete(extensionJsonOwner)
-}
-
-function parseJsonDraft(
-  key: JsonExtensionKey,
-  options: { requireArray?: boolean; notify?: boolean } = {},
-): { ok: true; value?: JsonContainer } | { ok: false } {
-  const raw = extensionJson[key]
-  if (!raw.trim()) {
-    extensionJsonErrors[key] = ''
-    return { ok: true }
-  }
-
-  const error = inspectJsonContainer(raw)
-  if (error) {
-    extensionJsonErrors[key] = error
-    if (options.notify !== false) {
-      ElMessage.warning(t('properties.jsonExtensions.issue', { label: jsonExtensionLabel(key), detail: error }))
-    }
-    return { ok: false }
-  }
-
-  const value = JSON.parse(raw) as JsonContainer
-  if (options.requireArray && !Array.isArray(value)) {
-    const message = t('properties.jsonExtensions.arrayTopLevelRequired')
-    extensionJsonErrors[key] = message
-    if (options.notify !== false) {
-      ElMessage.warning(t('properties.jsonExtensions.issue', { label: jsonExtensionLabel(key), detail: message }))
-    }
-    return { ok: false }
-  }
-
-  extensionJsonErrors[key] = ''
-  return { ok: true, value }
-}
-
-function hydrateBusinessExtensions() {
-  if (!props.element) return
-
-  const assignmentType = getExtensionBody(props.element, 'flowable:AssigneeType')
-  unsupportedAssignmentMode.value =
-    assignmentType && assignmentType !== 'static' && assignmentType !== 'idm' ? assignmentType : ''
-  form.assignmentMode =
-    assignmentType === 'static' || assignmentType === 'idm' ? assignmentType : 'legacy'
-
-  const nextOwner = props.element.businessObject
-  const ownerChanged = extensionJsonOwner !== nextOwner
-  extensionJsonOwner = nextOwner
-  const drafts = extensionJsonDrafts.get(nextOwner)
-
-  hydratingExtensionJson = true
-  try {
-    for (const key of jsonExtensionKeys) {
-      const hasDraft = Boolean(drafts && Object.prototype.hasOwnProperty.call(drafts, key))
-      if (!ownerChanged && extensionJsonDirty[key] && !hasDraft) continue
-
-      const raw = hasDraft ? drafts?.[key] || '' : getExtensionBody(props.element, jsonExtensionTypes[key])
-      extensionJson[key] = raw
-      extensionJsonDirty[key] = hasDraft
-      extensionJsonErrors[key] = inspectJsonContainer(raw)
-    }
-  } finally {
-    hydratingExtensionJson = false
-  }
 }
 
 function hydrate() {
@@ -1162,15 +575,9 @@ function hydrate() {
   form.name = text(bo.name)
   form.documentation = text(bo.documentation?.[0]?.text)
   form.isExecutable = booleanValue(property('isExecutable'), true)
-  const eagerExecutionFetching = property('flowable:isEagerExecutionFetching')
-  form.isEagerExecutionFetching =
-    eagerExecutionFetching === undefined
-      ? booleanValue(property('flowable:enableEagerExecutionTreeFetching'))
-      : booleanValue(eagerExecutionFetching)
-  form.versionTag = text(property('flowable:versionTag'))
-  form.processNameExp = props.element
-    ? getExtensionBody(props.element, 'flowable:ProcessNameExp')
-    : ''
+  form.isEagerExecutionFetching = booleanValue(
+    property('flowable:isEagerExecutionFetching'),
+  )
   form.candidateStarterUsers = text(property('flowable:candidateStarterUsers'))
   form.candidateStarterGroups = text(property('flowable:candidateStarterGroups'))
   form.initiator = text(property('flowable:initiator'))
@@ -1184,14 +591,11 @@ function hydrate() {
   form.category = text(property('flowable:category'))
   form.taskIdVariableName = text(property('flowable:taskIdVariableName'))
   form.taskCompleterVariableName = text(property('flowable:taskCompleterVariableName'))
-  hydrateBusinessExtensions()
   form.formKey = text(property('flowable:formKey'))
   form.formFieldValidation = booleanValue(property('flowable:formFieldValidation'), true)
   form.sameDeployment = booleanValue(property('flowable:sameDeployment'), true)
   form.skipExpression = text(property('flowable:skipExpression'))
-  form.async =
-    booleanValue(property('flowable:async')) ||
-    booleanValue(property('flowable:asyncBefore'))
+  form.async = booleanValue(property('flowable:async'))
   form.asyncLeave =
     booleanValue(property('flowable:asyncLeave')) ||
     booleanValue(property('flowable:asyncAfter'))
@@ -1201,9 +605,7 @@ function hydrate() {
     true,
   )
   form.jobCategory = props.element
-    ? getExtensionBody(props.element, 'flowable:JobCategory') ||
-      text(property('flowable:jobCategory')) ||
-      text(property('flowable:leaveJobCategory'))
+    ? getExtensionBody(props.element, 'flowable:JobCategory')
     : ''
   form.failedJobRetryTimeCycle = props.element
     ? getExtensionBody(props.element, 'flowable:FailedJobRetryTimeCycle')
@@ -1365,35 +767,8 @@ function hydrate() {
 watch(() => [props.element?.id, props.revision], hydrate, { immediate: true })
 
 watch(
-  () => [props.hostAdapter, props.hostAdapterGeneration] as const,
-  ([adapter, generation], [previousAdapter, previousGeneration]) => {
-    if (adapter === previousAdapter && generation === previousGeneration) return
-    invalidateNodeFormHostRequest()
-  },
-  { flush: 'sync' },
-)
-
-watch(
-  () => {
-    props.revision
-    const state = readCommittedNodeFormState()
-    return [businessObject.value, state.signature] as const
-  },
-  ([owner, signature], [previousOwner, previousSignature]) => {
-    if (owner === previousOwner && signature === previousSignature) return
-    invalidateNodeFormHostRequest()
-  },
-  { flush: 'sync' },
-)
-
-watch(
   () => props.element?.id,
   () => {
-    invalidateNodeFormHostRequest()
-    nodeFormMode.value = 'selection'
-    nodeFormDialogVisible.value = false
-    freeApprovalMode.value = 'structured'
-    freeApprovalDialogVisible.value = false
     customResourceDialogVisible.value = false
     mapExceptionDialogVisible.value = false
     const focusedSection = isProcess.value
@@ -1444,371 +819,6 @@ function updateDoc() {
   if (!props.modeler || !props.element) return
   updateDocumentation(props.modeler, props.element, form.documentation)
   emit('changed')
-}
-
-function updateProcessNameExp() {
-  if (!props.modeler || !props.element || !isProcess.value) return
-  const changed = setExtensionBody(
-    props.modeler,
-    props.element,
-    'flowable:ProcessNameExp',
-    form.processNameExp,
-  )
-  if (changed) emit('changed')
-}
-
-function updateAssignmentMode() {
-  if (!props.modeler || !props.element) return
-  const body = form.assignmentMode === 'legacy' ? '' : form.assignmentMode
-  const changed = setExtensionBody(
-    props.modeler,
-    props.element,
-    'flowable:AssigneeType',
-    body,
-  )
-  unsupportedAssignmentMode.value = ''
-  if (changed) emit('changed')
-}
-
-function saveJsonExtension(key: JsonExtensionKey) {
-  if (!props.modeler || !props.element) return
-  const parsed = parseJsonDraft(key)
-  if (!parsed.ok) return
-
-  const changed = setExtensionBody(
-    props.modeler,
-    props.element,
-    jsonExtensionTypes[key],
-    extensionJson[key],
-  )
-  if (changed) emit('changed')
-  clearJsonDraft(key)
-
-  if (key === 'nodeFormExp' && Array.isArray(parsed.value) && parsed.value.length) {
-    const first = parsed.value[0]
-    const code = first && typeof first === 'object' ? text((first as Record<string, unknown>).code) : ''
-    if (code && form.formKey && code !== form.formKey) {
-      ElMessage.warning(t('properties.messages.nodeFormCodeMismatch', { code }))
-      return
-    }
-  }
-
-  ElMessage.success(
-    t(
-      extensionJson[key].trim()
-        ? 'properties.jsonExtensions.saved'
-        : 'properties.jsonExtensions.cleared',
-      { label: jsonExtensionLabel(key) },
-    ),
-  )
-}
-
-function formatJsonExtension(key: JsonExtensionKey) {
-  const parsed = parseJsonDraft(key)
-  if (!parsed.ok || parsed.value === undefined) return
-  extensionJson[key] = JSON.stringify(parsed.value, null, 2)
-}
-
-function recordArray(value: JsonContainer | undefined) {
-  return Array.isArray(value)
-    ? value.filter(
-        (item): item is BusinessRecord => Boolean(item) && typeof item === 'object' && !Array.isArray(item),
-      )
-    : []
-}
-
-function nodeFormRecordsForStructuredEdit() {
-  const parsed = parseJsonDraft('nodeFormExp', { requireArray: true })
-  if (!parsed.ok) return null
-  if (parsed.value === undefined) return []
-  if (!Array.isArray(parsed.value)) return null
-  const records = recordArray(parsed.value)
-  if (records.length !== parsed.value.length) {
-    ElMessage.warning(t('properties.messages.nodeFormNonObject'))
-    return null
-  }
-  return records
-}
-
-function nodeFormContext(selectedForms = selectedNodeForms.value): NodeFormContext {
-  return cloneBusinessRecord(
-    {
-      activityId: text(businessObject.value?.id),
-      processId: owningProcessId.value,
-      modelKey: owningProcessId.value,
-      formKey: form.formKey,
-      selectedForms,
-    },
-    'nodeFormContext',
-  ) as unknown as NodeFormContext
-}
-
-function writeNodeFormRecords(records: BusinessRecord[]) {
-  extensionJson.nodeFormExp = records.length ? JSON.stringify(records, null, 2) : ''
-  saveJsonExtension('nodeFormExp')
-}
-
-function openNodeFormDialog(index = -1) {
-  const records = nodeFormRecordsForStructuredEdit()
-  if (!records) return
-  if (index < 0 && records.length) {
-    ElMessage.warning(t('properties.messages.nodeFormSingleEdit'))
-    return
-  }
-  const original = index >= 0 ? records[index] : undefined
-  editingNodeFormIndex.value = original ? index : -1
-  editingNodeFormOriginal.value = original ? { ...original } : null
-  nodeFormEditor.id = text(original?.id)
-  nodeFormEditor.code = text(original?.code)
-  nodeFormEditor.name = text(original?.name)
-  nodeFormEditor.title = text(original?.title)
-  nodeFormEditor.categoryCode = text(original?.categoryCode)
-  nodeFormEditor.categoryName = text(original?.categoryName)
-  nodeFormDialogVisible.value = true
-}
-
-function saveNodeFormRecord() {
-  const records = nodeFormRecordsForStructuredEdit()
-  if (!records) return
-  const code = nodeFormEditor.code.trim()
-  const name = nodeFormEditor.name.trim()
-  if (!code || !name) {
-    ElMessage.warning(t('properties.messages.formNameCodeRequired'))
-    return
-  }
-  if (
-    records.some(
-      (item, index) => index !== editingNodeFormIndex.value && text(item.code).trim() === code,
-    )
-  ) {
-    ElMessage.warning(t('properties.messages.formCodeExists', { code }))
-    return
-  }
-
-  const nextRecord: BusinessRecord = { ...(editingNodeFormOriginal.value || {}), code, name }
-  const optionalValues = {
-    id: nodeFormEditor.id.trim(),
-    title: nodeFormEditor.title.trim(),
-    categoryCode: nodeFormEditor.categoryCode.trim(),
-    categoryName: nodeFormEditor.categoryName.trim(),
-  }
-  for (const field of optionalNodeFormStringFields) {
-    if (optionalValues[field]) nextRecord[field] = optionalValues[field]
-    else delete nextRecord[field]
-  }
-  const nextRecords = [...records]
-  if (editingNodeFormIndex.value >= 0) nextRecords[editingNodeFormIndex.value] = nextRecord
-  else nextRecords.push(nextRecord)
-  writeNodeFormRecords(nextRecords)
-  nodeFormDialogVisible.value = false
-}
-
-async function removeNodeFormRecord(index: number) {
-  const records = nodeFormRecordsForStructuredEdit()
-  if (!records || !records[index]) return
-  const record = records[index]
-  if (!(await confirmDelete(
-    t('properties.messages.confirmRemoveForm', { name: String(record.name || record.code) }),
-    t('properties.messages.removeFormTitle'),
-  ))) return
-  writeNodeFormRecords(records.filter((_, currentIndex) => currentIndex !== index))
-}
-
-async function selectNodeFormsFromHost() {
-  const adapter = props.hostAdapter
-  if (!adapter?.selectNodeForms) return
-  const records = nodeFormRecordsForStructuredEdit()
-  if (!records) return
-  const owner = businessObject.value
-  const sourceSignature = nodeFormSelectionStateSignature()
-  const sourceRevision = props.revision
-  const adapterGeneration = props.hostAdapterGeneration
-  const request = ++nodeFormHostRequest
-  nodeFormHostLoading.value = true
-  const isCurrentRequest = () =>
-    request === nodeFormHostRequest &&
-    businessObject.value === owner &&
-    props.hostAdapter === adapter &&
-    props.hostAdapterGeneration === adapterGeneration &&
-    props.revision === sourceRevision &&
-    nodeFormSelectionStateSignature() === sourceSignature
-  try {
-    const selected = await adapter.selectNodeForms(nodeFormContext(records))
-    if (!isCurrentRequest()) return
-    if (selected === null || selected === undefined) return
-    writeNodeFormRecords(validateSelectedNodeForms(selected))
-  } catch (error) {
-    if (isCurrentRequest()) {
-      ElMessage.error(hostErrorMessage(error, t('properties.messages.hostFormSelectionFailed')))
-    }
-  } finally {
-    if (
-      request === nodeFormHostRequest &&
-      props.hostAdapterGeneration === adapterGeneration
-    ) nodeFormHostLoading.value = false
-  }
-}
-
-function freeApprovalRecordsForEdit(kind: FreeApprovalKind) {
-  const parsed = parseJsonDraft(kind, { requireArray: true })
-  if (!parsed.ok) return null
-  if (parsed.value === undefined) return []
-  if (!Array.isArray(parsed.value)) return null
-  const records = recordArray(parsed.value)
-  if (records.length !== parsed.value.length) {
-    ElMessage.warning(t('properties.jsonExtensions.nonObjectItem', {
-      label: jsonExtensionLabel(kind),
-    }))
-    return null
-  }
-  return records
-}
-
-function openFreeApprovalDialog(kind: FreeApprovalKind, index = -1) {
-  const records = freeApprovalRecordsForEdit(kind)
-  if (!records) return
-  const original = index >= 0 ? records[index] : undefined
-  freeApprovalKind.value = kind
-  editingFreeApprovalIndex.value = original ? index : -1
-  editingFreeApprovalOriginal.value = original ? { ...original } : null
-  freeApprovalEditor.name = text(original?.name)
-  freeApprovalEditor.code = text(original?.code)
-  freeApprovalEditor.multiple = booleanValue(original?.multiple)
-  freeApprovalDialogVisible.value = true
-}
-
-function saveFreeApprovalRecord() {
-  const records = freeApprovalRecordsForEdit(freeApprovalKind.value)
-  if (!records) return
-  const name = freeApprovalEditor.name.trim()
-  const code = freeApprovalEditor.code.trim()
-  if (!name || !code) {
-    ElMessage.warning(t('properties.messages.nameCodeRequired'))
-    return
-  }
-  if (
-    records.some(
-      (item, index) =>
-        index !== editingFreeApprovalIndex.value && text(item.code).trim() === code,
-    )
-  ) {
-    ElMessage.warning(t('properties.messages.codeExists', { code }))
-    return
-  }
-
-  const nextRecord: BusinessRecord = {
-    ...(editingFreeApprovalOriginal.value || {}),
-    name,
-    code,
-  }
-  if (freeApprovalKind.value === 'nextUser') {
-    nextRecord.multiple = freeApprovalEditor.multiple
-  }
-  const nextRecords = [...records]
-  if (editingFreeApprovalIndex.value >= 0) {
-    nextRecords[editingFreeApprovalIndex.value] = nextRecord
-  } else {
-    nextRecords.push(nextRecord)
-  }
-  extensionJson[freeApprovalKind.value] = JSON.stringify(nextRecords, null, 2)
-  saveJsonExtension(freeApprovalKind.value)
-  freeApprovalDialogVisible.value = false
-}
-
-async function removeFreeApprovalRecord(kind: FreeApprovalKind, index: number) {
-  const records = freeApprovalRecordsForEdit(kind)
-  if (!records || !records[index]) return
-  const record = records[index]
-  if (!(await confirmDelete(
-    t('properties.messages.confirmDeleteRecord', { name: String(record.name || record.code) }),
-    t('properties.messages.deleteFreeApprovalTitle'),
-  ))) return
-  const nextRecords = records.filter((_, currentIndex) => currentIndex !== index)
-  extensionJson[kind] = nextRecords.length ? JSON.stringify(nextRecords, null, 2) : ''
-  saveJsonExtension(kind)
-}
-
-function collectValues(items: Array<Record<string, unknown>>, propertyName: string) {
-  return items.flatMap((item) => {
-    const value = item[propertyName]
-    if (Array.isArray(value)) return value.map(text).map((item) => item.trim()).filter(Boolean)
-    const normalized = text(value).trim()
-    return normalized ? [normalized] : []
-  })
-}
-
-function syncStaticAssignment() {
-  const parsed = parseJsonDraft('staticAssigneeVariables', { requireArray: true })
-  if (!parsed.ok || !Array.isArray(parsed.value)) {
-    if (parsed.ok) ElMessage.warning(t('properties.messages.staticArrayRequired'))
-    return
-  }
-
-  const items = recordArray(parsed.value)
-  const values = collectValues(items, 'value')
-  if (items.length && !values.length) {
-    ElMessage.warning(t('properties.messages.noStaticValue'))
-    return
-  }
-
-  form.assignee = values.join(',')
-  update({ 'flowable:assignee': form.assignee })
-  ElMessage.success(t('properties.messages.assigneeSynced'))
-}
-
-function syncIdmAssignment() {
-  const mappings = [
-    ['idmAssignee', 'code', 'assignee', 'flowable:assignee'],
-    ['idmCandidateUsers', 'code', 'candidateUsers', 'flowable:candidateUsers'],
-    ['idmCandidateGroups', 'sn', 'candidateGroups', 'flowable:candidateGroups'],
-  ] as const
-  const properties: Record<string, unknown> = {}
-  const nextValues: Partial<Pick<typeof form, 'assignee' | 'candidateUsers' | 'candidateGroups'>> = {}
-  let hasDraft = false
-
-  for (const [key, codeProperty, formProperty, bpmnProperty] of mappings) {
-    if (!extensionJson[key].trim()) continue
-    hasDraft = true
-    const parsed = parseJsonDraft(key, { requireArray: true })
-    if (!parsed.ok || !Array.isArray(parsed.value)) return
-    const items = recordArray(parsed.value)
-    const values = collectValues(items, codeProperty)
-    if (items.length && !values.length) {
-      ElMessage.warning(t('properties.jsonExtensions.noSyncValue', {
-        label: jsonExtensionLabel(key),
-        property: codeProperty,
-      }))
-      return
-    }
-    nextValues[formProperty] = values.join(',')
-    properties[bpmnProperty] = values.join(',')
-  }
-
-  if (!hasDraft) {
-    ElMessage.warning(t('properties.messages.idmMetadataRequired'))
-    return
-  }
-
-  Object.assign(form, nextValues)
-  update(properties)
-  ElMessage.success(t('properties.messages.idmSynced'))
-}
-
-function syncNodeFormKey() {
-  const parsed = parseJsonDraft('nodeFormExp', { requireArray: true })
-  if (!parsed.ok || !Array.isArray(parsed.value) || !parsed.value.length) {
-    if (parsed.ok) ElMessage.warning(t('properties.messages.noNodeForm'))
-    return
-  }
-  const first = parsed.value[0]
-  const code = first && typeof first === 'object' ? text((first as Record<string, unknown>).code).trim() : ''
-  if (!code) {
-    ElMessage.warning(t('properties.messages.nodeFormCodeMissing'))
-    return
-  }
-  form.formKey = code
-  update({ 'flowable:formKey': code })
-  ElMessage.success(t('properties.messages.nodeFormSynced'))
 }
 
 function updateImplementation() {
@@ -1955,7 +965,6 @@ function updateAsync() {
   update({
     'flowable:async': form.async || undefined,
     'flowable:asyncLeave': form.asyncLeave || undefined,
-    'flowable:asyncBefore': undefined,
     'flowable:asyncAfter': undefined,
     'flowable:exclusive': form.async && !form.exclusive ? false : undefined,
     'flowable:asyncLeaveExclusive':
@@ -3124,28 +2133,9 @@ function listenerKey(listener: BpmnExtensionElement) {
               <el-switch
                 v-model="form.isEagerExecutionFetching"
                 data-testid="process-eager-execution"
-                @change="update({
-                  'flowable:isEagerExecutionFetching': form.isEagerExecutionFetching || undefined,
-                  'flowable:enableEagerExecutionTreeFetching': undefined,
-                })"
+                @change="update({ 'flowable:isEagerExecutionFetching': form.isEagerExecutionFetching || undefined })"
               />
             </div>
-            <el-form-item :label="t('properties.general.versionTag')">
-              <el-input
-                v-model="form.versionTag"
-                :placeholder="t('properties.general.versionExample')"
-                @change="update({ 'flowable:versionTag': form.versionTag })"
-              />
-            </el-form-item>
-            <el-form-item :label="t('properties.general.processNameExpression')">
-              <el-input
-                v-model="form.processNameExp"
-                data-testid="process-name-exp"
-                clearable
-                placeholder="${form.title}"
-                @change="updateProcessNameExp"
-              />
-            </el-form-item>
             <el-form-item :label="t('properties.general.candidateStarterUsers')">
               <el-input
                 v-model="form.candidateStarterUsers"
@@ -3287,123 +2277,6 @@ function listenerKey(listener: BpmnExtensionElement) {
               </div>
             </div>
             <div v-else class="empty-inline mb-4">{{ t('properties.assignment.noCustomIdentityLinks') }}</div>
-            <div class="metadata-divider">
-              <span>{{ t('properties.assignment.referenceMetadata') }}</span>
-              <el-tag size="small" effect="plain">{{ t('properties.assignment.compatibilityExtension') }}</el-tag>
-            </div>
-            <el-form-item :label="t('properties.assignment.mode')">
-              <el-select
-                v-model="form.assignmentMode"
-                data-testid="assignment-mode"
-                class="w-full"
-                @change="updateAssignmentMode"
-              >
-                <el-option :label="t('properties.assignment.legacyOnly')" value="legacy" />
-                <el-option :label="t('properties.assignment.staticMode')" value="static" />
-                <el-option :label="t('properties.assignment.idmMode')" value="idm" />
-              </el-select>
-              <div class="form-help">
-                {{ t('properties.assignment.modeHelp') }}
-              </div>
-              <div v-if="unsupportedAssignmentMode" class="json-error">
-                {{ t('properties.assignment.unsupportedMode', { mode: unsupportedAssignmentMode }) }}
-              </div>
-            </el-form-item>
-
-            <template v-if="form.assignmentMode === 'static'">
-              <el-form-item label="StaticAssigneeVariables JSON">
-                <el-input
-                  v-model="extensionJson.staticAssigneeVariables"
-                  data-testid="static-assignee-json"
-                  class="code-input"
-                  type="textarea"
-                  :rows="5"
-                  resize="vertical"
-                  :placeholder="jsonExamples.staticAssignee"
-                />
-                <div v-if="extensionJsonErrors.staticAssigneeVariables" class="json-error">
-                  {{ extensionJsonErrors.staticAssigneeVariables }}
-                </div>
-                <div class="json-editor-actions">
-                  <el-button size="small" @click="formatJsonExtension('staticAssigneeVariables')">
-                    {{ t('properties.common.format') }}
-                  </el-button>
-                  <el-button
-                    size="small"
-                    data-testid="save-static-assignee-json"
-                    @click="saveJsonExtension('staticAssigneeVariables')"
-                  >
-                    {{ t('properties.common.saveJson') }}
-                  </el-button>
-                  <el-button
-                    size="small"
-                    type="primary"
-                    plain
-                    data-testid="sync-static-assignment"
-                    @click="syncStaticAssignment"
-                  >
-                    {{ t('properties.assignment.syncAssignee') }}
-                  </el-button>
-                </div>
-              </el-form-item>
-            </template>
-
-            <template v-if="form.assignmentMode === 'idm'">
-              <el-form-item label="IdmAssignee JSON">
-                <el-input
-                  v-model="extensionJson.idmAssignee"
-                  class="code-input"
-                  type="textarea"
-                  :rows="4"
-                  resize="vertical"
-                  :placeholder="jsonExamples.idmAssignee"
-                />
-                <div v-if="extensionJsonErrors.idmAssignee" class="json-error">
-                  {{ extensionJsonErrors.idmAssignee }}
-                </div>
-                <div class="json-editor-actions">
-                  <el-button size="small" @click="formatJsonExtension('idmAssignee')">{{ t('properties.common.format') }}</el-button>
-                  <el-button size="small" @click="saveJsonExtension('idmAssignee')">{{ t('properties.common.saveJson') }}</el-button>
-                </div>
-              </el-form-item>
-              <el-form-item label="IdmCandidateUsers JSON">
-                <el-input
-                  v-model="extensionJson.idmCandidateUsers"
-                  class="code-input"
-                  type="textarea"
-                  :rows="4"
-                  resize="vertical"
-                  :placeholder="jsonExamples.idmCandidateUser"
-                />
-                <div v-if="extensionJsonErrors.idmCandidateUsers" class="json-error">
-                  {{ extensionJsonErrors.idmCandidateUsers }}
-                </div>
-                <div class="json-editor-actions">
-                  <el-button size="small" @click="formatJsonExtension('idmCandidateUsers')">{{ t('properties.common.format') }}</el-button>
-                  <el-button size="small" @click="saveJsonExtension('idmCandidateUsers')">{{ t('properties.common.saveJson') }}</el-button>
-                </div>
-              </el-form-item>
-              <el-form-item label="IdmCandidateGroups JSON">
-                <el-input
-                  v-model="extensionJson.idmCandidateGroups"
-                  class="code-input"
-                  type="textarea"
-                  :rows="4"
-                  resize="vertical"
-                  :placeholder="jsonExamples.idmCandidateGroup"
-                />
-                <div v-if="extensionJsonErrors.idmCandidateGroups" class="json-error">
-                  {{ extensionJsonErrors.idmCandidateGroups }}
-                </div>
-                <div class="json-editor-actions">
-                  <el-button size="small" @click="formatJsonExtension('idmCandidateGroups')">{{ t('properties.common.format') }}</el-button>
-                  <el-button size="small" @click="saveJsonExtension('idmCandidateGroups')">{{ t('properties.common.saveJson') }}</el-button>
-                </div>
-              </el-form-item>
-              <el-button class="mb-4 w-full" type="primary" plain @click="syncIdmAssignment">
-                {{ t('properties.assignment.syncIdm') }}
-              </el-button>
-            </template>
             <div class="two-column">
               <el-form-item :label="t('properties.assignment.dueDate')">
                 <el-input
@@ -3445,132 +2318,6 @@ function listenerKey(listener: BpmnExtensionElement) {
               />
             </el-form-item>
           </el-form>
-        </el-collapse-item>
-
-        <el-collapse-item v-if="isUserTask" name="freeApproval">
-          <template #title>
-            <span class="collapse-title">{{ t('properties.sections.freeApproval') }} <span class="section-count">{{ freeApprovalCount }}</span></span>
-          </template>
-          <el-tabs v-model="freeApprovalMode" class="node-form-tabs">
-            <el-tab-pane :label="t('properties.common.structuredConfiguration')" name="structured">
-              <el-alert
-                v-if="nextUserStructuredError || nextSequenceFlowStructuredError"
-                class="mb-3"
-                type="warning"
-                :closable="false"
-                show-icon
-                :title="nextUserStructuredError || nextSequenceFlowStructuredError"
-              />
-              <div class="section-list-header">
-                <span>{{ t('properties.freeApproval.nextUsers') }} <span class="section-count">{{ structuredNextUsers.length }}</span></span>
-                <el-button
-                  link
-                  type="primary"
-                  :icon="Plus"
-                  data-testid="add-next-user"
-                  @click="openFreeApprovalDialog('nextUser')"
-                >
-                  {{ t('properties.common.add') }}
-                </el-button>
-              </div>
-              <div v-if="structuredNextUsers.length" class="item-list">
-                <div
-                  v-for="(item, index) in structuredNextUsers"
-                  :key="String(item.code || index)"
-                  class="list-item"
-                  data-testid="next-user-row"
-                >
-                  <div class="min-w-0 flex-1">
-                    <div class="truncate text-sm">{{ item.name || item.code }}</div>
-                    <div class="truncate text-xs text-gray-500">{{ item.code }}</div>
-                  </div>
-                  <el-tag v-if="booleanValue(item.multiple)" size="small" effect="plain">{{ t('properties.freeApproval.multiple') }}</el-tag>
-                  <el-button link :icon="Edit" :aria-label="t('properties.freeApproval.editNextUser')" @click="openFreeApprovalDialog('nextUser', index)" />
-                  <el-button link type="danger" :icon="Delete" :aria-label="t('properties.freeApproval.deleteNextUser')" @click="removeFreeApprovalRecord('nextUser', index)" />
-                </div>
-              </div>
-              <div v-else class="empty-inline">{{ t('properties.freeApproval.noNextUsers') }}</div>
-
-              <div class="section-list-header mt-4!">
-                <span>{{ t('properties.freeApproval.nextFlows') }} <span class="section-count">{{ structuredNextSequenceFlows.length }}</span></span>
-                <el-button
-                  link
-                  type="primary"
-                  :icon="Plus"
-                  data-testid="add-next-sequence-flow"
-                  @click="openFreeApprovalDialog('nextSequenceFlow')"
-                >
-                  {{ t('properties.common.add') }}
-                </el-button>
-              </div>
-              <div v-if="structuredNextSequenceFlows.length" class="item-list">
-                <div
-                  v-for="(item, index) in structuredNextSequenceFlows"
-                  :key="String(item.code || index)"
-                  class="list-item"
-                  data-testid="next-sequence-flow-row"
-                >
-                  <div class="min-w-0 flex-1">
-                    <div class="truncate text-sm">{{ item.name || item.code }}</div>
-                    <div class="truncate text-xs text-gray-500">{{ item.code }}</div>
-                  </div>
-                  <el-button link :icon="Edit" :aria-label="t('properties.freeApproval.editNextFlow')" @click="openFreeApprovalDialog('nextSequenceFlow', index)" />
-                  <el-button link type="danger" :icon="Delete" :aria-label="t('properties.freeApproval.deleteNextFlow')" @click="removeFreeApprovalRecord('nextSequenceFlow', index)" />
-                </div>
-              </div>
-              <div v-else class="empty-inline">{{ t('properties.freeApproval.noNextFlows') }}</div>
-            </el-tab-pane>
-            <el-tab-pane :label="t('properties.common.advancedJson')" name="json">
-              <el-form label-position="top" size="small">
-                <el-form-item :label="t('properties.freeApproval.nextUserJson')">
-                  <el-input
-                    v-model="extensionJson.nextUser"
-                    data-testid="next-user-json"
-                    class="code-input"
-                    type="textarea"
-                    :rows="5"
-                    resize="vertical"
-                    :placeholder="jsonExamples.nextUser"
-                  />
-                  <div v-if="extensionJsonErrors.nextUser" class="json-error">
-                    {{ extensionJsonErrors.nextUser }}
-                  </div>
-                  <div class="json-editor-actions">
-                    <el-button size="small" @click="formatJsonExtension('nextUser')">{{ t('properties.common.format') }}</el-button>
-                    <el-button
-                      size="small"
-                      type="primary"
-                      plain
-                      data-testid="save-next-user-json"
-                      @click="saveJsonExtension('nextUser')"
-                    >
-                      {{ t('properties.common.saveJson') }}
-                    </el-button>
-                  </div>
-                </el-form-item>
-                <el-form-item :label="t('properties.freeApproval.nextFlowJson')">
-                  <el-input
-                    v-model="extensionJson.nextSequenceFlow"
-                    data-testid="next-sequence-flow-json"
-                    class="code-input"
-                    type="textarea"
-                    :rows="5"
-                    resize="vertical"
-                    :placeholder="jsonExamples.nextFlow"
-                  />
-                  <div v-if="extensionJsonErrors.nextSequenceFlow" class="json-error">
-                    {{ extensionJsonErrors.nextSequenceFlow }}
-                  </div>
-                  <div class="json-editor-actions">
-                    <el-button size="small" @click="formatJsonExtension('nextSequenceFlow')">{{ t('properties.common.format') }}</el-button>
-                    <el-button size="small" type="primary" plain @click="saveJsonExtension('nextSequenceFlow')">
-                      {{ t('properties.common.saveJson') }}
-                    </el-button>
-                  </div>
-                </el-form-item>
-              </el-form>
-            </el-tab-pane>
-          </el-tabs>
         </el-collapse-item>
 
         <el-collapse-item
@@ -4310,117 +3057,6 @@ function listenerKey(listener: BpmnExtensionElement) {
                 @change="update({ 'flowable:sameDeployment': form.sameDeployment ? undefined : false })"
               />
             </div>
-            <div class="metadata-divider">
-              <span>{{ t('properties.forms.externalMetadata') }}</span>
-              <el-tag size="small" effect="plain">NodeFormExp</el-tag>
-            </div>
-            <el-tabs v-model="nodeFormMode" class="node-form-tabs">
-              <el-tab-pane :label="t('properties.forms.selected')" name="selection">
-                <el-alert
-                  v-if="nodeFormStructuredError"
-                  class="mb-3"
-                  type="warning"
-                  :closable="false"
-                  show-icon
-                  :title="nodeFormStructuredError"
-                />
-                <div class="section-list-header">
-                  <span>{{ t('properties.forms.form') }} <span class="section-count">{{ selectedNodeForms.length }}</span></span>
-                  <div class="flex items-center gap-1">
-                    <el-button
-                      v-if="hostAdapter?.selectNodeForms"
-                      link
-                      type="primary"
-                      :icon="Search"
-                      :loading="nodeFormHostLoading"
-                      data-testid="select-node-forms-from-host"
-                      @click="selectNodeFormsFromHost"
-                    >
-                      {{ t('properties.forms.selectFromLibrary') }}
-                    </el-button>
-                    <el-button
-                      link
-                      type="primary"
-                      :icon="Plus"
-                      :disabled="selectedNodeForms.length >= 1"
-                      data-testid="add-node-form"
-                      @click="openNodeFormDialog()"
-                    >
-                      {{ t('properties.common.add') }}
-                    </el-button>
-                  </div>
-                </div>
-                <div v-if="selectedNodeForms.length" class="item-list">
-                  <div
-                    v-for="(item, index) in selectedNodeForms"
-                    :key="String(item.code || index)"
-                    class="list-item"
-                    data-testid="node-form-row"
-                  >
-                    <div class="min-w-0 flex-1">
-                      <div class="truncate text-sm">{{ item.name || item.code || t('properties.common.unnamedForm') }}</div>
-                      <div class="truncate text-xs text-gray-500">
-                        {{ item.code || t('properties.forms.codeNotSet') }}<template v-if="item.categoryName"> · {{ item.categoryName }}</template>
-                      </div>
-                    </div>
-                    <el-button
-                      link
-                      :icon="Edit"
-                      :aria-label="t('properties.forms.edit')"
-                      @click="openNodeFormDialog(index)"
-                    />
-                    <el-button
-                      link
-                      type="danger"
-                      :icon="Delete"
-                      :aria-label="t('properties.forms.remove')"
-                      @click="removeNodeFormRecord(index)"
-                    />
-                  </div>
-                </div>
-                <div v-else class="empty-inline">{{ t('properties.forms.empty') }}</div>
-                <div v-if="selectedNodeForms.length" class="node-form-actions">
-                  <el-button
-                    size="small"
-                    data-testid="sync-node-form-key"
-                    @click="syncNodeFormKey"
-                  >
-                    {{ t('properties.forms.syncFirstCode') }}
-                  </el-button>
-                </div>
-              </el-tab-pane>
-              <el-tab-pane :label="t('properties.common.advancedJson')" name="json">
-                <el-form-item label="NodeFormExp JSON">
-                  <el-input
-                    v-model="extensionJson.nodeFormExp"
-                    data-testid="node-form-exp-json"
-                    class="code-input"
-                    type="textarea"
-                    :rows="6"
-                    resize="vertical"
-                    :placeholder="jsonExamples.nodeForm"
-                  />
-                  <div v-if="extensionJsonErrors.nodeFormExp" class="json-error">
-                    {{ extensionJsonErrors.nodeFormExp }}
-                  </div>
-                  <div class="json-editor-actions">
-                    <el-button size="small" @click="formatJsonExtension('nodeFormExp')">{{ t('properties.common.format') }}</el-button>
-                    <el-button
-                      size="small"
-                      type="primary"
-                      plain
-                      data-testid="save-node-form-exp-json"
-                      @click="saveJsonExtension('nodeFormExp')"
-                    >
-                      {{ t('properties.common.saveJson') }}
-                    </el-button>
-                  </div>
-                </el-form-item>
-              </el-tab-pane>
-            </el-tabs>
-            <div class="form-help">
-              {{ t('properties.forms.hostPersistenceHelp') }}
-            </div>
           </el-form>
 
           <div class="section-list-header">
@@ -4438,60 +3074,6 @@ function listenerKey(listener: BpmnExtensionElement) {
             </div>
           </div>
           <el-empty v-else :image-size="42" :description="t('properties.forms.noEmbeddedFields')" />
-        </el-collapse-item>
-
-        <el-collapse-item
-          v-if="isUserTask || isCallActivity || supportsMultiInstance"
-          name="businessExtensions"
-          :title="t('properties.sections.businessJson')"
-        >
-          <el-alert
-            class="mb-3"
-            type="info"
-            :closable="false"
-            show-icon
-            :title="t('properties.extensions.jsonHelp')"
-          />
-          <el-form label-position="top" size="small">
-            <el-form-item v-if="isUserTask || isCallActivity" label="ModelBpmnExtension JSON">
-              <el-input
-                v-model="extensionJson.modelBpmnExtension"
-                class="code-input"
-                type="textarea"
-                :rows="5"
-                resize="vertical"
-                placeholder='{"version":1,"options":{}}'
-              />
-              <div v-if="extensionJsonErrors.modelBpmnExtension" class="json-error">
-                {{ extensionJsonErrors.modelBpmnExtension }}
-              </div>
-              <div class="json-editor-actions">
-                <el-button size="small" @click="formatJsonExtension('modelBpmnExtension')">{{ t('properties.common.format') }}</el-button>
-                <el-button size="small" type="primary" plain @click="saveJsonExtension('modelBpmnExtension')">
-                  {{ t('properties.common.saveJson') }}
-                </el-button>
-              </div>
-            </el-form-item>
-            <el-form-item v-if="supportsMultiInstance" label="MultiInstanceVariables JSON">
-              <el-input
-                v-model="extensionJson.multiInstanceVariables"
-                class="code-input"
-                type="textarea"
-                :rows="5"
-                resize="vertical"
-                placeholder='{"collection":"participants","elementVariable":"participant"}'
-              />
-              <div v-if="extensionJsonErrors.multiInstanceVariables" class="json-error">
-                {{ extensionJsonErrors.multiInstanceVariables }}
-              </div>
-              <div class="json-editor-actions">
-                <el-button size="small" @click="formatJsonExtension('multiInstanceVariables')">{{ t('properties.common.format') }}</el-button>
-                <el-button size="small" type="primary" plain @click="saveJsonExtension('multiInstanceVariables')">
-                  {{ t('properties.common.saveJson') }}
-                </el-button>
-              </div>
-            </el-form-item>
-          </el-form>
         </el-collapse-item>
 
         <el-collapse-item v-if="supportsMapExceptions" name="mapExceptions">
@@ -4872,71 +3454,6 @@ function listenerKey(listener: BpmnExtensionElement) {
       <template #footer>
         <el-button @click="definitionDialogVisible = false">{{ t('properties.common.cancel') }}</el-button>
         <el-button type="primary" data-testid="save-global-definition" @click="saveGlobalDefinition">
-          {{ t('properties.common.confirm') }}
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="freeApprovalDialogVisible"
-      :title="t('properties.freeApproval.dialogTitle', {
-        action: editingFreeApprovalIndex >= 0 ? t('properties.common.edit') : t('properties.common.add'),
-        kind: freeApprovalKind === 'nextUser' ? t('properties.freeApproval.nextUsers') : t('properties.freeApproval.nextFlows'),
-      })"
-      width="min(520px, calc(100vw - 32px))"
-      append-to-body
-    >
-      <el-form label-position="top">
-        <el-form-item :label="t('properties.common.name')" required>
-          <el-input v-model="freeApprovalEditor.name" data-testid="free-approval-name" />
-        </el-form-item>
-        <el-form-item :label="t('properties.common.code')" required>
-          <el-input v-model="freeApprovalEditor.code" data-testid="free-approval-code" spellcheck="false" />
-        </el-form-item>
-        <div v-if="freeApprovalKind === 'nextUser'" class="switch-row">
-          <span>{{ t('properties.freeApproval.allowMultiple') }}</span>
-          <el-switch v-model="freeApprovalEditor.multiple" data-testid="free-approval-multiple" />
-        </div>
-      </el-form>
-      <template #footer>
-        <el-button @click="freeApprovalDialogVisible = false">{{ t('properties.common.cancel') }}</el-button>
-        <el-button type="primary" data-testid="save-free-approval" @click="saveFreeApprovalRecord">
-          {{ t('properties.common.confirm') }}
-        </el-button>
-      </template>
-    </el-dialog>
-
-    <el-dialog
-      v-model="nodeFormDialogVisible"
-      :title="editingNodeFormIndex >= 0 ? t('properties.forms.editSelected') : t('properties.forms.addForm')"
-      width="min(520px, calc(100vw - 32px))"
-      append-to-body
-    >
-      <el-form label-position="top">
-        <el-form-item :label="t('properties.forms.formId')">
-          <el-input v-model="nodeFormEditor.id" data-testid="node-form-id" spellcheck="false" />
-        </el-form-item>
-        <el-form-item :label="t('properties.forms.key')" required>
-          <el-input v-model="nodeFormEditor.code" data-testid="node-form-code" spellcheck="false" />
-        </el-form-item>
-        <el-form-item :label="t('properties.forms.formName')" required>
-          <el-input v-model="nodeFormEditor.name" data-testid="node-form-name" />
-        </el-form-item>
-        <el-form-item :label="t('properties.forms.title')">
-          <el-input v-model="nodeFormEditor.title" data-testid="node-form-title" />
-        </el-form-item>
-        <div class="two-column">
-          <el-form-item :label="t('properties.forms.categoryCode')">
-            <el-input v-model="nodeFormEditor.categoryCode" data-testid="node-form-category-code" />
-          </el-form-item>
-          <el-form-item :label="t('properties.forms.categoryName')">
-            <el-input v-model="nodeFormEditor.categoryName" data-testid="node-form-category-name" />
-          </el-form-item>
-        </div>
-      </el-form>
-      <template #footer>
-        <el-button @click="nodeFormDialogVisible = false">{{ t('properties.common.cancel') }}</el-button>
-        <el-button type="primary" data-testid="save-node-form" @click="saveNodeFormRecord">
           {{ t('properties.common.confirm') }}
         </el-button>
       </template>

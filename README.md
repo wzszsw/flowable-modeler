@@ -92,6 +92,16 @@ npm install
 npm run dev
 ```
 
+Flowable 7 已移除表单能力，因此表单属性面板默认关闭。只有仍使用 Flowable 6 表单能力的部署才应
+在 Vite 构建环境中显式开启：
+
+```dotenv
+VITE_FLOWABLE_FORMS_ENABLED=true
+```
+
+未配置或配置为其他值时均视为 `false`。该开关只控制表单编辑入口与表单校验；已有 BPMN XML
+中的 Flowable 表单扩展仍可无损导入和导出。
+
 生产构建：
 
 ```bash
@@ -151,11 +161,6 @@ const result = await window.flowableProcessModeler?.importXML(xml, fileName)
 result?.warnings
 window.flowableProcessModeler?.validate()
 await window.flowableProcessModeler?.saveModel()
-
-window.flowableProcessModeler?.configureHost({
-  customServiceTaskTypes: [{ type: 'rest', label: 'REST 服务' }],
-  selectNodeForms: async ({ modelKey, activityId, selectedForms }) => [],
-})
 ```
 
 嵌入模式直接进入编辑器，不显示登录页和模型列表。宿主通过 `getXML()` 获取 XML 并负责
@@ -168,4 +173,4 @@ window.flowableProcessModeler?.configureHost({
 - 本前端保存的 Oryx JSON 会携带原始 XML 和指纹，用于未经其他编辑器修改时精确恢复 XML。
 - 一旦 Oryx 内容被其他客户端修改，指纹不匹配，前端会重新从 Oryx 生成 BPMN XML。
 - Flowable 扩展统一使用 `flowable` 前缀和 `http://flowable.org/bpmn` namespace。
-- 条件表达式、默认流、监听器、多实例、表单、服务任务和事件配置按 Flowable 6.8.1 语义输出。
+- 条件表达式、默认流、监听器、多实例、服务任务和事件配置按 Flowable 6.8.1 语义输出；表单配置仅在显式开启表单开关时提供。

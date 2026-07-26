@@ -74,18 +74,26 @@ public final class FlowableBpmnCheck {
         if (process == null) {
             throw new IllegalStateException("Flowable did not parse a main process");
         }
+        assertNoUnsupportedBusinessExtensions(process);
 
         FlowElement flowElement = process.getFlowElement("UserTask_custom", true);
         if (!(flowElement instanceof UserTask userTask)) {
             throw new IllegalStateException("UserTask_custom was not parsed as a UserTask");
         }
 
-        ExtensionElement assigneeType = requireExtension(userTask, "assigneeType");
-        ExtensionElement staticVariables = requireExtension(userTask, "staticAssigneeVariables");
-        requireText(assigneeType, "static");
-        requireText(
-                staticVariables,
-                "{\"users\":[{\"id\":\"u-001\",\"name\":\"张三\"}],\"expression\":\"approvalUsers\"}"
+        assertNoUnsupportedBusinessExtensions(userTask);
+        requireExtension(userTask, "properties");
+        requireExtension(userTask, "formData");
+        if (userTask.getMapExceptions().size() != 1) {
+            throw new IllegalStateException("UserTask_custom mapException was not parsed by Flowable");
+        }
+        assertMapException(
+                userTask.getMapExceptions().get(0),
+                "ORDER_ERROR",
+                "java.lang.IllegalStateException",
+                true,
+                "java.lang.RuntimeException",
+                "UserTask_custom"
         );
 
         if (!model.containsMessageId("Message_custom")) {
@@ -835,6 +843,29 @@ public final class FlowableBpmnCheck {
             return extension;
         }
         throw new IllegalStateException(expectedName + " extension was not parsed by Flowable");
+    }
+
+    private static void assertNoUnsupportedBusinessExtensions(BaseElement element) {
+        Set<String> unsupportedNames = Set.of(
+                "assigneeType",
+                "staticAssigneeVariables",
+                "idmAssignee",
+                "idmCandidateUsers",
+                "idmCandidateGroups",
+                "nextUser",
+                "nextSequenceFlow",
+                "nodeFormExp",
+                "modelBpmnExtension",
+                "multiInstanceVariables",
+                "processNameExp"
+        );
+        for (String extensionName : element.getExtensionElements().keySet()) {
+            if (unsupportedNames.stream().anyMatch(name -> name.equalsIgnoreCase(extensionName))) {
+                throw new IllegalStateException(
+                        "generated BPMN contains unsupported business extension: " + extensionName
+                );
+            }
+        }
     }
 
     private static void requireText(ExtensionElement extension, String expectedText) {

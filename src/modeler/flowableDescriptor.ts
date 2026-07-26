@@ -1,9 +1,7 @@
 /**
  * Flowable BPMN moddle extension.
  *
- * The descriptor covers both Flowable Engine 6.x extensions and the business
- * extension elements emitted by the reference modeler. Extension elements must
- * be declared here to survive a bpmn-moddle import/export round trip.
+ * The descriptor contains Flowable Engine 6.8.1 extensions used by this modeler.
  */
 const flowableDescriptor = {
   name: 'Flowable',
@@ -21,11 +19,7 @@ const flowableDescriptor = {
       properties: [
         { name: 'candidateStarterUsers', type: 'String', isAttr: true },
         { name: 'candidateStarterGroups', type: 'String', isAttr: true },
-        { name: 'versionTag', type: 'String', isAttr: true },
-        { name: 'historyTimeToLive', type: 'String', isAttr: true },
         { name: 'isEagerExecutionFetching', type: 'Boolean', isAttr: true },
-        // Legacy attribute emitted by earlier versions of this modeler.
-        { name: 'enableEagerExecutionTreeFetching', type: 'Boolean', isAttr: true },
       ],
     },
     {
@@ -37,13 +31,8 @@ const flowableDescriptor = {
         { name: 'asyncLeave', type: 'Boolean', isAttr: true, default: false },
         { name: 'exclusive', type: 'Boolean', isAttr: true, default: true },
         { name: 'asyncLeaveExclusive', type: 'Boolean', isAttr: true, default: true },
-        // Flowable 6.8.1 accepts these as legacy aliases and exports the canonical names.
-        { name: 'asyncBefore', type: 'Boolean', isAttr: true, default: false },
+        // Flowable 6.8.1 reads asyncAfter as an alias for asyncLeave.
         { name: 'asyncAfter', type: 'Boolean', isAttr: true, default: false },
-        // Legacy category attributes emitted by earlier versions of this modeler. Flowable
-        // does not read them, but declaring them keeps imported files lossless until edited.
-        { name: 'jobCategory', type: 'String', isAttr: true },
-        { name: 'leaveJobCategory', type: 'String', isAttr: true },
       ],
     },
     {
@@ -159,9 +148,6 @@ const flowableDescriptor = {
         { name: 'errorVariableName', type: 'String', isAttr: true },
         { name: 'errorVariableTransient', type: 'Boolean', isAttr: true, default: false },
         { name: 'errorVariableLocalScope', type: 'Boolean', isAttr: true, default: false },
-        // Kept for lossless round-tripping of legacy reference-modeler files.
-        { name: 'errorCodeVariable', type: 'String', isAttr: true },
-        { name: 'errorMessageVariable', type: 'String', isAttr: true },
       ],
     },
     {
@@ -176,9 +162,6 @@ const flowableDescriptor = {
       extends: ['bpmn:MessageEventDefinition'],
       properties: [
         { name: 'messageExpression', type: 'String', isAttr: true },
-        // Legacy reference-modeler attributes are preserved but are not engine semantics.
-        { name: 'correlationKey', type: 'String', isAttr: true },
-        { name: 'messageName', type: 'String', isAttr: true },
       ],
     },
     {
@@ -316,10 +299,7 @@ const flowableDescriptor = {
       name: 'Script',
       superClass: ['Element'],
       properties: [
-        // Retained for lossless import; Flowable 6.8.1 ScriptInfo ignores both attributes.
-        { name: 'scriptFormat', type: 'String', isAttr: true },
         { name: 'language', type: 'String', isAttr: true },
-        { name: 'resource', type: 'String', isAttr: true },
         { name: 'resultVariable', type: 'String', isAttr: true },
         { name: 'value', type: 'String', isBody: true },
       ],
@@ -611,72 +591,6 @@ const flowableDescriptor = {
       name: 'HttpResponseHandler',
       superClass: ['HttpHandler'],
       meta: { allowedIn: ['bpmn:ServiceTask'] },
-    },
-    {
-      name: 'AssigneeType',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:UserTask'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'IdmAssignee',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:UserTask'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'IdmCandidateUsers',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:UserTask', 'bpmn:Process'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'IdmCandidateGroups',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:UserTask', 'bpmn:Process'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'NextSequenceFlow',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:UserTask'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'NextUser',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:UserTask'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'ModelBpmnExtension',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:UserTask'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'ProcessNameExp',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:Process'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'NodeFormExp',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:Event', 'bpmn:UserTask'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'StaticAssigneeVariables',
-      superClass: ['Element'],
-      meta: { allowedIn: ['bpmn:Event', 'bpmn:UserTask'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
-    },
-    {
-      name: 'MultiInstanceVariables',
-      superClass: ['Element'],
-      meta: { allowedIn: ['*'] },
-      properties: [{ name: 'body', type: 'String', isBody: true }],
     },
     {
       name: 'TimeDate',

@@ -39,18 +39,6 @@ const hasText = (value: unknown) => typeof value === 'string' && value.trim().le
 const isTrue = (value: unknown) => value === true || value === 'true'
 const isFalse = (value: unknown) => value === false || value === 'false'
 
-const businessJsonExtensions = new Map([
-  ['flowable:StaticAssigneeVariables', 'StaticAssigneeVariables'],
-  ['flowable:IdmAssignee', 'IdmAssignee'],
-  ['flowable:IdmCandidateUsers', 'IdmCandidateUsers'],
-  ['flowable:IdmCandidateGroups', 'IdmCandidateGroups'],
-  ['flowable:NextUser', 'NextUser'],
-  ['flowable:NextSequenceFlow', 'NextSequenceFlow'],
-  ['flowable:NodeFormExp', 'NodeFormExp'],
-  ['flowable:ModelBpmnExtension', 'ModelBpmnExtension'],
-  ['flowable:MultiInstanceVariables', 'MultiInstanceVariables'],
-])
-
 const extensionBody = (extension: BpmnExtensionElement) => {
   try {
     const value = (extension as { get?: (name: string) => unknown }).get?.('body')
@@ -62,7 +50,7 @@ const extensionBody = (extension: BpmnExtensionElement) => {
 }
 
 export interface ValidationOptions {
-  allowedServiceTaskTypes?: Iterable<string>
+  formsEnabled?: boolean
 }
 
 export function validateElements(
@@ -71,9 +59,7 @@ export function validateElements(
 ): ValidationProblem[] {
   const problems: ValidationProblem[] = []
   let sequence = 0
-  const allowedServiceTaskTypes = new Set(
-    [...(options.allowedServiceTaskTypes || [])].map((value) => value.trim()).filter(Boolean),
-  )
+  const formsEnabled = options.formsEnabled === true
 
   const add = (
     element: DiagramElement,
@@ -106,9 +92,6 @@ export function validateElements(
     if (valueOf(process.businessObject, 'isExecutable') !== true) {
       add(process, 'warning', 'processNotExecutable')
     }
-    if (valueOf(process.businessObject, 'flowable:enableEagerExecutionTreeFetching') !== undefined) {
-      add(process, 'warning', 'legacyEagerExecutionTreeFetching')
-    }
   }
 
   if (!startEvents.length && processes.length) add(processes[0]!, 'error', 'startEventRequired')
@@ -136,8 +119,7 @@ export function validateElements(
 
       if (
         isFalse(valueOf(businessObject, 'flowable:exclusive')) &&
-        !isTrue(valueOf(businessObject, 'flowable:async')) &&
-        !isTrue(valueOf(businessObject, 'flowable:asyncBefore'))
+        !isTrue(valueOf(businessObject, 'flowable:async'))
       ) {
         add(element, 'warning', 'asyncExclusiveRequiresAsync')
       }
@@ -150,20 +132,6 @@ export function validateElements(
           element,
           'warning',
           'asyncLeaveExclusiveRequiresAsyncLeave',
-        )
-      }
-      if (hasText(valueOf(businessObject, 'flowable:jobCategory'))) {
-        add(
-          element,
-          'warning',
-          'legacyJobCategoryAttribute',
-        )
-      }
-      if (hasText(valueOf(businessObject, 'flowable:leaveJobCategory'))) {
-        add(
-          element,
-          'warning',
-          'unsupportedLeaveJobCategoryAttribute',
         )
       }
     }
@@ -219,11 +187,7 @@ export function validateElements(
       }
 
       const normalizedType = typeof serviceTaskType === 'string' ? serviceTaskType.trim() : ''
-      if (
-        normalizedType &&
-        !isFlowableServiceTaskType(normalizedType) &&
-        !allowedServiceTaskTypes.has(normalizedType)
-      ) {
+      if (normalizedType && !isFlowableServiceTaskType(normalizedType)) {
         add(
           element,
           'error',
@@ -402,15 +366,11 @@ export function validateElements(
     for (const [extensionType, values] of extensionsByType) {
       if (
         values.length > 1 &&
-        (
-          businessJsonExtensions.has(extensionType) ||
-          [
-            'flowable:AssigneeType',
-            'flowable:Properties',
-            'flowable:FailedJobRetryTimeCycle',
-            'flowable:JobCategory',
-          ].includes(extensionType)
-        )
+        [
+          'flowable:Properties',
+          'flowable:FailedJobRetryTimeCycle',
+          'flowable:JobCategory',
+        ].includes(extensionType)
       ) {
         add(element, 'warning', 'duplicateExtension', {
           extensionType: extensionType.replace('flowable:', ''),
@@ -445,22 +405,24 @@ export function validateElements(
       }
     }
 
-    for (const formData of extensionsByType.get('flowable:FormData') || []) {
-      const fields = (formData.fields as BpmnExtensionElement[] | undefined) || []
-      for (const field of fields) {
-        if (!hasText(field.id)) add(element, 'error', 'formDataFieldIdRequired')
-        const nestedProperties = field.properties as BpmnExtensionElement | undefined
-        for (const property of
-          (nestedProperties?.values as BpmnExtensionElement[] | undefined) || []) {
-          if (!hasText(property.name)) {
-            add(element, 'error', 'formDataPropertyNameRequired', {
-              fieldId: String(field.id || ''),
-            })
-          }
-          if (!hasText(property.value)) {
-            add(element, 'error', 'formDataPropertyValueRequired', {
-              fieldId: String(field.id || ''),
-            })
+    if (formsEnabled) {
+      for (const formData of extensionsByType.get('flowable:FormData') || []) {
+        const fields = (formData.fields as BpmnExtensionElement[] | undefined) || []
+        for (const field of fields) {
+          if (!hasText(field.id)) add(element, 'error', 'formDataFieldIdRequired')
+          const nestedProperties = field.properties as BpmnExtensionElement | undefined
+          for (const property of
+            (nestedProperties?.values as BpmnExtensionElement[] | undefined) || []) {
+            if (!hasText(property.name)) {
+              add(element, 'error', 'formDataPropertyNameRequired', {
+                fieldId: String(field.id || ''),
+              })
+            }
+            if (!hasText(property.value)) {
+              add(element, 'error', 'formDataPropertyValueRequired', {
+                fieldId: String(field.id || ''),
+              })
+            }
           }
         }
       }
@@ -513,88 +475,6 @@ export function validateElements(
         add(element, 'error', 'ioMappingSourceRequired')
       }
       if (!hasText(mapping.target)) add(element, 'error', 'ioMappingTargetRequired')
-    }
-
-    for (const [extensionType, label] of businessJsonExtensions) {
-      const extension = extensionsByType.get(extensionType)?.[0]
-      if (!extension) continue
-      const body = extensionBody(extension)
-      if (!body.trim()) continue
-      try {
-        const parsed = JSON.parse(body) as unknown
-        if (!Array.isArray(parsed) && (parsed === null || typeof parsed !== 'object')) {
-          add(element, 'error', 'businessJsonRootInvalid', { extension: label })
-        }
-      } catch {
-        add(element, 'error', 'businessJsonInvalid', { extension: label })
-      }
-    }
-
-    if (element.type === 'bpmn:UserTask') {
-      const assignmentType = extensionBody(extensionsByType.get('flowable:AssigneeType')?.[0] || ({ $type: '' } as BpmnExtensionElement))
-      if (assignmentType && !['static', 'idm'].includes(assignmentType)) {
-        add(element, 'warning', 'assigneeTypeUnknown', { type: assignmentType })
-      } else if (assignmentType === 'static' && !extensionsByType.has('flowable:StaticAssigneeVariables')) {
-        add(element, 'warning', 'staticAssigneeMetadataRequired')
-      } else if (
-        assignmentType === 'idm' &&
-        !['flowable:IdmAssignee', 'flowable:IdmCandidateUsers', 'flowable:IdmCandidateGroups'].some(
-          (extensionType) => extensionsByType.has(extensionType),
-        )
-      ) {
-        add(element, 'warning', 'idmAssigneeMetadataRequired')
-      }
-
-      const nodeForm = extensionsByType.get('flowable:NodeFormExp')?.[0]
-      if (nodeForm) {
-        try {
-          const parsed = JSON.parse(extensionBody(nodeForm)) as unknown
-          if (!Array.isArray(parsed)) {
-            add(element, 'warning', 'nodeFormArrayRequired')
-          } else {
-            if (parsed.length > 1) add(element, 'warning', 'nodeFormSingleOnly')
-            for (const item of parsed) {
-              if (!item || typeof item !== 'object' || Array.isArray(item)) continue
-              const record = item as Record<string, unknown>
-              if (!hasText(record.code) || !hasText(record.name)) {
-                add(element, 'error', 'nodeFormFieldsRequired')
-              }
-            }
-          }
-          const first = Array.isArray(parsed) ? parsed[0] : undefined
-          const code = first && typeof first === 'object' ? String((first as Record<string, unknown>).code || '') : ''
-          const formKey = String(valueOf(businessObject, 'flowable:formKey') || '')
-          if (code && formKey && code !== formKey) {
-            add(element, 'warning', 'nodeFormKeyMismatch', { code, formKey })
-          }
-        } catch {
-          // The JSON syntax error is already reported above.
-        }
-      }
-
-      for (const [extensionType, label] of [
-        ['flowable:NextUser', 'NextUser'],
-        ['flowable:NextSequenceFlow', 'NextSequenceFlow'],
-      ] as const) {
-        const extension = extensionsByType.get(extensionType)?.[0]
-        if (!extension) continue
-        try {
-          const parsed = JSON.parse(extensionBody(extension)) as unknown
-          if (!Array.isArray(parsed)) {
-            add(element, 'warning', 'businessListArrayRequired', { extension: label })
-            continue
-          }
-          for (const item of parsed) {
-            if (!item || typeof item !== 'object' || Array.isArray(item)) continue
-            const record = item as Record<string, unknown>
-            if (!hasText(record.code) || !hasText(record.name)) {
-              add(element, 'error', 'businessListFieldsRequired', { extension: label })
-            }
-          }
-        } catch {
-          // The JSON syntax error is already reported above.
-        }
-      }
     }
 
     for (const listener of extensions.filter((item) =>
@@ -656,12 +536,6 @@ export function validateElements(
         else {
           if (!hasText(script.language)) add(element, 'error', 'scriptListenerLanguageRequired')
           if (!hasText(script.value)) add(element, 'error', 'scriptListenerBodyRequired')
-          if (hasText(script.scriptFormat)) {
-            add(element, 'warning', 'scriptListenerScriptFormatIgnored')
-          }
-          if (hasText(script.resource)) {
-            add(element, 'warning', 'scriptListenerResourceIgnored')
-          }
         }
         if (((listener.fields as BpmnExtensionElement[] | undefined) || []).length) {
           add(element, 'warning', 'scriptListenerFieldsIgnored')
@@ -704,10 +578,12 @@ export function validateElements(
         add(element, 'warning', 'transactionDelegateFieldsIgnored')
       }
     }
-    for (const formProperty of extensions.filter(
-      (item) => item.$type === 'flowable:FormProperty',
-    )) {
-      if (!hasText(formProperty.id)) add(element, 'error', 'formPropertyIdRequired')
+    if (formsEnabled) {
+      for (const formProperty of extensions.filter(
+        (item) => item.$type === 'flowable:FormProperty',
+      )) {
+        if (!hasText(formProperty.id)) add(element, 'error', 'formPropertyIdRequired')
+      }
     }
   }
 

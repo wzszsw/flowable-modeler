@@ -61,8 +61,6 @@ type JobCategoryCommandContext = {
   oldExtensionValues?: BpmnExtensionElement[]
   oldBody?: unknown
   oldCategoryParent?: object
-  oldLegacyJobCategory?: unknown
-  oldLegacyLeaveJobCategory?: unknown
   initialized?: boolean
 }
 
@@ -256,14 +254,6 @@ function createJobCategoryCommandHandler(bpmnFactory: BpmnFactoryService) {
         context.categoryExisted = Boolean(category)
         context.oldBody = category ? getModdleProperty(category, 'body') : undefined
         context.oldCategoryParent = category?.$parent as object | undefined
-        context.oldLegacyJobCategory = getModdleProperty(
-          businessObject,
-          'flowable:jobCategory',
-        )
-        context.oldLegacyLeaveJobCategory = getModdleProperty(
-          businessObject,
-          'flowable:leaveJobCategory',
-        )
 
         if (context.body && !context.category) {
           context.category = bpmnFactory.create<BpmnExtensionElement>(
@@ -312,8 +302,6 @@ function createJobCategoryCommandHandler(bpmnFactory: BpmnFactoryService) {
         )
       }
 
-      setModdleProperty(businessObject, 'flowable:jobCategory', undefined)
-      setModdleProperty(businessObject, 'flowable:leaveJobCategory', undefined)
       return [context.element]
     },
 
@@ -341,16 +329,6 @@ function createJobCategoryCommandHandler(bpmnFactory: BpmnFactoryService) {
         setModdleProperty(businessObject, 'extensionElements', undefined)
       }
 
-      setModdleProperty(
-        businessObject,
-        'flowable:jobCategory',
-        context.oldLegacyJobCategory,
-      )
-      setModdleProperty(
-        businessObject,
-        'flowable:leaveJobCategory',
-        context.oldLegacyLeaveJobCategory,
-      )
       return [context.element]
     },
   }
@@ -645,20 +623,8 @@ export function setJobCategoryBody(
   body: string,
 ) {
   const normalizedBody = body.trim()
-  const businessObject = element.businessObject
   const currentBody = getExtensionBody(element, 'flowable:JobCategory')
-  const legacyJobCategory = getModdleProperty(businessObject, 'flowable:jobCategory')
-  const legacyLeaveJobCategory = getModdleProperty(
-    businessObject,
-    'flowable:leaveJobCategory',
-  )
-  if (
-    currentBody === normalizedBody &&
-    legacyJobCategory === undefined &&
-    legacyLeaveJobCategory === undefined
-  ) {
-    return false
-  }
+  if (currentBody === normalizedBody) return false
 
   jobCategoryCommandStack(modeler).execute(JOB_CATEGORY_COMMAND, {
     element,

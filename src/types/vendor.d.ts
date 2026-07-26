@@ -23,7 +23,6 @@ interface FlowableModelerBridge {
   importXML: (xml: string, fileName?: string) => Promise<{ warnings: unknown[] }>
   validate: () => import('@/modeler/types').ValidationProblem[]
   saveModel: () => Promise<void>
-  configureHost: (adapter: import('@/modeler/integration').FlowableHostAdapter | null) => void
 }
 
 interface Window {
