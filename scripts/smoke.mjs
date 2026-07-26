@@ -1330,7 +1330,7 @@ try {
   const englishUpdatedAt = (await englishPage.locator('[data-testid="model-updated-at"]').innerText()).trim()
   assert(
     (await englishPage.getByRole('heading', { name: 'Process models', exact: true }).count()) === 1 &&
-      (await englishSearch.getAttribute('placeholder')) === 'Search names or descriptions' &&
+      (await englishSearch.getAttribute('placeholder')) === 'Search' &&
       /^\d{2}\/\d{2}\/\d{4}/.test(englishUpdatedAt) &&
       !/[\u4e00-\u9fff]/.test(englishUpdatedAt) &&
       (await findModelRow(englishPage, englishModel.name).count()) === 1,
@@ -1936,7 +1936,7 @@ try {
     'input[data-testid="model-search"], [data-testid="model-search"] input',
   )
   assert(
-    (await modelSearchInput.getAttribute('placeholder')) === '搜索名称或描述',
+    (await modelSearchInput.getAttribute('placeholder')) === '搜索',
     '中文搜索框 placeholder 错误',
   )
   assert(
