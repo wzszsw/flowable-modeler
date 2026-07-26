@@ -1,6 +1,6 @@
-import { createModelerHttpClient } from './modelerHttpClient'
+import { createModelerHttpClient, ModelerApiError } from './modelerHttpClient'
 
-export { ModelerApiError } from './modelerHttpClient'
+export { ModelerApiError }
 
 export const BPMN_MODEL_TYPE = 0
 
@@ -77,13 +77,17 @@ const LOGOUT_URL = '/app/logout'
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
-    throw new Error('Flowable 返回了无法识别的数据')
+    throw ModelerApiError.fromMessageKey('shell.api.invalidResponse')
   }
   return value as Record<string, unknown>
 }
 
 function requiredString(value: unknown, field: string) {
-  if (typeof value !== 'string' || !value) throw new Error(`Flowable 响应缺少 ${field}`)
+  if (typeof value !== 'string' || !value) {
+    throw ModelerApiError.fromMessageKey('shell.api.missingField', {
+      messageParams: { field },
+    })
+  }
   return value
 }
 
@@ -94,7 +98,9 @@ function optionalString(value: unknown) {
 function normalizedDate(value: unknown, field: string) {
   if (typeof value === 'string' && value) return value
   if (typeof value === 'number' && Number.isFinite(value)) return new Date(value).toISOString()
-  throw new Error(`Flowable 响应缺少 ${field}`)
+  throw ModelerApiError.fromMessageKey('shell.api.missingField', {
+    messageParams: { field },
+  })
 }
 
 function parseProcessModel(value: unknown): ProcessModel {

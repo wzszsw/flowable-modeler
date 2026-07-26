@@ -1,6 +1,8 @@
 import axios, { type InternalAxiosRequestConfig } from 'axios'
 import { ElLoading, type LoadingInstance } from 'element-plus'
 
+import { translate, type TranslationParams } from '@/i18n'
+
 declare module 'axios' {
   interface AxiosRequestConfig {
     showGlobalLoading?: boolean
@@ -35,7 +37,7 @@ function beginLoading() {
   loadingInstance ??= ElLoading.service({
     fullscreen: true,
     lock: true,
-    text: '加载中',
+    text: translate('shell.common.loading'),
   })
 }
 
@@ -62,16 +64,42 @@ function finishRequestLoading(config: InternalAxiosRequestConfig | undefined) {
 export class ModelerApiError extends Error {
   readonly status: number
   readonly details: unknown
+  readonly messageKey: string | null
+  readonly messageParams: TranslationParams
 
-  constructor(message: string, status: number, details?: unknown) {
+  constructor(
+    message: string,
+    status: number,
+    details?: unknown,
+    localization?: { messageKey: string; messageParams?: TranslationParams },
+  ) {
     super(message)
     this.name = 'ModelerApiError'
     this.status = status
     this.details = details
+    this.messageKey = localization?.messageKey ?? null
+    this.messageParams = { ...(localization?.messageParams || {}) }
+  }
+
+  static fromMessageKey(
+    messageKey: string,
+    options: {
+      status?: number
+      details?: unknown
+      messageParams?: TranslationParams
+    } = {},
+  ) {
+    const messageParams = { ...(options.messageParams || {}) }
+    return new ModelerApiError(
+      translate(messageKey, messageParams),
+      options.status ?? 0,
+      options.details,
+      { messageKey, messageParams },
+    )
   }
 }
 
-function errorMessage(details: unknown, status: number) {
+function serverErrorMessage(details: unknown) {
   let message = ''
 
   if (typeof details === 'string') {
@@ -84,9 +112,7 @@ function errorMessage(details: unknown, status: number) {
 
   const normalizedMessage = message.toLowerCase()
   if (!message || normalizedMessage.startsWith('<!doctype') || normalizedMessage.startsWith('<html')) {
-    return status
-      ? `Flowable 请求失败（HTTP ${status}）`
-      : '无法连接 Flowable 服务'
+    return ''
   }
   return message
 }
@@ -125,7 +151,16 @@ export function createModelerHttpClient() {
 
       const status = error.response?.status ?? 0
       const details = error.response?.data
-      return Promise.reject(new ModelerApiError(errorMessage(details, status), status, details))
+      const message = serverErrorMessage(details)
+      if (message) return Promise.reject(new ModelerApiError(message, status, details))
+
+      const messageKey = status ? 'shell.api.requestFailed' : 'shell.api.unreachable'
+      const messageParams = status ? { status } : undefined
+      return Promise.reject(ModelerApiError.fromMessageKey(messageKey, {
+        status,
+        details,
+        messageParams,
+      }))
     },
   )
 

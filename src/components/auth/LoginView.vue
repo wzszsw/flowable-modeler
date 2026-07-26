@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { reactive, ref } from 'vue'
+import { computed, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { LockKeyhole, UserRound, Workflow } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
+
+import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
 
 interface LoginForm {
   username: string
@@ -16,12 +19,28 @@ const emit = defineEmits<{
   login: [credentials: LoginForm]
 }>()
 
+const { locale, t } = useI18n()
 const formRef = ref<FormInstance>()
 const form = reactive<LoginForm>({ username: '', password: '' })
-const rules: FormRules<LoginForm> = {
-  username: [{ required: true, whitespace: true, message: '请输入用户名', trigger: 'blur' }],
-  password: [{ required: true, message: '请输入密码', trigger: 'blur' }],
-}
+const rules = computed<FormRules<LoginForm>>(() => ({
+  username: [
+    {
+      required: true,
+      whitespace: true,
+      message: t('shell.login.usernameRequired'),
+      trigger: 'blur',
+    },
+  ],
+  password: [
+    {
+      required: true,
+      message: t('shell.login.passwordRequired'),
+      trigger: 'blur',
+    },
+  ],
+}))
+
+watch(locale, () => formRef.value?.clearValidate())
 
 async function submit() {
   if (!formRef.value) return
@@ -46,12 +65,13 @@ async function submit() {
           <small>MODELER</small>
         </span>
       </div>
+      <LanguageSwitcher inverted />
     </header>
 
     <section class="login-panel" aria-labelledby="login-title">
       <div class="panel-heading">
-        <h1 id="login-title">登录 Flowable Modeler</h1>
-        <p>流程模型工作台</p>
+        <h1 id="login-title">{{ t('shell.login.title') }}</h1>
+        <p>{{ t('shell.login.subtitle') }}</p>
       </div>
 
       <el-alert
@@ -71,7 +91,7 @@ async function submit() {
         size="large"
         @submit.prevent="submit"
       >
-        <el-form-item label="用户名" prop="username">
+        <el-form-item :label="t('shell.login.username')" prop="username">
           <el-input
             v-model="form.username"
             :prefix-icon="UserRound"
@@ -80,7 +100,7 @@ async function submit() {
             data-testid="login-username"
           />
         </el-form-item>
-        <el-form-item label="密码" prop="password">
+        <el-form-item :label="t('shell.login.password')" prop="password">
           <el-input
             v-model="form.password"
             :prefix-icon="LockKeyhole"
@@ -96,7 +116,7 @@ async function submit() {
           native-type="submit"
           data-testid="login-submit"
         >
-          登录
+          {{ t('shell.login.submit') }}
         </el-button>
       </el-form>
     </section>
@@ -119,6 +139,7 @@ async function submit() {
 .login-header {
   display: flex;
   align-items: center;
+  justify-content: space-between;
   padding: 0 32px;
   color: #fff;
   background: #1f4b74;

@@ -2,6 +2,7 @@ import type {
   FlowableHostAdapter,
   HostServiceTaskTypeDefinition,
 } from './integration'
+import { translate } from '@/i18n'
 
 export const FLOWABLE_BPMN_SERVICE_TASK_TYPES = [
   'mail',
@@ -21,23 +22,23 @@ const nativeServiceTaskTypes = new Set<string>([
   ...FLOWABLE_LEGACY_SERVICE_TASK_TYPES,
 ])
 
-export const FLOWABLE_SERVICE_TASK_TYPE_LABELS: Record<string, string> = {
-  mail: '邮件任务',
-  shell: 'Shell 任务',
-  dmn: 'DMN 决策',
-  http: 'HTTP 任务',
-  'send-event': 'Event Registry 发送事件',
-  'external-worker': '外部工作器',
-  mule: 'Mule 任务',
-  camel: 'Camel 任务',
-  external: '外部工作器（兼容 external）',
+export const FLOWABLE_SERVICE_TASK_TYPE_LABEL_KEYS: Record<string, string> = {
+  mail: 'modeler.serviceTaskTypes.mail',
+  shell: 'modeler.serviceTaskTypes.shell',
+  dmn: 'modeler.serviceTaskTypes.dmn',
+  http: 'modeler.serviceTaskTypes.http',
+  'send-event': 'modeler.serviceTaskTypes.sendEvent',
+  'external-worker': 'modeler.serviceTaskTypes.externalWorker',
+  mule: 'modeler.serviceTaskTypes.mule',
+  camel: 'modeler.serviceTaskTypes.camel',
+  external: 'modeler.serviceTaskTypes.external',
 }
 
-export const HOST_SERVICE_TASK_TYPE_LABELS: Record<string, string> = {
-  rest: 'REST 服务',
-  sc: '服务编排（SC）',
-  mq: '消息队列',
-  copy: '抄送任务',
+export const HOST_SERVICE_TASK_TYPE_LABEL_KEYS: Record<string, string> = {
+  rest: 'modeler.serviceTaskTypes.rest',
+  sc: 'modeler.serviceTaskTypes.sc',
+  mq: 'modeler.serviceTaskTypes.mq',
+  copy: 'modeler.serviceTaskTypes.copy',
 }
 
 export type ResolvedHostServiceTaskType = {
@@ -72,7 +73,9 @@ export function resolveHostServiceTaskTypes(
       type,
       label:
         String(definition.label || '').trim() ||
-        HOST_SERVICE_TASK_TYPE_LABELS[type] ||
+        (HOST_SERVICE_TASK_TYPE_LABEL_KEYS[type]
+          ? translate(HOST_SERVICE_TASK_TYPE_LABEL_KEYS[type]!)
+          : '') ||
         type,
     })
   }

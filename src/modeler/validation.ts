@@ -2,8 +2,10 @@ import type {
   BpmnBusinessObject,
   BpmnExtensionElement,
   DiagramElement,
+  ValidationParams,
   ValidationProblem,
 } from './types'
+import { translate } from '@/i18n'
 import { isFlowableServiceTaskType } from './serviceTaskTypes'
 
 const START_EVENT = 'bpmn:StartEvent'
@@ -76,14 +78,17 @@ export function validateElements(
   const add = (
     element: DiagramElement,
     level: ValidationProblem['level'],
-    message: string,
+    code: string,
+    params: ValidationParams = {},
   ) => {
     problems.push({
       id: `${element.id}-${sequence++}`,
       elementId: element.id,
       elementName: String(element.businessObject.name || element.id),
       level,
-      message,
+      code,
+      params,
+      message: translate(`modeler.validation.${code}`, params),
     })
   }
 
@@ -94,20 +99,20 @@ export function validateElements(
 
   for (const process of processes) {
     const id = String(process.businessObject.id || '')
-    if (!id) add(process, 'error', '流程标识不能为空')
+    if (!id) add(process, 'error', 'processIdRequired')
     else if (!/^[A-Za-z_][A-Za-z0-9_.-]*$/.test(id)) {
-      add(process, 'error', '流程标识必须以字母或下划线开头，且不能包含空格')
+      add(process, 'error', 'processIdInvalid')
     }
     if (valueOf(process.businessObject, 'isExecutable') !== true) {
-      add(process, 'warning', '流程尚未设置为可执行，部署后不能启动')
+      add(process, 'warning', 'processNotExecutable')
     }
     if (valueOf(process.businessObject, 'flowable:enableEagerExecutionTreeFetching') !== undefined) {
-      add(process, 'warning', '旧预取执行树属性不会被 Flowable 6.8.1 读取，请改用 isEagerExecutionFetching')
+      add(process, 'warning', 'legacyEagerExecutionTreeFetching')
     }
   }
 
-  if (!startEvents.length && processes.length) add(processes[0]!, 'error', '流程至少需要一个开始事件')
-  if (!endEvents.length && processes.length) add(processes[0]!, 'warning', '流程建议至少配置一个结束事件')
+  if (!startEvents.length && processes.length) add(processes[0]!, 'error', 'startEventRequired')
+  if (!endEvents.length && processes.length) add(processes[0]!, 'warning', 'endEventRecommended')
 
   for (const element of diagramElements) {
     const businessObject = element.businessObject
@@ -117,20 +122,24 @@ export function validateElements(
       const outgoing = element.outgoing || []
 
       if (element.type !== START_EVENT && element.type !== BOUNDARY_EVENT && incoming.length === 0) {
-        add(element, 'warning', '节点没有入口连线')
+        add(element, 'warning', 'incomingFlowMissing')
       }
       if (element.type !== END_EVENT && element.type !== BOUNDARY_EVENT && outgoing.length === 0) {
-        add(element, 'warning', '节点没有出口连线')
+        add(element, 'warning', 'outgoingFlowMissing')
       }
-      if (element.type === START_EVENT && outgoing.length === 0) add(element, 'error', '开始事件没有出口连线')
-      if (element.type === END_EVENT && incoming.length === 0) add(element, 'error', '结束事件没有入口连线')
+      if (element.type === START_EVENT && outgoing.length === 0) {
+        add(element, 'error', 'startEventOutgoingMissing')
+      }
+      if (element.type === END_EVENT && incoming.length === 0) {
+        add(element, 'error', 'endEventIncomingMissing')
+      }
 
       if (
         isFalse(valueOf(businessObject, 'flowable:exclusive')) &&
         !isTrue(valueOf(businessObject, 'flowable:async')) &&
         !isTrue(valueOf(businessObject, 'flowable:asyncBefore'))
       ) {
-        add(element, 'warning', 'exclusive="false" 仅在 flowable:async="true" 时生效')
+        add(element, 'warning', 'asyncExclusiveRequiresAsync')
       }
       if (
         isFalse(valueOf(businessObject, 'flowable:asyncLeaveExclusive')) &&
@@ -140,21 +149,21 @@ export function validateElements(
         add(
           element,
           'warning',
-          'asyncLeaveExclusive="false" 仅在 flowable:asyncLeave="true" 时生效',
+          'asyncLeaveExclusiveRequiresAsyncLeave',
         )
       }
       if (hasText(valueOf(businessObject, 'flowable:jobCategory'))) {
         add(
           element,
           'warning',
-          'flowable:jobCategory 属性不会被 Flowable 6.8.1 读取，请改用 jobCategory 扩展元素',
+          'legacyJobCategoryAttribute',
         )
       }
       if (hasText(valueOf(businessObject, 'flowable:leaveJobCategory'))) {
         add(
           element,
           'warning',
-          'flowable:leaveJobCategory 属性不会被 Flowable 6.8.1 读取',
+          'unsupportedLeaveJobCategoryAttribute',
         )
       }
     }
@@ -164,7 +173,7 @@ export function validateElements(
       const users = valueOf(businessObject, 'flowable:candidateUsers')
       const groups = valueOf(businessObject, 'flowable:candidateGroups')
       if (![assignee, users, groups].some(hasText)) {
-        add(element, 'warning', '用户任务未配置办理人、候选用户或候选组')
+        add(element, 'warning', 'userTaskAssigneeMissing')
       }
 
       const customResources = (businessObject.extensionElements?.values || []).filter(
@@ -172,7 +181,7 @@ export function validateElements(
       )
       for (const customResource of customResources) {
         if (!hasText(valueOf(customResource, 'name'))) {
-          add(element, 'error', '自定义身份链接类型不能为空')
+          add(element, 'error', 'customIdentityLinkTypeRequired')
         }
         const assignmentExpression = customResource.resourceAssignmentExpression as
           | BpmnBusinessObject
@@ -187,7 +196,8 @@ export function validateElements(
           add(
             element,
             'error',
-            `自定义身份链接 ${String(valueOf(customResource, 'name') || '')} 的分配表达式不能为空`,
+            'customIdentityLinkExpressionRequired',
+            { name: String(valueOf(customResource, 'name') || '') },
           )
         }
       }
@@ -201,9 +211,11 @@ export function validateElements(
         valueOf(businessObject, 'flowable:delegateExpression'),
         serviceTaskType,
       ]
-      if (!implementation.some(hasText)) add(element, 'error', '服务任务未配置实现方式')
+      if (!implementation.some(hasText)) {
+        add(element, 'error', 'serviceTaskImplementationRequired')
+      }
       if (implementation.filter(hasText).length > 1) {
-        add(element, 'error', '服务任务配置了多个实现方式，Flowable 只会使用其中一个')
+        add(element, 'error', 'serviceTaskMultipleImplementations')
       }
 
       const normalizedType = typeof serviceTaskType === 'string' ? serviceTaskType.trim() : ''
@@ -215,14 +227,15 @@ export function validateElements(
         add(
           element,
           'error',
-          `服务任务类型 ${normalizedType} 不是当前支持的 Flowable 6.8.1 BPMN 类型，且宿主未声明运行时适配`,
+          'serviceTaskTypeUnsupported',
+          { type: normalizedType },
         )
       }
       if (
         ['external-worker', 'external'].includes(normalizedType) &&
         !hasText(valueOf(businessObject, 'flowable:topic'))
       ) {
-        add(element, 'error', '外部工作任务未配置主题')
+        add(element, 'error', 'externalWorkerTopicRequired')
       }
 
       const serviceExtensions = businessObject.extensionElements?.values || []
@@ -239,36 +252,36 @@ export function validateElements(
 
       if (normalizedType === 'mail') {
         if (!['to', 'cc', 'bcc'].some((name) => hasText(serviceField(name)))) {
-          add(element, 'error', '邮件任务未配置收件人、抄送或密送地址')
+          add(element, 'error', 'mailRecipientsRequired')
         }
         if (!['text', 'textVar', 'html', 'htmlVar'].some((name) => hasText(serviceField(name)))) {
-          add(element, 'error', '邮件任务未配置文本或 HTML 正文')
+          add(element, 'error', 'mailBodyRequired')
         }
       } else if (normalizedType === 'shell') {
-        if (!hasText(serviceField('command'))) add(element, 'error', 'Shell 任务未配置命令')
+        if (!hasText(serviceField('command'))) add(element, 'error', 'shellCommandRequired')
       } else if (normalizedType === 'dmn') {
         if (
           !hasText(serviceField('decisionTableReferenceKey')) &&
           !hasText(serviceField('decisionServiceReferenceKey'))
         ) {
-          add(element, 'error', 'DMN 任务未配置决策表或决策服务标识')
+          add(element, 'error', 'dmnReferenceRequired')
         }
       } else if (normalizedType === 'http') {
         if (!hasText(serviceField('requestMethod'))) {
-          add(element, 'error', 'HTTP 任务未配置请求方式')
+          add(element, 'error', 'httpMethodRequired')
         }
         if (!hasText(serviceField('requestUrl'))) {
-          add(element, 'error', 'HTTP 任务未配置请求地址')
+          add(element, 'error', 'httpUrlRequired')
         }
       } else if (normalizedType === 'send-event') {
         if (!hasText(serviceExtensionBody('flowable:EventType'))) {
-          add(element, 'error', '发送事件任务未配置事件类型')
+          add(element, 'error', 'sendEventTypeRequired')
         }
         if (
           !hasText(serviceExtensionBody('flowable:ChannelKey')) &&
           !serviceExtensions.some((value) => value.$type === 'flowable:SystemChannel')
         ) {
-          add(element, 'error', '发送事件任务未配置出站通道或系统通道')
+          add(element, 'error', 'sendEventChannelRequired')
         }
       }
 
@@ -282,7 +295,7 @@ export function validateElements(
         !hasText(valueOf(businessObject, 'flowable:delegateExpression')) &&
         !hasText(serviceTaskType)
       if (hasResultVariable && !expressionOnly) {
-        add(element, 'error', '结果变量仅对表达式服务任务生效')
+        add(element, 'error', 'resultVariableExpressionOnly')
       }
       if (
         !hasResultVariable &&
@@ -291,21 +304,21 @@ export function validateElements(
           isTrue(valueOf(businessObject, 'flowable:storeResultVariableAsTransient'))
         )
       ) {
-        add(element, 'warning', '未配置结果变量时，结果变量作用域选项不会生效')
+        add(element, 'warning', 'resultVariableScopeIgnored')
       }
       if (hasText(valueOf(businessObject, 'flowable:resultVariable'))) {
-        add(element, 'warning', '旧结果变量属性将在编辑后规范化为 resultVariableName')
+        add(element, 'warning', 'legacyResultVariable')
       }
     }
 
     if (element.type === 'bpmn:ScriptTask') {
-      if (!hasText(businessObject.scriptFormat)) add(element, 'error', '脚本任务未配置脚本格式')
-      if (!hasText(businessObject.script)) add(element, 'error', '脚本任务内容不能为空')
+      if (!hasText(businessObject.scriptFormat)) add(element, 'error', 'scriptFormatRequired')
+      if (!hasText(businessObject.script)) add(element, 'error', 'scriptBodyRequired')
     }
 
     if (element.type === 'bpmn:CallActivity') {
       if (!hasText(businessObject.calledElement)) {
-        add(element, 'error', '调用活动未配置被调用流程标识')
+        add(element, 'error', 'calledElementRequired')
       }
 
       const calledElementType = valueOf(businessObject, 'flowable:calledElementType')
@@ -317,7 +330,7 @@ export function validateElements(
         serializedCalledElementType &&
         !['key', 'id'].includes(serializedCalledElementType)
       ) {
-        add(element, 'error', '调用活动的被调用流程类型必须为 key 或 id')
+        add(element, 'error', 'calledElementTypeInvalid')
       }
     }
 
@@ -329,25 +342,25 @@ export function validateElements(
         eventDefinition.timeCycle,
       ] as Array<BpmnBusinessObject | undefined>
       if (!timerValues.some((value) => hasText(value?.body))) {
-        add(element, 'error', '定时事件未配置时间或周期表达式')
+        add(element, 'error', 'timerExpressionRequired')
       }
     }
     if (eventDefinition?.$type === 'bpmn:ConditionalEventDefinition') {
       const condition = eventDefinition.condition as BpmnBusinessObject | undefined
-      if (!hasText(condition?.body)) add(element, 'error', '条件事件未配置条件表达式')
+      if (!hasText(condition?.body)) add(element, 'error', 'conditionalExpressionRequired')
     }
     if (eventDefinition?.$type === 'bpmn:MessageEventDefinition') {
       const messageRef = eventDefinition.messageRef as BpmnBusinessObject | undefined
       const messageExpression = valueOf(eventDefinition, 'flowable:messageExpression')
       if (!messageRef?.id && !hasText(messageExpression)) {
-        add(element, 'error', '消息事件必须配置消息引用或消息表达式')
+        add(element, 'error', 'messageReferenceRequired')
       }
     }
     if (eventDefinition?.$type === 'bpmn:SignalEventDefinition') {
       const signalRef = eventDefinition.signalRef as BpmnBusinessObject | undefined
       const signalExpression = valueOf(eventDefinition, 'flowable:signalExpression')
       if (!signalRef?.id && !hasText(signalExpression)) {
-        add(element, 'error', '信号事件必须配置信号引用或信号表达式')
+        add(element, 'error', 'signalReferenceRequired')
       }
     }
     if (eventDefinition?.$type === 'bpmn:ErrorEventDefinition') {
@@ -356,7 +369,7 @@ export function validateElements(
         !errorRef?.id &&
         ['bpmn:EndEvent', 'bpmn:IntermediateThrowEvent'].includes(element.type)
       ) {
-        add(element, 'error', '抛出错误事件必须引用全局错误定义')
+        add(element, 'error', 'errorReferenceRequired')
       }
     }
 
@@ -371,10 +384,10 @@ export function validateElements(
         collectionHandler?.expression ||
         collectionHandler?.string
       if (!hasText(cardinality?.body) && !hasText(collection)) {
-        add(element, 'error', '多实例需要配置循环基数或集合表达式')
+        add(element, 'error', 'multiInstanceSourceRequired')
       }
       if (hasText(collection) && !hasText(valueOf(loop, 'flowable:elementVariable'))) {
-        add(element, 'warning', '集合多实例建议配置元素变量')
+        add(element, 'warning', 'multiInstanceElementVariableRecommended')
       }
     }
 
@@ -399,58 +412,74 @@ export function validateElements(
           ].includes(extensionType)
         )
       ) {
-        add(element, 'warning', `${extensionType.replace('flowable:', '')} 存在重复扩展，属性面板只编辑第一项`)
+        add(element, 'warning', 'duplicateExtension', {
+          extensionType: extensionType.replace('flowable:', ''),
+        })
       }
     }
 
     for (const retryCycle of extensionsByType.get('flowable:FailedJobRetryTimeCycle') || []) {
       if (!hasText(extensionBody(retryCycle))) {
-        add(element, 'error', '失败作业重试周期不能为空')
+        add(element, 'error', 'retryCycleRequired')
       }
     }
     for (const jobCategory of extensionsByType.get('flowable:JobCategory') || []) {
-      if (!hasText(extensionBody(jobCategory))) add(element, 'error', '作业分类不能为空')
+      if (!hasText(extensionBody(jobCategory))) add(element, 'error', 'jobCategoryRequired')
     }
     if (
       extensionsByType.has('flowable:FailedJobRetryTimeCycle') &&
       element.type !== 'bpmn:ServiceTask'
     ) {
-      add(element, 'warning', 'Flowable 6.8.1 仅从服务任务读取失败作业重试周期')
+      add(element, 'warning', 'retryCycleServiceTaskOnly')
     }
 
     for (const container of extensionsByType.get('flowable:Properties') || []) {
       const values = (container.values as BpmnExtensionElement[] | undefined) || []
       for (const property of values) {
-        if (!hasText(property.name)) add(element, 'error', '扩展属性名称不能为空')
-        if (!hasText(property.value)) add(element, 'error', `扩展属性 ${property.name || property.id || ''} 的值不能为空`)
+        if (!hasText(property.name)) add(element, 'error', 'extensionPropertyNameRequired')
+        if (!hasText(property.value)) {
+          add(element, 'error', 'extensionPropertyValueRequired', {
+            name: String(property.name || property.id || ''),
+          })
+        }
       }
     }
 
     for (const formData of extensionsByType.get('flowable:FormData') || []) {
       const fields = (formData.fields as BpmnExtensionElement[] | undefined) || []
       for (const field of fields) {
-        if (!hasText(field.id)) add(element, 'error', 'FormData 表单字段标识不能为空')
+        if (!hasText(field.id)) add(element, 'error', 'formDataFieldIdRequired')
         const nestedProperties = field.properties as BpmnExtensionElement | undefined
         for (const property of
           (nestedProperties?.values as BpmnExtensionElement[] | undefined) || []) {
-          if (!hasText(property.name)) add(element, 'error', `表单字段 ${field.id || ''} 的扩展属性名称不能为空`)
-          if (!hasText(property.value)) add(element, 'error', `表单字段 ${field.id || ''} 的扩展属性值不能为空`)
+          if (!hasText(property.name)) {
+            add(element, 'error', 'formDataPropertyNameRequired', {
+              fieldId: String(field.id || ''),
+            })
+          }
+          if (!hasText(property.value)) {
+            add(element, 'error', 'formDataPropertyValueRequired', {
+              fieldId: String(field.id || ''),
+            })
+          }
         }
       }
     }
 
     const mapExceptions = extensionsByType.get('flowable:MapException') || []
     for (const mapException of mapExceptions) {
-      if (!hasText(mapException.errorCode)) add(element, 'error', '异常映射的错误码不能为空')
+      if (!hasText(mapException.errorCode)) {
+        add(element, 'error', 'mapExceptionErrorCodeRequired')
+      }
     }
     if (
       mapExceptions.length &&
       !['bpmn:ServiceTask', 'bpmn:CallActivity'].includes(element.type)
     ) {
-      add(element, 'warning', 'Flowable 仅在服务任务和调用活动中执行异常映射')
+      add(element, 'warning', 'mapExceptionUnsupportedElement')
     }
     if (mapExceptions.filter((mapException) => !hasText(mapException.class)).length > 1) {
-      add(element, 'warning', '存在多个默认异常映射，只有列表中的第一个会作为兜底项')
+      add(element, 'warning', 'multipleDefaultMapExceptions')
     }
 
     for (const mapping of extensions.filter((item) =>
@@ -458,15 +487,15 @@ export function validateElements(
     )) {
       const variables = String(mapping.variables || '')
       if (isTrue(mapping.local)) {
-        add(element, 'warning', 'Flowable 6.8.1 不执行输入/输出映射的 local 属性')
+        add(element, 'warning', 'ioMappingLocalIgnored')
       }
       if (variables) {
-        if (variables !== 'all') add(element, 'warning', '变量集合映射应使用 variables="all"')
+        if (variables !== 'all') add(element, 'warning', 'ioMappingVariablesAllRequired')
         if (mapping.$type === 'flowable:Out') {
-          add(element, 'error', 'Flowable 6.8.1 不支持输出参数 variables="all"')
+          add(element, 'error', 'outputVariablesAllUnsupported')
         }
         if (isTrue(mapping.transient)) {
-          add(element, 'warning', '变量集合映射不会执行 transient 属性')
+          add(element, 'warning', 'ioMappingTransientIgnored')
         }
         continue
       }
@@ -477,13 +506,13 @@ export function validateElements(
         add(
           element,
           'warning',
-          'Flowable 6.8.1 在调用活动中按普通变量处理 transient 映射',
+          'callActivityTransientIgnored',
         )
       }
       if (!hasText(mapping.source) && !hasText(mapping.sourceExpression)) {
-        add(element, 'error', '输入/输出映射必须配置来源变量或表达式')
+        add(element, 'error', 'ioMappingSourceRequired')
       }
-      if (!hasText(mapping.target)) add(element, 'error', '普通输入/输出映射必须配置目标变量')
+      if (!hasText(mapping.target)) add(element, 'error', 'ioMappingTargetRequired')
     }
 
     for (const [extensionType, label] of businessJsonExtensions) {
@@ -494,26 +523,26 @@ export function validateElements(
       try {
         const parsed = JSON.parse(body) as unknown
         if (!Array.isArray(parsed) && (parsed === null || typeof parsed !== 'object')) {
-          add(element, 'error', `${label} 顶层必须是 JSON 数组或对象`)
+          add(element, 'error', 'businessJsonRootInvalid', { extension: label })
         }
       } catch {
-        add(element, 'error', `${label} 不是合法 JSON`)
+        add(element, 'error', 'businessJsonInvalid', { extension: label })
       }
     }
 
     if (element.type === 'bpmn:UserTask') {
       const assignmentType = extensionBody(extensionsByType.get('flowable:AssigneeType')?.[0] || ({ $type: '' } as BpmnExtensionElement))
       if (assignmentType && !['static', 'idm'].includes(assignmentType)) {
-        add(element, 'warning', `AssigneeType 使用了未识别的模式：${assignmentType}`)
+        add(element, 'warning', 'assigneeTypeUnknown', { type: assignmentType })
       } else if (assignmentType === 'static' && !extensionsByType.has('flowable:StaticAssigneeVariables')) {
-        add(element, 'warning', 'static 分配模式尚未配置 StaticAssigneeVariables')
+        add(element, 'warning', 'staticAssigneeMetadataRequired')
       } else if (
         assignmentType === 'idm' &&
         !['flowable:IdmAssignee', 'flowable:IdmCandidateUsers', 'flowable:IdmCandidateGroups'].some(
           (extensionType) => extensionsByType.has(extensionType),
         )
       ) {
-        add(element, 'warning', 'IDM 分配模式尚未配置人员或组元数据')
+        add(element, 'warning', 'idmAssigneeMetadataRequired')
       }
 
       const nodeForm = extensionsByType.get('flowable:NodeFormExp')?.[0]
@@ -521,14 +550,14 @@ export function validateElements(
         try {
           const parsed = JSON.parse(extensionBody(nodeForm)) as unknown
           if (!Array.isArray(parsed)) {
-            add(element, 'warning', 'NodeFormExp 应使用表单对象数组')
+            add(element, 'warning', 'nodeFormArrayRequired')
           } else {
-            if (parsed.length > 1) add(element, 'warning', 'NodeFormExp 只支持选择一个表单')
+            if (parsed.length > 1) add(element, 'warning', 'nodeFormSingleOnly')
             for (const item of parsed) {
               if (!item || typeof item !== 'object' || Array.isArray(item)) continue
               const record = item as Record<string, unknown>
               if (!hasText(record.code) || !hasText(record.name)) {
-                add(element, 'error', 'NodeFormExp 表单项必须包含 code 和 name')
+                add(element, 'error', 'nodeFormFieldsRequired')
               }
             }
           }
@@ -536,7 +565,7 @@ export function validateElements(
           const code = first && typeof first === 'object' ? String((first as Record<string, unknown>).code || '') : ''
           const formKey = String(valueOf(businessObject, 'flowable:formKey') || '')
           if (code && formKey && code !== formKey) {
-            add(element, 'warning', `NodeFormExp 首项 code（${code}）与 formKey（${formKey}）不一致`)
+            add(element, 'warning', 'nodeFormKeyMismatch', { code, formKey })
           }
         } catch {
           // The JSON syntax error is already reported above.
@@ -552,14 +581,14 @@ export function validateElements(
         try {
           const parsed = JSON.parse(extensionBody(extension)) as unknown
           if (!Array.isArray(parsed)) {
-            add(element, 'warning', `${label} 应使用对象数组`)
+            add(element, 'warning', 'businessListArrayRequired', { extension: label })
             continue
           }
           for (const item of parsed) {
             if (!item || typeof item !== 'object' || Array.isArray(item)) continue
             const record = item as Record<string, unknown>
             if (!hasText(record.code) || !hasText(record.name)) {
-              add(element, 'error', `${label} 配置项必须包含 name 和 code`)
+              add(element, 'error', 'businessListFieldsRequired', { extension: label })
             }
           }
         } catch {
@@ -580,22 +609,22 @@ export function validateElements(
         isSequenceFlowListener ||
         Boolean(instanceOf?.call(businessObject, 'bpmn:FlowNode'))
       if (isTaskListener && element.type !== 'bpmn:UserTask') {
-        add(element, 'error', '任务监听器只能配置在用户任务上')
+        add(element, 'error', 'taskListenerUserTaskOnly')
       }
       if (!isTaskListener && !supportsExecutionListener) {
-        add(element, 'error', '当前 BPMN 元素不支持执行监听器')
+        add(element, 'error', 'executionListenerUnsupportedElement')
       }
 
       const event = hasText(listener.event) ? String(listener.event) : ''
       if (!event && !(isSequenceFlowListener && !isTaskListener)) {
-        add(element, 'error', '监听器事件不能为空')
+        add(element, 'error', 'listenerEventRequired')
       }
       if (
         isTaskListener &&
         event &&
         !['create', 'assignment', 'complete', 'delete', 'all'].includes(event)
       ) {
-        add(element, 'error', `任务监听器事件无效：${event}`)
+        add(element, 'error', 'taskListenerEventInvalid', { event })
       }
       if (
         !isTaskListener &&
@@ -606,7 +635,7 @@ export function validateElements(
             : ['start', 'end'].includes(event)
         )
       ) {
-        add(element, 'error', `执行监听器事件无效：${event}`)
+        add(element, 'error', 'executionListenerEventInvalid', { event })
       }
       const scriptType = listener.type === 'script'
       const script = listener.script as BpmnExtensionElement | undefined
@@ -615,30 +644,30 @@ export function validateElements(
         listener.expression,
         listener.delegateExpression,
       ].filter(hasText).length + (scriptType ? 1 : 0)
-      if (!implementationCount) add(element, 'error', '监听器未配置实现方式')
+      if (!implementationCount) add(element, 'error', 'listenerImplementationRequired')
       if (implementationCount > 1) {
-        add(element, 'error', '监听器配置了多个实现方式，Flowable 只会使用其中一个')
+        add(element, 'error', 'listenerMultipleImplementations')
       }
       if (hasText(listener.type) && !scriptType) {
-        add(element, 'error', `监听器使用了不支持的实现类型：${listener.type}`)
+        add(element, 'error', 'listenerTypeUnsupported', { type: String(listener.type) })
       }
       if (scriptType) {
-        if (!script) add(element, 'error', '脚本监听器缺少 script 子元素')
+        if (!script) add(element, 'error', 'scriptListenerScriptRequired')
         else {
-          if (!hasText(script.language)) add(element, 'error', '脚本监听器未配置脚本语言')
-          if (!hasText(script.value)) add(element, 'error', '脚本监听器内容不能为空')
+          if (!hasText(script.language)) add(element, 'error', 'scriptListenerLanguageRequired')
+          if (!hasText(script.value)) add(element, 'error', 'scriptListenerBodyRequired')
           if (hasText(script.scriptFormat)) {
-            add(element, 'warning', 'Flowable 6.8.1 不读取监听器脚本的 scriptFormat 属性')
+            add(element, 'warning', 'scriptListenerScriptFormatIgnored')
           }
           if (hasText(script.resource)) {
-            add(element, 'warning', 'Flowable 6.8.1 不读取监听器脚本的 resource 属性')
+            add(element, 'warning', 'scriptListenerResourceIgnored')
           }
         }
         if (((listener.fields as BpmnExtensionElement[] | undefined) || []).length) {
-          add(element, 'warning', 'Flowable 会忽略脚本监听器的字段注入')
+          add(element, 'warning', 'scriptListenerFieldsIgnored')
         }
       } else if (script) {
-        add(element, 'warning', '缺少 type="script"，监听器的 script 子元素不会执行')
+        add(element, 'warning', 'listenerScriptTypeRequired')
       }
 
       const onTransaction = hasText(listener.onTransaction)
@@ -648,13 +677,13 @@ export function validateElements(
         onTransaction &&
         !['before-commit', 'committed', 'rolled-back'].includes(onTransaction)
       ) {
-        add(element, 'error', `监听器事务阶段无效：${onTransaction}`)
+        add(element, 'error', 'listenerTransactionInvalid', { transaction: onTransaction })
       }
       if (
         onTransaction &&
         (hasText(listener.expression) || scriptType)
       ) {
-        add(element, 'error', '表达式或脚本监听器不能配置事务阶段')
+        add(element, 'error', 'listenerTransactionImplementationInvalid')
       }
       const resolvers = [
         listener.customPropertiesResolverClass,
@@ -662,23 +691,23 @@ export function validateElements(
         listener.customPropertiesResolverDelegateExpression,
       ].filter(hasText)
       if (resolvers.length > 1) {
-        add(element, 'error', '监听器配置了多个自定义属性解析器')
+        add(element, 'error', 'listenerMultiplePropertyResolvers')
       }
       if (resolvers.length && !onTransaction) {
-        add(element, 'error', '自定义属性解析器只能配置在事务监听器上')
+        add(element, 'error', 'listenerPropertyResolverTransactionOnly')
       }
       if (
         onTransaction &&
         hasText(listener.delegateExpression) &&
         ((listener.fields as BpmnExtensionElement[] | undefined) || []).length
       ) {
-        add(element, 'warning', 'Flowable 会忽略事务代理表达式监听器的字段注入')
+        add(element, 'warning', 'transactionDelegateFieldsIgnored')
       }
     }
     for (const formProperty of extensions.filter(
       (item) => item.$type === 'flowable:FormProperty',
     )) {
-      if (!hasText(formProperty.id)) add(element, 'error', '表单字段标识不能为空')
+      if (!hasText(formProperty.id)) add(element, 'error', 'formPropertyIdRequired')
     }
   }
 
@@ -691,18 +720,21 @@ export function validateElements(
     const hasCondition = hasText(flow.businessObject.conditionExpression?.body)
 
     if (defaultFlow?.id === flow.id && hasCondition) {
-      add(flow, 'error', '默认流转路径不能同时配置条件表达式')
+      add(flow, 'error', 'defaultFlowConditionForbidden')
     }
     if (source.$type === 'bpmn:ExclusiveGateway' && outgoing.length > 1) {
       if (defaultFlow?.id !== flow.id && !hasCondition) {
-        add(flow, 'warning', '排他网关的非默认出口建议配置条件表达式')
+        add(flow, 'warning', 'exclusiveGatewayConditionRecommended')
       }
       if (!defaultFlow && sourceElement && outgoing.length > 1) {
         const alreadyReported = problems.some(
           (problem) =>
-            problem.elementId === sourceElement.id && problem.message.includes('默认流转路径'),
+            problem.elementId === sourceElement.id &&
+            problem.code === 'exclusiveGatewayDefaultRecommended',
         )
-        if (!alreadyReported) add(sourceElement, 'warning', '排他网关建议配置默认流转路径')
+        if (!alreadyReported) {
+          add(sourceElement, 'warning', 'exclusiveGatewayDefaultRecommended')
+        }
       }
     }
   }

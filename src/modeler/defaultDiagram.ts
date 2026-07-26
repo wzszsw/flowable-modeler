@@ -1,6 +1,8 @@
+import { translate } from '@/i18n'
+
 export const createDefaultDiagram = (
   processId = 'Process_leave_request',
-  processName = '请假审批流程',
+  processName = translate('modeler.defaultDiagram.processName'),
 ) => `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn2:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL"
@@ -11,14 +13,14 @@ export const createDefaultDiagram = (
   id="Definitions_flowable_modeler"
   targetNamespace="http://flowable.org/processdef">
   <bpmn2:process id="${processId}" name="${processName}" isExecutable="true">
-    <bpmn2:startEvent id="StartEvent_apply" name="提交申请" flowable:initiator="initiator">
+    <bpmn2:startEvent id="StartEvent_apply" name="${translate('modeler.defaultDiagram.startName')}" flowable:initiator="initiator">
       <bpmn2:outgoing>Flow_apply_to_approve</bpmn2:outgoing>
     </bpmn2:startEvent>
-    <bpmn2:userTask id="UserTask_approve" name="部门审批" flowable:assignee="\${approver}">
+    <bpmn2:userTask id="UserTask_approve" name="${translate('modeler.defaultDiagram.approvalName')}" flowable:assignee="\${approver}">
       <bpmn2:incoming>Flow_apply_to_approve</bpmn2:incoming>
       <bpmn2:outgoing>Flow_approve_to_end</bpmn2:outgoing>
     </bpmn2:userTask>
-    <bpmn2:endEvent id="EndEvent_done" name="流程结束">
+    <bpmn2:endEvent id="EndEvent_done" name="${translate('modeler.defaultDiagram.endName')}">
       <bpmn2:incoming>Flow_approve_to_end</bpmn2:incoming>
     </bpmn2:endEvent>
     <bpmn2:sequenceFlow id="Flow_apply_to_approve" sourceRef="StartEvent_apply" targetRef="UserTask_approve" />

@@ -9,15 +9,24 @@ import 'diagram-js-minimap/assets/diagram-js-minimap.css'
 import 'bpmn-js-token-simulation/assets/css/bpmn-js-token-simulation.css'
 import './assets/main.css'
 
-import { createApp } from 'vue'
+import { createApp, reactive, watch } from 'vue'
 import ElementPlus from 'element-plus'
-import zhCn from 'element-plus/es/locale/lang/zh-cn'
 import App from './App.vue'
+import { elementPlusLocale, i18n } from './i18n'
 import { router } from './router'
 
 const app = createApp(App)
+const elementPlusOptions = reactive({ locale: elementPlusLocale.value })
+watch(
+  elementPlusLocale,
+  (locale) => {
+    elementPlusOptions.locale = locale
+  },
+  { flush: 'sync' },
+)
+app.use(i18n)
 app.use(router)
-app.use(ElementPlus, { locale: zhCn })
+app.use(ElementPlus, elementPlusOptions)
 
 await router.isReady()
 app.mount('#app')

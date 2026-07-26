@@ -361,6 +361,22 @@ try {
     'Flowable UI login did not issue an HttpOnly FLOWABLE_REMEMBER_ME cookie',
   )
   await page.screenshot({ path: `${artifactDirectory}/real-list.png`, fullPage: true })
+  await page.locator('[data-testid="language-switcher"]').click()
+  await page.locator('[data-testid="language-en"]').click()
+  await page.getByRole('heading', { name: 'Process models', exact: true }).waitFor()
+  const englishSearch = page.locator(
+    'input[data-testid="model-search"], [data-testid="model-search"] input',
+  )
+  assert(
+    (await page.locator('html').getAttribute('lang')) === 'en' &&
+      (await englishSearch.getAttribute('placeholder')) === 'Search' &&
+      new URLSearchParams(new URL(page.url()).hash.split('?', 2)[1] || '').get('lang') === 'en',
+    `Real backend English locale did not apply: ${page.url()}`,
+  )
+  await page.screenshot({ path: `${artifactDirectory}/real-list-en.png`, fullPage: true })
+  await page.locator('[data-testid="language-switcher"]').click()
+  await page.locator('[data-testid="language-zh-CN"]').click()
+  await page.getByRole('heading', { name: '流程模型', exact: true }).waitFor()
 
   await fillCreateDialog(page)
   const createResponsePromise = page.waitForResponse((response) =>
@@ -392,6 +408,9 @@ try {
     savedOryx?.resourceId === 'canvas' && Array.isArray(savedOryx.childShapes),
     'Browser save did not send Oryx JSON to editor/json',
   )
+  await page.getByText('已保存', { exact: true }).waitFor()
+  await page.locator('.el-loading-mask.is-fullscreen').waitFor({ state: 'hidden' })
+  await page.locator('.el-message').waitFor({ state: 'hidden' })
   await page.screenshot({ path: `${artifactDirectory}/real-editor.png`, fullPage: true })
 
   const createdEditorDocument = await readEditorDocument(createdModel.id)
@@ -635,7 +654,13 @@ try {
       elementCount: frontendRoundTrip.elementIds.length,
       xmlLength: frontendRoundTrip.xml.length,
     },
-    screenshots: ['real-login.png', 'real-list.png', 'real-editor.png', 'real-mobile.png'],
+    screenshots: [
+      'real-login.png',
+      'real-list-en.png',
+      'real-list.png',
+      'real-editor.png',
+      'real-mobile.png',
+    ],
   }
 } catch (error) {
   primaryError = error

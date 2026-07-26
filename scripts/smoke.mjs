@@ -1210,10 +1210,18 @@ try {
     await route.continue()
   })
   const bootstrapNavigation = bootstrapPage.goto(origin, { waitUntil: 'networkidle' })
+  void bootstrapNavigation.catch(() => undefined)
   await entryRequested
   await bootstrapPage.waitForFunction(() => {
     const loading = document.querySelector('#app-bootstrap-loading')
-    return loading && getComputedStyle(loading).opacity === '1'
+    const spinner = loading?.querySelector('.app-bootstrap-spinner')
+    return (
+      loading &&
+      spinner &&
+      getComputedStyle(loading).display === 'flex' &&
+      getComputedStyle(loading).opacity === '1' &&
+      getComputedStyle(spinner).animationName === 'app-bootstrap-spin'
+    )
   })
   const bootstrapSnapshot = await bootstrapPage.locator('#app-bootstrap-loading').evaluate(
     (element) => ({
@@ -1238,6 +1246,477 @@ try {
     'Vue app 挂载后仍残留首屏 Loading',
   )
   await bootstrapPage.close()
+
+  // Keep English coverage isolated from the default Chinese regression below. It exercises the
+  // locale selected before Vue mounts, runtime switching, router preservation, and persistence.
+  const englishModelApi = createMockModelerApi()
+  const englishModel = englishModelApi.createRecord({
+    name: '业务模型名称',
+    key: 'Process_i18n',
+    description: 'Business data must not be translated',
+  })
+  const englishContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  await installMockModelerApiRoutes(englishContext, englishModelApi)
+  const englishPage = await englishContext.newPage()
+  trackRuntimeErrors(englishPage, runtimeErrors, new Set([401, 503]))
+  await installBrowserStorageProbe(englishPage)
+  let notifyEnglishEntryRequested
+  let releaseEnglishEntry
+  const englishEntryRequested = new Promise((resolve) => {
+    notifyEnglishEntryRequested = resolve
+  })
+  const englishEntryRelease = new Promise((resolve) => {
+    releaseEnglishEntry = resolve
+  })
+  await englishPage.route(new URL(builtEntrySource, `${origin}/`).href, async (route) => {
+    notifyEnglishEntryRequested()
+    await englishEntryRelease
+    await route.continue()
+  })
+  const englishNavigation = englishPage.goto(`${origin}/?lang=en#/?lang=unsupported`, {
+    waitUntil: 'networkidle',
+  })
+  void englishNavigation.catch(() => undefined)
+  await englishEntryRequested
+  await englishPage.waitForFunction(
+    () =>
+      document.documentElement.lang === 'en' &&
+      document.querySelector('#app-bootstrap-loading-text')?.textContent?.trim() ===
+        'Loading Flowable Modeler...',
+  )
+  const englishBootstrapSnapshot = await englishPage.evaluate(() => ({
+    lang: document.documentElement.lang,
+    text: document.querySelector('#app-bootstrap-loading')?.textContent?.trim(),
+  }))
+  assert(
+    englishBootstrapSnapshot.lang === 'en' &&
+      englishBootstrapSnapshot.text === 'Loading Flowable Modeler...',
+    `?lang=en 没有在 Vue 挂载前应用英语 bootstrap：${JSON.stringify(englishBootstrapSnapshot)}`,
+  )
+  releaseEnglishEntry()
+  await englishNavigation
+  await englishPage.locator('[data-testid="login-page"]').waitFor()
+  assert(
+    (await englishPage.locator('html').getAttribute('lang')) === 'en' &&
+      (await englishPage.getByRole('heading', { name: 'Sign in to Flowable Modeler', exact: true }).count()) === 1 &&
+      (await englishPage.getByRole('button', { name: 'Sign in', exact: true }).count()) === 1,
+    '英语登录页未正确渲染',
+  )
+  await loginToModeler(englishPage, 'admin', 'wrong-password')
+  await englishPage.getByText('Incorrect username or password.', { exact: true }).waitFor()
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-zh-CN"]').click()
+  await englishPage.getByText('用户名或密码错误', { exact: true }).waitFor()
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-en"]').click()
+  await englishPage.getByText('Incorrect username or password.', { exact: true }).waitFor()
+  await englishPage.route(
+    '**/app/authentication',
+    (route) => route.fulfill({ status: 503, contentType: 'application/json', body: '' }),
+    { times: 1 },
+  )
+  await loginToModeler(englishPage)
+  await englishPage.getByText('Flowable request failed (HTTP 503).', { exact: true }).waitFor()
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-zh-CN"]').click()
+  await englishPage.getByText('Flowable 请求失败（HTTP 503）', { exact: true }).waitFor()
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-en"]').click()
+  await englishPage.getByText('Flowable request failed (HTTP 503).', { exact: true }).waitFor()
+  await loginToModeler(englishPage)
+  await englishPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(englishPage, '/processes', { lang: 'en' })
+  const englishSearch = englishPage.locator(
+    'input[data-testid="model-search"], [data-testid="model-search"] input',
+  )
+  const englishUpdatedAt = (await englishPage.locator('[data-testid="model-updated-at"]').innerText()).trim()
+  assert(
+    (await englishPage.getByRole('heading', { name: 'Process models', exact: true }).count()) === 1 &&
+      (await englishSearch.getAttribute('placeholder')) === 'Search' &&
+      /^\d{2}\/\d{2}\/\d{4}/.test(englishUpdatedAt) &&
+      !/[\u4e00-\u9fff]/.test(englishUpdatedAt) &&
+      (await findModelRow(englishPage, englishModel.name).count()) === 1,
+    `英语模型列表、日期格式或业务模型名称错误：${JSON.stringify({ englishUpdatedAt })}`,
+  )
+
+  await englishPage.locator('[data-testid="create-model"]').click()
+  const createDialog = englishPage.locator('[data-testid="model-create-dialog"]')
+  await createDialog.waitFor()
+  assert(
+    (await createDialog.getByText('Create BPMN process', { exact: true }).count()) === 1 &&
+      (await createDialog.getByRole('button', { name: 'Cancel', exact: true }).count()) === 1 &&
+      (await createDialog.getByRole('button', { name: 'Create and open', exact: true }).count()) === 1 &&
+      (await createDialog.locator('.el-dialog__headerbtn').getAttribute('aria-label')) ===
+        'Close this dialog',
+    '英语自有创建对话框或 Element Plus 按钮未正确本地化',
+  )
+  await createDialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await createDialog.waitFor({ state: 'hidden' })
+
+  const englishModelRow = findModelRow(englishPage, englishModel.name)
+  await englishModelRow.locator('[data-testid="delete-model"]').click()
+  const englishDeleteDialog = englishPage.locator('.el-message-box:visible')
+  await englishDeleteDialog.waitFor()
+  assert(
+    (await englishDeleteDialog.getByText('Delete process model', { exact: true }).count()) === 1 &&
+      (await englishDeleteDialog.getByText(englishModel.name, { exact: false }).count()) === 1 &&
+      (await englishDeleteDialog.getByRole('button', { name: 'Cancel', exact: true }).count()) === 1 &&
+      (await englishDeleteDialog.getByRole('button', { name: 'Delete', exact: true }).count()) === 1 &&
+      (await englishDeleteDialog.locator('.el-message-box__headerbtn').getAttribute('aria-label')) ===
+        'Close this dialog',
+    '英语 Element Plus 删除确认对话框未正确本地化，或业务名称被翻译',
+  )
+  await englishDeleteDialog.getByRole('button', { name: 'Cancel', exact: true }).click()
+  await englishDeleteDialog.waitFor({ state: 'hidden' })
+
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-zh-CN"]').click()
+  await englishPage.getByRole('heading', { name: '流程模型', exact: true }).waitFor()
+  assert(
+    parseHashRoute(englishPage.url()).query.lang === 'zh-CN' &&
+      (await findModelRow(englishPage, englishModel.name).count()) === 1,
+    `列表切回中文后路由语言或业务名称错误：${englishPage.url()}`,
+  )
+  await englishPage.locator('[data-testid="create-model"]').click()
+  await createDialog.waitFor()
+  assert(
+    (await createDialog.locator('.el-dialog__headerbtn').getAttribute('aria-label')) ===
+      '关闭此对话框',
+    '运行时切回中文后 Element Plus locale 未同步',
+  )
+  await createDialog.locator('.el-dialog__headerbtn').click()
+  await createDialog.waitFor({ state: 'hidden' })
+  await englishModelRow.locator('[data-testid="delete-model"]').click()
+  await englishDeleteDialog.waitFor()
+  assert(
+    (await englishDeleteDialog.locator('.el-message-box__headerbtn').getAttribute('aria-label')) ===
+      '关闭此对话框',
+    '运行时切回中文后程序化 Element Plus locale 未同步',
+  )
+  await englishDeleteDialog.getByRole('button', { name: '取消', exact: true }).click()
+  await englishDeleteDialog.waitFor({ state: 'hidden' })
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-en"]').click()
+  await englishPage.getByRole('heading', { name: 'Process models', exact: true }).waitFor()
+
+  await englishModelRow.locator('[data-testid="open-model"]').click()
+  await englishPage.waitForSelector('.djs-container')
+  await englishPage.waitForFunction(() => {
+    const backButton = document.querySelector('[data-testid="back-to-models"]')
+    return Boolean(window.bpmnModeler && backButton && !backButton.disabled)
+  })
+  await englishPage.evaluate(() => {
+    const canvas = window.bpmnModeler.get('canvas')
+    window.bpmnModeler.get('selection').select(canvas.getRootElement())
+  })
+  const englishProperties = englishPage.locator('.properties-panel')
+  await englishProperties.getByText('General', { exact: true }).waitFor()
+  assert(
+    (await englishPage.getByRole('button', { name: 'Back to models', exact: true }).count()) === 1 &&
+      (await englishPage.getByRole('button', { name: 'Save model', exact: true }).count()) === 1 &&
+      (await englishProperties.getByText('Identifier (ID)', { exact: true }).count()) === 1 &&
+      (await englishProperties.getByText('Process configuration', { exact: true }).count()) === 1,
+    '英语编辑器工具栏或属性面板未正确本地化',
+  )
+  assert(
+    parseHashRoute(englishPage.url()).pathname === `/processes/${englishModel.id}` &&
+      parseHashRoute(englishPage.url()).query.lang === 'en',
+    `运行时切换英语后打开 UUID 路由丢失语言：${englishPage.url()}`,
+  )
+
+  const englishPalette = englishPage.locator('.djs-palette')
+  assert(
+    (await englishPalette.locator('.entry[title="Create task"]').count()) === 1 &&
+      (await englishPalette.locator('.entry[title="Create start event"]').count()) === 1,
+    '英语 BPMN palette 未正确本地化',
+  )
+  await englishPage.evaluate(() => {
+    const modeler = window.bpmnModeler
+    modeler.get('selection').select(modeler.get('elementRegistry').get('startEvent1'))
+  })
+  const englishContextPad = englishPage.locator('.djs-context-pad')
+  await englishContextPad.locator('.entry[title="Append task"]').waitFor()
+  assert(
+    (await englishContextPad.locator('.entry[title="Change element"]').count()) === 1,
+    '英语 BPMN context pad 未正确本地化',
+  )
+  await englishContextPad.locator('.entry[title="Change element"]').click()
+  const englishReplacePopup = englishPage.locator('.djs-popup:visible')
+  await englishReplacePopup.locator('.djs-popup-title').getByText('Change element', { exact: true }).waitFor()
+  assert(
+    (await englishReplacePopup.getByText('Message start event', { exact: true }).count()) === 1 &&
+      (await englishReplacePopup.locator('.djs-popup-search input').getAttribute('placeholder')) ===
+        'Search',
+    '英语 BPMN replace popup 未正确本地化',
+  )
+  await englishPage.keyboard.press('Escape')
+  await englishReplacePopup.waitFor({ state: 'hidden' })
+
+  await englishPage.evaluate(() => window.bpmnModeler.get('toggleMode').toggleMode(true))
+  await englishPage.waitForFunction(
+    () => document.querySelector('.bts-toggle-mode')?.textContent?.trim() === 'Token Simulation',
+  )
+  await englishPage.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const notifications = modeler.get('notifications')
+    const showNotification = notifications.showNotification
+    notifications.showNotification = function persistentNotification(options) {
+      return showNotification.call(this, { ...options, ttl: 10_000 })
+    }
+    try {
+      modeler.get('simulator').createScope({
+        element: modeler.get('canvas').getRootElement(),
+      })
+      const elementFactory = modeler.get('elementFactory')
+      const eventBus = modeler.get('eventBus')
+      const unnamedUserTask = elementFactory.createShape({ type: 'bpmn:UserTask' })
+      eventBus.fire('tokenSimulation.simulator.trace', {
+        action: 'exit',
+        element: unnamedUserTask,
+        scope: { parent: { id: 'unnamed-user-task-scope' } },
+      })
+      const namedUserTask = elementFactory.createShape({ type: 'bpmn:UserTask' })
+      namedUserTask.businessObject.name = 'User Task'
+      eventBus.fire('tokenSimulation.simulator.trace', {
+        action: 'exit',
+        element: namedUserTask,
+        scope: { parent: { id: 'named-user-task-scope' } },
+      })
+    } finally {
+      notifications.showNotification = showNotification
+    }
+  })
+  assert(
+      (await englishPage.locator('.bts-entry[title="Toggle Simulation Log"]').count()) === 1 &&
+      (await englishPage.locator('.bts-animation-speed-button[title="Set animation speed: Normal"]').count()) === 1 &&
+      (await englishPage.locator('.bts-log .bts-text').getByText('Process started', { exact: true }).count()) === 1 &&
+      (await englishPage.locator('.bts-notification .bts-text').getByText('Process started', { exact: true }).count()) === 1 &&
+      (await englishPage.locator('.bts-log .bts-text').getByText('User Task', { exact: true }).count()) === 2 &&
+      (await englishPage.locator('.bts-notification .bts-text').getByText('User Task', { exact: true }).count()) === 2,
+    '英语 token simulation 控件未正确本地化',
+  )
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-zh-CN"]').click()
+  await englishPage.waitForFunction(
+    () => document.querySelector('.bts-toggle-mode')?.textContent?.trim() === '令牌模拟',
+  )
+  assert(
+      (await englishPage.locator('.bts-entry[title="显示/隐藏模拟日志"]').count()) === 1 &&
+      (await englishPage.locator('.bts-animation-speed-button[title="设置动画速度：正常"]').count()) === 1 &&
+      (await englishPage.locator('.bts-log .bts-text').getByText('流程 已启动', { exact: true }).count()) === 1 &&
+      (await englishPage.locator('.bts-notification .bts-text').getByText('流程 已启动', { exact: true }).count()) === 1 &&
+      (await englishPage.locator('.bts-log .bts-text').getByText('用户任务', { exact: true }).count()) === 1 &&
+      (await englishPage.locator('.bts-notification .bts-text').getByText('用户任务', { exact: true }).count()) === 1 &&
+      (await englishPage.locator('.bts-log .bts-text').getByText('User Task', { exact: true }).count()) === 1 &&
+      (await englishPage.locator('.bts-notification .bts-text').getByText('User Task', { exact: true }).count()) === 1,
+    '中文 token simulation 控件、兜底节点名或业务节点名未正确处理',
+  )
+  await englishPage.evaluate(() => window.bpmnModeler.get('toggleMode').toggleMode(false))
+
+  assert(
+    (await englishPalette.locator('.entry[title="创建任务"]').count()) === 1 &&
+      (await englishPalette.locator('.entry[title="创建开始事件"]').count()) === 1,
+    '切换中文后 BPMN palette 未重译',
+  )
+  await englishPage.evaluate(() => {
+    const modeler = window.bpmnModeler
+    modeler.get('selection').select(modeler.get('elementRegistry').get('startEvent1'))
+  })
+  await englishContextPad.locator('.entry[title="追加任务"]').waitFor()
+  assert(
+    (await englishContextPad.locator('.entry[title="更改元素"]').count()) === 1,
+    '切换中文后 BPMN context pad 未重译',
+  )
+  await englishContextPad.locator('.entry[title="更改元素"]').click()
+  const chineseReplacePopup = englishPage.locator('.djs-popup:visible')
+  await chineseReplacePopup.locator('.djs-popup-title').getByText('更改元素', { exact: true }).waitFor()
+  assert(
+    (await chineseReplacePopup.getByText('消息开始事件', { exact: true }).count()) === 1 &&
+      (await chineseReplacePopup.locator('.djs-popup-search input').getAttribute('placeholder')) ===
+        '搜索',
+    '切换中文后 BPMN replace popup 未重译',
+  )
+  await englishPage.keyboard.press('Escape')
+  await chineseReplacePopup.waitFor({ state: 'hidden' })
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-en"]').click()
+  await englishPage.getByRole('button', { name: 'Back to models', exact: true }).waitFor()
+
+  const englishLegacyWarnings = await englishPage.evaluate(async () => {
+    const bridge = window.flowableProcessModeler
+    const currentXml = await bridge.getXML()
+    const legacyXml = currentXml.includes('http://flowable.org/bpmn')
+      ? currentXml.replace('http://flowable.org/bpmn', 'http://activiti.org/bpmn')
+      : currentXml.replace(
+          /<([A-Za-z_][\w.-]*:)?definitions\b/,
+          (match) => `${match} xmlns:activiti="http://activiti.org/bpmn"`,
+        )
+    const result = await bridge.importXML(legacyXml, 'english-legacy-namespace.bpmn20.xml')
+    return result.warnings.map((warning) => warning.message || String(warning))
+  })
+  assert(
+    JSON.stringify(englishLegacyWarnings) ===
+      JSON.stringify([
+        'The legacy Activiti extension namespace was normalized to http://flowable.org/bpmn',
+      ]),
+    `英语导入兼容提示不正确：${JSON.stringify(englishLegacyWarnings)}`,
+  )
+  await englishPage.getByRole('button', { name: '1 import notice', exact: true }).click()
+  const englishImportWarningsDialog = englishPage.locator('.el-dialog:visible')
+  await englishImportWarningsDialog.getByText('BPMN import notices', { exact: true }).waitFor()
+  await englishImportWarningsDialog
+    .getByText(
+      'The legacy Activiti extension namespace was normalized to http://flowable.org/bpmn',
+      { exact: true },
+    )
+    .waitFor()
+  await englishImportWarningsDialog.getByRole('button', { name: 'Got it', exact: true }).click()
+  await englishImportWarningsDialog.waitFor({ state: 'hidden' })
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-zh-CN"]').click()
+  await englishPage.getByRole('button', { name: '1 条导入提示', exact: true }).click()
+  const chineseImportWarningsDialog = englishPage.locator('.el-dialog:visible')
+  await chineseImportWarningsDialog.getByText('BPMN 导入提示', { exact: true }).waitFor()
+  await chineseImportWarningsDialog
+    .getByText('已将旧 Activiti 扩展命名空间规范化为 http://flowable.org/bpmn', { exact: true })
+    .waitFor()
+  await chineseImportWarningsDialog.getByRole('button', { name: '知道了', exact: true }).click()
+  await chineseImportWarningsDialog.waitFor({ state: 'hidden' })
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-en"]').click()
+  await englishPage.getByRole('button', { name: 'Back to models', exact: true }).waitFor()
+
+  await englishPage.goBack({ waitUntil: 'networkidle' })
+  await englishPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(englishPage, '/processes', { lang: 'en' })
+  await findModelRow(englishPage, englishModel.name).locator('[data-testid="open-model"]').click()
+  await englishPage.waitForSelector('.djs-container')
+  await englishProperties.getByText('General', { exact: true }).waitFor()
+  await assertNoBrowserPersistence(englishPage, '英语切换前')
+
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-zh-CN"]').click()
+  await englishPage.waitForFunction(() => document.documentElement.lang === 'zh-CN')
+  assert(
+    parseHashRoute(englishPage.url()).query.lang === 'zh-CN' &&
+      parseHashRoute(englishPage.url()).pathname === `/processes/${englishModel.id}` &&
+      (await englishPage.getByRole('button', { name: '返回模型', exact: true }).count()) === 1 &&
+      (await englishProperties.getByText('常规', { exact: true }).count()) === 1,
+    `切回中文后语言参数、编辑器地址或界面文本错误：${englishPage.url()}`,
+  )
+  await assertNoBrowserPersistence(englishPage, '切回中文后')
+  await englishPage.reload({ waitUntil: 'networkidle' })
+  await englishPage.waitForSelector('.djs-container')
+  await englishPage.waitForFunction(() => Boolean(window.bpmnModeler))
+  assert(
+    (await englishPage.locator('html').getAttribute('lang')) === 'zh-CN' &&
+      parseHashRoute(englishPage.url()).query.lang === 'zh-CN' &&
+      parseHashRoute(englishPage.url()).pathname === `/processes/${englishModel.id}` &&
+      (await englishPage.getByRole('button', { name: '返回模型', exact: true }).count()) === 1,
+    `刷新后未按 URL lang 参数恢复中文编辑器：${englishPage.url()}`,
+  )
+
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-en"]').click()
+  await englishPage.getByRole('button', { name: 'Back to models', exact: true }).waitFor()
+  await englishContext.clearCookies()
+  await englishPage.reload({ waitUntil: 'networkidle' })
+  await englishPage.locator('[data-testid="login-page"]').waitFor()
+  const expiredEnglishRoute = parseHashRoute(englishPage.url())
+  assert(
+    expiredEnglishRoute.pathname === '/login' &&
+      expiredEnglishRoute.query.lang === 'en' &&
+      expiredEnglishRoute.query.redirect === `/processes/${englishModel.id}`,
+    `英语深链会话失效后的 redirect 携带了错误语言：${JSON.stringify(expiredEnglishRoute)}`,
+  )
+  await englishPage.locator('[data-testid="language-switcher"]').click()
+  await englishPage.locator('[data-testid="language-zh-CN"]').click()
+  await loginToModeler(englishPage)
+  await englishPage.waitForSelector('.djs-container')
+  const reloginRoute = parseHashRoute(englishPage.url())
+  assert(
+    reloginRoute.pathname === `/processes/${englishModel.id}` &&
+      reloginRoute.query.lang === 'zh-CN' &&
+      (await englishPage.getByRole('button', { name: '返回模型', exact: true }).count()) === 1,
+    `登录页切换语言后深链恢复使用了旧语言：${JSON.stringify(reloginRoute)}`,
+  )
+  await assertNoBrowserPersistence(englishPage, '英语独立流程完成后')
+  await englishContext.close()
+
+  // A language selected in the editor must not turn a Back pop into a push when the
+  // destination is an older default-locale entry without an explicit lang query.
+  const localeHistoryApi = createMockModelerApi()
+  const localeHistoryModel = localeHistoryApi.createRecord({
+    name: '语言历史回归流程',
+    key: 'Process_locale_history',
+    description: 'Business data must survive locale history navigation',
+  })
+  const localeHistoryContext = await browser.newContext({ viewport: { width: 1280, height: 800 } })
+  await installMockModelerApiRoutes(localeHistoryContext, localeHistoryApi)
+  const localeHistoryPage = await localeHistoryContext.newPage()
+  trackRuntimeErrors(localeHistoryPage, runtimeErrors, new Set([401]))
+  await installBrowserStorageProbe(localeHistoryPage)
+  await localeHistoryPage.goto(origin, { waitUntil: 'networkidle' })
+  await loginToModeler(localeHistoryPage)
+  await localeHistoryPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(localeHistoryPage, '/processes')
+  await findModelRow(localeHistoryPage, localeHistoryModel.name)
+    .locator('[data-testid="open-model"]')
+    .click()
+  await localeHistoryPage.waitForSelector('.djs-container')
+  await localeHistoryPage.waitForFunction(() => {
+    const backButton = document.querySelector('[data-testid="back-to-models"]')
+    return Boolean(window.bpmnModeler && backButton && !backButton.disabled)
+  })
+  await waitForHashRoute(localeHistoryPage, `/processes/${localeHistoryModel.id}`)
+  await localeHistoryPage.evaluate(() => {
+    const modeler = window.bpmnModeler
+    const root = modeler.get('canvas').getRootElement()
+    modeler.get('modeling').updateProperties(root, { name: 'Locale history dirty probe' })
+  })
+  await localeHistoryPage.getByText('未保存', { exact: true }).waitFor()
+  await localeHistoryPage.locator('[data-testid="language-switcher"]').click()
+  await localeHistoryPage.locator('[data-testid="language-en"]').click()
+  await localeHistoryPage.getByRole('button', { name: 'Back to models', exact: true }).waitFor()
+  await waitForHashRoute(localeHistoryPage, `/processes/${localeHistoryModel.id}`, { lang: 'en' })
+  const localeHistoryLength = await localeHistoryPage.evaluate(() => window.history.length)
+  await localeHistoryPage.evaluate(() => window.history.back())
+  await localeHistoryPage
+    .getByText('The current process has unsaved changes.', { exact: true })
+    .waitFor()
+  await localeHistoryPage.getByRole('button', { name: 'Discard changes', exact: true }).click()
+  await localeHistoryPage.locator('[data-testid="process-model-list-page"]').waitFor()
+  await waitForHashRoute(localeHistoryPage, '/processes', { lang: 'en' })
+  assert(
+    (await localeHistoryPage.locator('.el-message-box:visible').count()) === 0 &&
+      (await localeHistoryPage.evaluate(() => window.history.length)) === localeHistoryLength,
+    '补全 Back 目标语言时重复触发离开确认或污染了浏览器历史',
+  )
+  await localeHistoryPage.evaluate(() => window.history.forward())
+  await localeHistoryPage.waitForSelector('.djs-container')
+  await waitForHashRoute(localeHistoryPage, `/processes/${localeHistoryModel.id}`, { lang: 'en' })
+  await assertNoBrowserPersistence(localeHistoryPage, '无 lang 历史条目语言补全后')
+  await localeHistoryContext.close()
+
+  const englishEmbeddedPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
+  trackRuntimeErrors(englishEmbeddedPage, runtimeErrors)
+  await englishEmbeddedPage.goto(`${origin}/?embedded=1#/embedded?lang=en`, {
+    waitUntil: 'networkidle',
+  })
+  await englishEmbeddedPage.waitForSelector('.djs-container')
+  await englishEmbeddedPage.waitForFunction(() => Boolean(window.flowableProcessModeler))
+  const englishDefaultDiagramXml = await englishEmbeddedPage.evaluate(() =>
+    window.flowableProcessModeler.getXML(),
+  )
+  assert(
+    englishDefaultDiagramXml.includes('name="Leave approval process"') &&
+      englishDefaultDiagramXml.includes('name="Submit request"') &&
+      englishDefaultDiagramXml.includes('name="Department approval"') &&
+      englishDefaultDiagramXml.includes('name="Process complete"') &&
+      !englishDefaultDiagramXml.includes('请假审批流程'),
+    '直接以英语初始化时未生成英语默认 BPMN 名称',
+  )
+  await englishEmbeddedPage.close()
 
   const page = await browser.newPage({ viewport: { width: 1600, height: 960 } })
   trackRuntimeErrors(page, runtimeErrors, new Set([401]))
@@ -1280,6 +1759,16 @@ try {
     '嵌入模式仍显示保存模型按钮',
   )
   const defaultDiagramXml = await embeddedPage.evaluate(() => window.flowableProcessModeler.getXML())
+  await embeddedPage.goto(`${origin}/?embedded=1#/embedded?lang=en`, { waitUntil: 'networkidle' })
+  await embeddedPage.waitForSelector('.djs-container')
+  await embeddedPage.waitForFunction(() => Boolean(window.bpmnModeler))
+  assert(
+    (await embeddedPage.locator('html').getAttribute('lang')) === 'en' &&
+      parseHashRoute(embeddedPage.url()).pathname === '/embedded' &&
+      parseHashRoute(embeddedPage.url()).query.lang === 'en' &&
+      (await embeddedPage.locator('.designer-shell.is-embedded').count()) === 1,
+    `嵌入模式未应用 hash 语言参数：${embeddedPage.url()}`,
+  )
   await embeddedPage.close()
 
   const iframeHostPage = await browser.newPage({ viewport: { width: 1280, height: 800 } })
@@ -1479,6 +1968,7 @@ try {
   const modelSearchInput = modelPage.locator(
     'input[data-testid="model-search"], [data-testid="model-search"] input',
   )
+  assert((await modelSearchInput.getAttribute('placeholder')) === '搜索', '中文搜索框 placeholder 错误')
   const modelQueriesBeforeSearch = modelApi.state.requests.filter(
     (request) => request.method === 'GET' && request.path === '/models',
   ).length

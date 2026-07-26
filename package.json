@@ -9,8 +9,9 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "type-check": "vue-tsc --build",
+    "test:i18n": "node --experimental-strip-types scripts/i18n-catalog.mjs",
     "test:moddle": "node --experimental-strip-types scripts/moddle-roundtrip.mjs",
-    "test:smoke": "npm run test:moddle && npm run build-only && node scripts/smoke.mjs",
+    "test:smoke": "npm run test:i18n && npm run test:moddle && npm run build-only && node scripts/smoke.mjs",
     "test:real-backend": "node scripts/real-backend-smoke.mjs",
     "test:flowable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-flowable.ps1"
   },
@@ -25,9 +26,11 @@
     "element-plus": "^2.14.3",
     "lucide-vue-next": "^0.577.0",
     "vue": "^3.5.40",
+    "vue-i18n": "^11.4.8",
     "vue-router": "^4.6.4"
   },
   "devDependencies": {
+    "@intlify/message-compiler": "^11.4.8",
     "@tsconfig/node24": "^24.0.4",
     "@types/node": "^24.13.3",
     "@unocss/reset": "^66.7.5",

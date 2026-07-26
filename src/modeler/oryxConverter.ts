@@ -1,5 +1,7 @@
 import { BpmnModdle } from 'bpmn-moddle'
 
+import { translate } from '@/i18n'
+
 import flowableDescriptor from './flowableDescriptor'
 
 type JsonObject = Record<string, unknown>
@@ -446,11 +448,11 @@ function propertyFingerprint(model: JsonObject): string {
 
 function assertOryxModel(value: unknown): asserts value is OryxModel {
   if (!isObject(value) || !Array.isArray(value.childShapes)) {
-    throw new Error('Flowable editor JSON is not a BPMN Oryx canvas')
+    throw new Error(translate('modeler.errors.oryxInvalidCanvas'))
   }
   const rootStencil = stencilId(value)
   if (rootStencil && rootStencil !== 'BPMNDiagram') {
-    throw new Error(`Unsupported Oryx stencil set root: ${rootStencil}`)
+    throw new Error(translate('modeler.errors.oryxUnsupportedRoot', { stencil: rootStencil }))
   }
 }
 
@@ -1088,7 +1090,10 @@ function importShapeContainer(
     const type = STENCIL_TO_BPMN[stencil]
     if (!type) {
       throw new Error(
-        `Unsupported Flowable Oryx stencil "${stencil}" on "${shape.resourceId}"`,
+        translate('modeler.errors.oryxUnsupportedStencil', {
+          stencil,
+          resourceId: shape.resourceId,
+        }),
       )
     }
     const semantic = state.moddle.create(type, { id: oryxElementId(shape) }) as ModdleElement
@@ -1178,7 +1183,11 @@ function importPools(state: OryxImportState, model: OryxModel) {
         context.absoluteBounds.upperLeft.y,
       )
     } else if (poolShape.childShapes?.length) {
-      throw new Error(`Black-box pool "${poolShape.resourceId}" cannot contain child shapes`)
+      throw new Error(
+        translate('modeler.errors.oryxBlackBoxPoolHasChildren', {
+          resourceId: poolShape.resourceId,
+        }),
+      )
     }
   }
 
@@ -2166,14 +2175,16 @@ export async function bpmnXmlToOryxJson(
   xml: string,
   options: { preserveOryxSnapshot?: boolean } = {},
 ): Promise<OryxModel> {
-  if (!xml.trim()) throw new Error('BPMN XML is empty')
+  if (!xml.trim()) throw new Error(translate('modeler.errors.bpmnXmlEmpty'))
   const moddle = createModdle()
   const parsed = await moddle.fromXML(xml)
   const definitions = parsed.rootElement as ModdleElement
-  if (definitions.$type !== 'bpmn:Definitions') throw new Error('XML root is not BPMN definitions')
+  if (definitions.$type !== 'bpmn:Definitions') {
+    throw new Error(translate('modeler.errors.bpmnDefinitionsRootInvalid'))
+  }
   const rootElements = arrayValue<ModdleElement>(definitions.rootElements)
   const processes = rootElements.filter((element) => element.$type === 'bpmn:Process')
-  if (!processes.length) throw new Error('BPMN definitions contain no process')
+  if (!processes.length) throw new Error(translate('modeler.errors.bpmnProcessMissing'))
   const collaboration = rootElements.find((element) => element.$type === 'bpmn:Collaboration')
   const participantProcess = arrayValue<ModdleElement>(collaboration?.participants)
     .map((participant) => referencedElement(participant.processRef))
@@ -2185,7 +2196,7 @@ export async function bpmnXmlToOryxJson(
     : undefined
   const indexes = createDiIndexes(definitions)
   if (!indexes.shapeMap.size) {
-    throw new Error('BPMN XML 缺少 BPMN DI 图形信息')
+    throw new Error(translate('modeler.errors.bpmnDiagramMissing'))
   }
   const state: XmlExportState = {
     moddle,

@@ -1,15 +1,20 @@
 <script setup lang="ts">
-import { useRouter } from 'vue-router'
+import { useRoute, useRouter } from 'vue-router'
 
 import ProcessModelList from '@/components/models/ProcessModelList.vue'
 import { useModelerApplication } from '@/modeler/modelerApplication'
 import { ROUTE_NAMES } from '@/routes'
 
 const application = useModelerApplication()
+const route = useRoute()
 const router = useRouter()
 
 function openModel(id: string) {
-  void router.push({ name: ROUTE_NAMES.processEditor, params: { modelId: id } })
+  void router.push({
+    name: ROUTE_NAMES.processEditor,
+    params: { modelId: id },
+    query: route.query,
+  })
 }
 </script>
 

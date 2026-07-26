@@ -3,6 +3,12 @@ import { onMounted, provide, shallowRef, ref, watch } from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { RouterView, useRoute, useRouter } from 'vue-router'
 
+import {
+  currentLocale,
+  elementPlusLocale,
+  translate,
+  type TranslationParams,
+} from '@/i18n'
 import { parseBpmnMetadata } from '@/modeler/bpmnMetadata'
 import { isEmbeddedMode } from '@/modeler/integration'
 import {
@@ -29,6 +35,8 @@ const api = shallowRef<ModelerApi | null>(null)
 const authenticated = ref(false)
 const sessionRestoring = ref(!embeddedMode)
 const loginError = ref('')
+const loginErrorKey = ref<string | null>(null)
+const loginErrorParams = ref<TranslationParams>({})
 const username = ref('')
 const models = ref<ProcessModel[]>([])
 const totalModels = ref(0)
@@ -43,7 +51,7 @@ interface SessionContext {
 
 class SessionChangedError extends Error {
   constructor() {
-    super('登录状态已变化，请重新操作')
+    super(translate('shell.session.changed'))
     this.name = 'SessionChangedError'
   }
 }
@@ -82,12 +90,19 @@ function redirectAfterLogin() {
   ) {
     return { name: ROUTE_NAMES.processes }
   }
-  return redirect
+  const redirectQuery = { ...resolved.query }
+  delete redirectQuery.lang
+  return { path: resolved.path, query: redirectQuery, hash: resolved.hash }
 }
 
 async function navigateToLogin(preserveEditorRoute = false) {
   if (route.name === ROUTE_NAMES.login) return
-  const redirect = preserveEditorRoute && isProcessEditorRoute() ? route.fullPath : undefined
+  const redirectQuery = { ...route.query }
+  delete redirectQuery.lang
+  const redirect =
+    preserveEditorRoute && isProcessEditorRoute()
+      ? router.resolve({ path: route.path, query: redirectQuery, hash: route.hash }).fullPath
+      : undefined
   await router.replace({
     name: ROUTE_NAMES.login,
     query: redirect ? { redirect } : undefined,
@@ -96,7 +111,7 @@ async function navigateToLogin(preserveEditorRoute = false) {
 
 function requireSession(): SessionContext {
   const client = api.value
-  if (!client) throw new Error('请先登录 Flowable Modeler')
+  if (!client) throw new Error(translate('shell.auth.required'))
   return { client, generation: authGeneration }
 }
 
@@ -116,7 +131,37 @@ function reportError(error: unknown, fallback: string) {
   ElMessage.error(error instanceof Error ? error.message : fallback)
 }
 
-function resetSession(message = '') {
+function clearLoginError() {
+  loginErrorKey.value = null
+  loginErrorParams.value = {}
+  loginError.value = ''
+}
+
+function setLoginError(
+  message: string,
+  messageKey: string | null = null,
+  messageParams: TranslationParams = {},
+) {
+  loginErrorKey.value = messageKey
+  loginErrorParams.value = { ...messageParams }
+  loginError.value = message
+}
+
+function setTranslatedLoginError(messageKey: string, messageParams: TranslationParams = {}) {
+  setLoginError(translate(messageKey, messageParams), messageKey, messageParams)
+}
+
+function setLoginErrorFrom(error: unknown, fallbackKey: string) {
+  if (error instanceof ModelerApiError && error.messageKey) {
+    setTranslatedLoginError(error.messageKey, error.messageParams)
+  } else if (error instanceof Error) {
+    setLoginError(error.message)
+  } else {
+    setTranslatedLoginError(fallbackKey)
+  }
+}
+
+function resetSession(messageKey?: string) {
   authGeneration += 1
   listRequest += 1
   api.value = null
@@ -126,13 +171,14 @@ function resetSession(message = '') {
   totalModels.value = 0
   clearActiveModel()
   sessionRestoring.value = false
-  loginError.value = message
+  if (messageKey) setTranslatedLoginError(messageKey)
+  else clearLoginError()
 }
 
 function handleSessionError(error: unknown, context: SessionContext, fallback: string) {
   if (!isCurrentSession(context) || error instanceof SessionChangedError) return
   if (isAuthenticationError(error)) {
-    resetSession('认证已失效，请重新登录')
+    resetSession('shell.auth.expired')
     return
   }
   reportError(error, fallback)
@@ -145,7 +191,7 @@ function replaceModel(updated: ProcessModel) {
 
 async function login(credentials: ModelerCredentials) {
   const generation = ++authGeneration
-  loginError.value = ''
+  clearLoginError()
   const candidate = new ModelerApi()
   try {
     await candidate.authenticate(credentials)
@@ -161,12 +207,8 @@ async function login(credentials: ModelerCredentials) {
     authenticated.value = true
   } catch (error) {
     if (generation !== authGeneration) return
-    loginError.value =
-      isAuthenticationError(error)
-        ? '用户名或密码错误'
-        : error instanceof Error
-          ? error.message
-          : '无法连接 Flowable Modeler'
+    if (isAuthenticationError(error)) setTranslatedLoginError('shell.auth.invalidCredentials')
+    else setLoginErrorFrom(error, 'shell.auth.unavailable')
   }
 }
 
@@ -186,7 +228,7 @@ async function restoreSession() {
   } catch (error) {
     if (generation !== authGeneration) return
     if (!isAuthenticationError(error)) {
-      loginError.value = error instanceof Error ? error.message : '无法连接 Flowable Modeler'
+      setLoginErrorFrom(error, 'shell.auth.unavailable')
     }
   } finally {
     if (generation === authGeneration) sessionRestoring.value = false
@@ -205,13 +247,13 @@ async function logout() {
   models.value = []
   totalModels.value = 0
   clearActiveModel()
-  loginError.value = ''
+  clearLoginError()
 
   try {
     await client.logout()
   } catch (error) {
     if (generation === authGeneration) {
-      loginError.value = error instanceof Error ? error.message : '退出登录失败'
+      setLoginErrorFrom(error, 'shell.auth.logoutFailed')
     }
   }
 }
@@ -230,7 +272,7 @@ async function loadModels(query: ProcessModelQuery = currentQuery.value) {
     totalModels.value = result.total
   } catch (error) {
     if (request !== listRequest) return
-    handleSessionError(error, context, '加载流程模型失败')
+    handleSessionError(error, context, translate('shell.models.loadFailed'))
   }
 }
 
@@ -263,7 +305,7 @@ async function loadModelForRoute(id: string) {
     return true
   } catch (error) {
     if (request === editorRequest) {
-      handleSessionError(error, context, '无法打开流程模型')
+      handleSessionError(error, context, translate('shell.models.openFailed'))
     }
     return false
   }
@@ -274,9 +316,13 @@ async function createModel(input: CreateModelInput) {
   try {
     const created = await context.client.createModel(input)
     assertCurrentSession(context)
-    await router.push({ name: ROUTE_NAMES.processEditor, params: { modelId: created.id } })
+    await router.push({
+      name: ROUTE_NAMES.processEditor,
+      params: { modelId: created.id },
+      query: route.query,
+    })
   } catch (error) {
-    handleSessionError(error, context, '创建流程模型失败')
+    handleSessionError(error, context, translate('shell.models.createFailed'))
   }
 }
 
@@ -305,26 +351,30 @@ async function importModel(input: ImportModelInput) {
     assertCurrentSession(context)
     activeModel.value = saved
     activeXml.value = xml
-    await router.push({ name: ROUTE_NAMES.processEditor, params: { modelId: saved.id } })
-    ElMessage.success(`已导入 ${input.fileName}`)
+    await router.push({
+      name: ROUTE_NAMES.processEditor,
+      params: { modelId: saved.id },
+      query: route.query,
+    })
+    ElMessage.success(translate('shell.models.importSuccess', { fileName: input.fileName }))
   } catch (error) {
     if (created) {
       try {
         await context.client.deleteModel(created.id)
       } catch {
         if (isCurrentSession(context)) {
-          ElMessage.warning('导入失败，且未能清理已创建的空模型，请返回列表检查')
+          ElMessage.warning(translate('shell.models.importCleanupFailed'))
         }
       }
     }
-    handleSessionError(error, context, '导入流程模型失败')
+    handleSessionError(error, context, translate('shell.models.importFailed'))
   }
 }
 
 async function saveActiveModel(snapshot: ModelSnapshot) {
   const context = requireSession()
   const model = activeModel.value
-  if (!model) throw new Error('当前流程模型不存在，无法保存')
+  if (!model) throw new Error(translate('shell.models.currentMissing'))
 
   const editorJson = await bpmnXmlToOryxJson(snapshot.xml, {
     preserveOryxSnapshot: true,
@@ -344,24 +394,24 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
   } catch (error) {
     if (!isCurrentSession(context)) throw new SessionChangedError()
     if (isAuthenticationError(error)) {
-      resetSession('认证已失效，请重新登录')
-      throw new Error('认证已失效，请重新登录')
+      resetSession('shell.auth.expired')
+      throw new Error(translate('shell.auth.expired'))
     }
     if (!(error instanceof ModelerApiError) || error.status !== 409) throw error
     try {
       await ElMessageBox.confirm(
-        '服务器中的模型已被其他用户更新。覆盖会以当前编辑内容替换服务器版本。',
-        '流程模型存在冲突',
+        translate('shell.conflict.message'),
+        translate('shell.conflict.title'),
         {
-          confirmButtonText: '覆盖保存',
-          cancelButtonText: '继续编辑',
+          confirmButtonText: translate('shell.conflict.overwrite'),
+          cancelButtonText: translate('shell.conflict.continueEditing'),
           distinguishCancelAndClose: true,
           closeOnClickModal: false,
           type: 'warning',
         },
       )
     } catch {
-      throw new Error('保存已取消，当前更改仍未保存')
+      throw new Error(translate('shell.conflict.saveCanceled'))
     }
     assertCurrentSession(context)
     try {
@@ -372,8 +422,8 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
     } catch (overwriteError) {
       if (!isCurrentSession(context)) throw new SessionChangedError()
       if (isAuthenticationError(overwriteError)) {
-        resetSession('认证已失效，请重新登录')
-        throw new Error('认证已失效，请重新登录')
+        resetSession('shell.auth.expired')
+        throw new Error(translate('shell.auth.expired'))
       }
       throw overwriteError
     }
@@ -392,9 +442,9 @@ async function deleteModel(id: string) {
     assertCurrentSession(context)
     models.value = models.value.filter((model) => model.id !== id)
     totalModels.value = Math.max(0, totalModels.value - 1)
-    ElMessage.success('流程模型已删除')
+    ElMessage.success(translate('shell.models.deleteSuccess'))
   } catch (error) {
-    handleSessionError(error, context, '删除流程模型失败')
+    handleSessionError(error, context, translate('shell.models.deleteFailed'))
   }
 }
 
@@ -441,6 +491,12 @@ const modelerApplication: ModelerApplication = {
   clearActiveModel,
 }
 
+watch(currentLocale, () => {
+  if (loginErrorKey.value) {
+    loginError.value = translate(loginErrorKey.value, loginErrorParams.value)
+  }
+})
+
 provide(modelerApplicationKey, modelerApplication)
 
 watch(
@@ -466,5 +522,7 @@ onMounted(() => {
 </script>
 
 <template>
-  <RouterView />
+  <el-config-provider :locale="elementPlusLocale">
+    <RouterView />
+  </el-config-provider>
 </template>

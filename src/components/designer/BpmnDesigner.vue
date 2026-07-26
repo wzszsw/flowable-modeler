@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
+import { useI18n } from 'vue-i18n'
 import Modeler from 'bpmn-js/lib/Modeler'
 import minimapModule from 'diagram-js-minimap'
 import TokenSimulationModule from 'bpmn-js-token-simulation'
@@ -15,8 +16,14 @@ import {
   WarningFilled,
 } from '@element-plus/icons-vue'
 
+import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
 import DesignerToolbar from './DesignerToolbar.vue'
 import PropertiesPanel from './PropertiesPanel.vue'
+import {
+  bpmnJsChineseCatalog,
+  bpmnJsEnglishCatalog,
+  type BpmnJsCatalogKey,
+} from '@/i18n/locales/designer'
 import flowableDescriptor from '@/modeler/flowableDescriptor'
 import { createDefaultDiagram } from '@/modeler/defaultDiagram'
 import { isEmbeddedMode, type FlowableHostAdapter } from '@/modeler/integration'
@@ -81,6 +88,17 @@ type ToggleModeService = {
 
 type EventBusService = {
   on: (event: string, callback: (event: Record<string, unknown>) => void) => void
+  fire: (event: string, payload?: Record<string, unknown>) => unknown
+}
+
+type ContextPadService = {
+  isOpen: () => boolean
+  open: (target: DiagramElement | DiagramElement[], force?: boolean) => void
+}
+
+type PopupMenuService = {
+  isOpen: () => boolean
+  refresh: () => void
 }
 
 interface ModelSnapshot {
@@ -105,6 +123,26 @@ interface ImportDiagramOptions {
   markClean?: boolean
   reportError?: boolean
 }
+
+type MessageParams = Record<string, string | number>
+
+type DiagnosticMessage =
+  | { source: 'local'; key: string; params: MessageParams }
+  | { source: 'external'; text: string }
+
+class DesignerDiagnosticError extends Error {
+  readonly key: string
+  readonly params: MessageParams
+
+  constructor(key: string, params: MessageParams, message: string) {
+    super(message)
+    this.name = 'DesignerDiagnosticError'
+    this.key = key
+    this.params = params
+  }
+}
+
+const { t, locale } = useI18n()
 
 const props = defineProps<{
   initialXml?: string
@@ -144,7 +182,7 @@ interface ImportSnapshot {
   dirty: boolean
   fileName: string
   lastSavedAt: string
-  importWarnings: string[]
+  importWarnings: DiagnosticMessage[]
   importWarningsDialogVisible: boolean
   problems: ValidationProblem[]
   problemsDrawerVisible: boolean
@@ -166,8 +204,9 @@ const embeddedMode = isEmbeddedMode()
 
 const ready = ref(false)
 const loading = ref(true)
-const loadingText = ref('正在初始化设计器…')
-const initializationError = ref('')
+const loadingMessageKey = ref('designer.loading.initializing')
+const loadingText = computed(() => t(loadingMessageKey.value))
+const initializationError = ref<DiagnosticMessage | null>(null)
 const dirty = ref(false)
 const fileName = ref(props.initialFileName || 'leave-request.bpmn20.xml')
 const lastSavedAt = ref('')
@@ -178,7 +217,7 @@ const zoom = ref(1)
 const simulationActive = ref(false)
 const propertyPanelVisible = ref(true)
 const fullscreenActive = ref(false)
-const importWarnings = ref<string[]>([])
+const importWarnings = ref<DiagnosticMessage[]>([])
 
 const xmlDialogVisible = ref(false)
 const xmlContent = ref('')
@@ -199,11 +238,363 @@ let leaveDecisionPromise: Promise<LeaveDecision> | null = null
 let resolveLeaveDecision: ((decision: LeaveDecision) => void) | null = null
 let nativeImportXML: NativeImportXML | null = null
 let resizeObserver: ResizeObserver | null = null
+let modelerDomObserver: MutationObserver | null = null
+let modelerDomLocalizationFrame = 0
 
 const importPending = computed(() => pendingImportCount.value > 0)
 const interactionLocked = computed(
   () => saving.value || importPending.value || !ready.value || !importStateCoherent.value,
 )
+
+function localDiagnostic(key: string, params: MessageParams = {}): DiagnosticMessage {
+  return { source: 'local', key, params }
+}
+
+function externalDiagnostic(text: string): DiagnosticMessage {
+  return { source: 'external', text }
+}
+
+function cloneDiagnostic(message: DiagnosticMessage): DiagnosticMessage {
+  return message.source === 'local'
+    ? localDiagnostic(message.key, { ...message.params })
+    : externalDiagnostic(message.text)
+}
+
+function designerError(key: string, params: MessageParams = {}) {
+  return new DesignerDiagnosticError(key, params, t(key, params))
+}
+
+function diagnosticFromError(error: unknown, fallbackKey: string): DiagnosticMessage {
+  if (error instanceof DesignerDiagnosticError) {
+    return localDiagnostic(error.key, { ...error.params })
+  }
+  if (error instanceof Error) return externalDiagnostic(error.message)
+  if (typeof error === 'string' && error.trim()) return externalDiagnostic(error)
+  return localDiagnostic(fallbackKey)
+}
+
+function diagnosticText(message: DiagnosticMessage) {
+  return message.source === 'local' ? t(message.key, message.params) : message.text
+}
+
+function errorText(error: unknown, fallbackKey: string) {
+  return diagnosticText(diagnosticFromError(error, fallbackKey))
+}
+
+function translateBpmn(
+  template: string,
+  replacements: Record<string, string | number> = {},
+) {
+  const catalog = (locale.value === 'en'
+    ? bpmnJsEnglishCatalog
+    : bpmnJsChineseCatalog) as Record<string, string>
+  const translated = catalog[template as BpmnJsCatalogKey] || template
+  return translated.replace(/\{([^}]+)\}/g, (match, key: string) =>
+    Object.prototype.hasOwnProperty.call(replacements, key) ? String(replacements[key]) : match,
+  )
+}
+
+const bpmnI18nModule = {
+  translate: ['value', translateBpmn],
+}
+
+function setOwnText(element: Element, value: string, trailingSpace = false) {
+  const textNode = [...element.childNodes].find(
+    (node) => node.nodeType === Node.TEXT_NODE && Boolean(node.textContent?.trim()),
+  )
+  const nextValue = trailingSpace ? `${value} ` : value
+  if (textNode) {
+    if (textNode.textContent?.trim() !== value) textNode.textContent = nextValue
+    return
+  }
+  element.insertBefore(document.createTextNode(nextValue), element.firstChild)
+}
+
+const tokenTitleKeys: Record<string, string> = {
+  'Toggle Simulation Log': 'designer.bpmnDom.toggleSimulationLog',
+  'Play/Pause Simulation': 'designer.bpmnDom.playPauseSimulation',
+  'Reset Simulation': 'designer.bpmnDom.resetSimulation',
+  'Set Sequence Flow': 'designer.bpmnDom.setSequenceFlow',
+  'Trigger Event': 'designer.bpmnDom.triggerEvent',
+  'Add pause point': 'designer.bpmnDom.addPausePoint',
+  'Remove pause point': 'designer.bpmnDom.removePausePoint',
+}
+
+const tokenTextKeys: Record<string, string> = {
+  'Found unsupported elements': 'designer.bpmnDom.unsupportedElements',
+  'Not supported': 'designer.bpmnDom.notSupported',
+  Finished: 'designer.bpmnDom.finished',
+  'Pause Simulation': 'designer.bpmnDom.pauseSimulation',
+  'Play Simulation': 'designer.bpmnDom.playSimulation',
+  'Reset Simulation': 'designer.bpmnDom.resetSimulation',
+}
+
+const tokenElementFallbackKeys: Record<string, string> = {
+  'bpmn:ServiceTask': 'designer.bpmnDom.serviceTask',
+  'bpmn:UserTask': 'designer.bpmnDom.userTask',
+  'bpmn:CallActivity': 'designer.bpmnDom.callActivity',
+  'bpmn:ScriptTask': 'designer.bpmnDom.scriptTask',
+  'bpmn:BusinessRuleTask': 'designer.bpmnDom.businessRuleTask',
+  'bpmn:ManualTask': 'designer.bpmnDom.manualTask',
+  'bpmn:ReceiveTask': 'designer.bpmnDom.receiveTask',
+  'bpmn:SendTask': 'designer.bpmnDom.sendTask',
+  'bpmn:Task': 'designer.bpmnDom.task',
+  'bpmn:ExclusiveGateway': 'designer.bpmnDom.exclusiveGateway',
+  'bpmn:ParallelGateway': 'designer.bpmnDom.parallelGateway',
+  'bpmn:InclusiveGateway': 'designer.bpmnDom.inclusiveGateway',
+  'bpmn:StartEvent': 'designer.bpmnDom.startEvent',
+  'bpmn:IntermediateCatchEvent': 'designer.bpmnDom.intermediateEvent',
+  'bpmn:IntermediateThrowEvent': 'designer.bpmnDom.intermediateEvent',
+  'bpmn:BoundaryEvent': 'designer.bpmnDom.boundaryEvent',
+  'bpmn:EndEvent': 'designer.bpmnDom.endEvent',
+}
+
+type TokenLifecycleState = 'started' | 'finished' | 'canceled'
+
+function localizeTokenLifecycleText(container: HTMLElement, textElement: HTMLElement) {
+  const state = container.dataset.designerLifecycleState as TokenLifecycleState | undefined
+  const nameKey = container.dataset.designerLifecycleNameKey
+  const rawName = container.dataset.designerLifecycleName
+  if (!state || (!nameKey && !rawName)) return
+
+  const key = {
+    started: 'designer.bpmnDom.lifecycleStarted',
+    finished: 'designer.bpmnDom.lifecycleFinished',
+    canceled: 'designer.bpmnDom.lifecycleCanceled',
+  }[state]
+  const name = nameKey ? t(nameKey) : rawName!
+  const text = t(key, { name })
+  if (textElement.textContent !== text) textElement.textContent = text
+  textElement.setAttribute('title', text)
+}
+
+function localizeTokenSimulationDom(root: ParentNode) {
+  root.querySelectorAll<HTMLElement>('.bts-toggle-mode').forEach((element) => {
+    setOwnText(element, t('designer.bpmnDom.tokenSimulation'), true)
+  })
+
+  root.querySelectorAll<HTMLElement>('.bts-header').forEach((element) => {
+    setOwnText(element, t('designer.bpmnDom.simulationLog'))
+  })
+  root.querySelectorAll<HTMLElement>('.bts-close').forEach((element) => {
+    element.setAttribute('aria-label', t('designer.bpmnDom.close'))
+  })
+  root.querySelectorAll<HTMLElement>('.bts-log .bts-entry.placeholder').forEach((element) => {
+    const text = t('designer.bpmnDom.noEntries')
+    if (element.textContent !== text) element.textContent = text
+  })
+
+  root.querySelectorAll<HTMLElement>('.bts-entry[title], .bts-context-pad[title]').forEach((element) => {
+    if (!element.dataset.designerI18nKey) {
+      const key = tokenTitleKeys[element.getAttribute('title') || '']
+      if (key) element.dataset.designerI18nKey = key
+    }
+    if (element.dataset.designerI18nKey) {
+      element.setAttribute('title', t(element.dataset.designerI18nKey))
+    }
+  })
+
+  const speedKeys: Record<string, string> = {
+    '0.5': 'designer.bpmnDom.animationSpeedSlow',
+    '1': 'designer.bpmnDom.animationSpeedNormal',
+    '2': 'designer.bpmnDom.animationSpeedFast',
+  }
+  root.querySelectorAll<HTMLElement>('.bts-animation-speed-button[data-speed]').forEach((element) => {
+    const key = speedKeys[element.dataset.speed || '']
+    if (key) element.setAttribute('title', t(key))
+  })
+
+  root.querySelectorAll<HTMLElement>('.bts-scopes .bts-scope[title]').forEach((element) => {
+    if (!element.dataset.designerProcessInstanceId) {
+      const match = element.getAttribute('title')?.match(/^Focus process instance (.+)$/)
+      if (match?.[1]) element.dataset.designerProcessInstanceId = match[1]
+    }
+    if (element.dataset.designerProcessInstanceId) {
+      element.setAttribute(
+        'title',
+        t('designer.bpmnDom.focusProcessInstance', {
+          id: element.dataset.designerProcessInstanceId,
+        }),
+      )
+    }
+  })
+
+  root
+    .querySelectorAll<HTMLElement>('.bts-notification .bts-text, .bts-element-notification .bts-text')
+    .forEach((element) => {
+      if (!element.dataset.designerI18nKey) {
+        const key = tokenTextKeys[element.textContent?.trim() || '']
+        if (key) element.dataset.designerI18nKey = key
+      }
+    })
+
+  root.querySelectorAll<HTMLElement>('.bts-text[data-designer-i18n-key]').forEach((element) => {
+    const text = t(element.dataset.designerI18nKey!)
+    if (element.textContent !== text) element.textContent = text
+    element.setAttribute('title', text)
+  })
+
+  root.querySelectorAll<HTMLElement>('.bts-notification').forEach((notification) => {
+    const textElement = notification.querySelector<HTMLElement>('.bts-text')
+    if (textElement) localizeTokenLifecycleText(notification, textElement)
+  })
+
+  root.querySelectorAll<HTMLElement>('.bts-log .bts-entry:not(.placeholder)').forEach((entry) => {
+    const textElement = entry.querySelector<HTMLElement>('.bts-text')
+    if (textElement) localizeTokenLifecycleText(entry, textElement)
+  })
+}
+
+function markTokenTraceDom(event: Record<string, unknown>) {
+  if (event.action !== 'exit') return
+  const element = event.element as DiagramElement | undefined
+  const businessObject = element?.businessObject
+  const elementType = businessObject?.$type || element?.type
+  const key = elementType ? tokenElementFallbackKeys[elementType] : undefined
+  if (!element || !key || businessObject?.name) return
+
+  const elementScope = event.scope as { parent?: { id?: string } } | undefined
+  const scopeId = elementScope?.parent?.id
+  const root = canvasRef.value
+  if (!scopeId || !root) return
+
+  const logEntries = [...root.querySelectorAll<HTMLElement>('.bts-log .bts-entry[data-scope-id]')]
+    .filter((entry) => entry.dataset.scopeId === String(scopeId))
+  const notifications = [...root.querySelectorAll<HTMLElement>('.bts-notification')]
+    .filter(
+      (notification) =>
+        notification.querySelector<HTMLElement>('.bts-scope')?.textContent?.trim() ===
+        String(scopeId),
+    )
+
+  for (const container of [logEntries.at(-1), notifications.at(-1)]) {
+    const textElement = container?.querySelector<HTMLElement>('.bts-text')
+    if (textElement) textElement.dataset.designerI18nKey = key
+  }
+  scheduleModelerDomLocalization()
+}
+
+function markTokenLifecycleDom(
+  event: Record<string, unknown>,
+  state: TokenLifecycleState,
+) {
+  const scope = event.scope as
+    | { id?: string; completed?: boolean; element?: DiagramElement }
+    | undefined
+  const scopeElement = scope?.element
+  const businessObject = scopeElement?.businessObject
+  const elementType = businessObject?.$type || scopeElement?.type
+  if (!scope?.id || !scopeElement) return
+
+  let nameKey = ''
+  let name = ''
+  if (elementType === 'bpmn:Process' || elementType === 'bpmn:Participant') {
+    nameKey = 'designer.bpmnDom.lifecycleProcess'
+  } else if (elementType === 'bpmn:SubProcess') {
+    name = businessObject?.name?.trim() || ''
+    if (!name) nameKey = 'designer.bpmnDom.lifecycleSubProcess'
+  } else {
+    return
+  }
+
+  const root = canvasRef.value
+  if (!root) return
+  const scopeId = String(scope.id)
+  const logEntries = [...root.querySelectorAll<HTMLElement>('.bts-log .bts-entry[data-scope-id]')]
+    .filter((entry) => entry.dataset.scopeId === scopeId)
+  const notifications = [...root.querySelectorAll<HTMLElement>('.bts-notification')]
+    .filter(
+      (notification) =>
+        notification.querySelector<HTMLElement>('.bts-scope')?.textContent?.trim() === scopeId,
+    )
+
+  for (const container of [logEntries.at(-1), notifications.at(-1)]) {
+    if (!container) continue
+    container.dataset.designerLifecycleState = state
+    if (nameKey) {
+      container.dataset.designerLifecycleNameKey = nameKey
+      delete container.dataset.designerLifecycleName
+    } else {
+      container.dataset.designerLifecycleName = name
+      delete container.dataset.designerLifecycleNameKey
+    }
+  }
+  scheduleModelerDomLocalization()
+}
+
+function localizeDiagramJsDom(root: ParentNode) {
+  root.querySelectorAll<HTMLInputElement>('.djs-search-input input').forEach((input) => {
+    input.placeholder = t('designer.bpmnDom.searchInDiagram')
+    input.setAttribute('aria-label', t('designer.bpmnDom.searchInDiagram'))
+  })
+  root.querySelectorAll<HTMLInputElement>('.djs-popup-search input').forEach((input) => {
+    input.placeholder = t('designer.bpmnDom.search')
+    if (input.getAttribute('aria-label') === 'Search' || input.dataset.designerGenericSearch) {
+      input.dataset.designerGenericSearch = 'true'
+      input.setAttribute('aria-label', t('designer.bpmnDom.search'))
+    }
+  })
+  root.querySelectorAll<HTMLElement>('.djs-popup-search-count').forEach((element) => {
+    const rawCount = element.textContent?.match(/\d+/)?.[0]
+    if (rawCount) element.dataset.designerResultCount = rawCount
+    const count = Number(element.dataset.designerResultCount)
+    if (!Number.isFinite(count)) return
+    const text = t('designer.bpmnDom.resultsFound', { count })
+    if (element.textContent?.trim() !== text) element.textContent = text
+  })
+  root.querySelectorAll<HTMLElement>('.djs-popup [role="listbox"]').forEach((element) => {
+    if (element.getAttribute('aria-label') === 'Results' || element.dataset.designerGenericResults) {
+      element.dataset.designerGenericResults = 'true'
+      element.setAttribute('aria-label', t('designer.bpmnDom.results'))
+    }
+  })
+  root
+    .querySelectorAll<HTMLElement>('.djs-popup-breadcrumbs-item--back')
+    .forEach((element) => {
+      element.setAttribute('title', t('designer.bpmnDom.back'))
+      element.setAttribute('aria-label', t('designer.bpmnDom.back'))
+    })
+  root.querySelectorAll<HTMLElement>('.djs-popup-entry-docs').forEach((element) => {
+    element.setAttribute('title', t('designer.bpmnDom.openDocumentation'))
+  })
+  root.querySelectorAll<HTMLAnchorElement>('.djs-popup-footer-docs').forEach((element) => {
+    setOwnText(element, t('designer.bpmnDom.openDocumentation'))
+    const label = element
+      .closest('.djs-popup')
+      ?.querySelector<HTMLElement>('.entry.selected .djs-popup-label')
+      ?.textContent?.trim()
+    element.setAttribute(
+      'aria-label',
+      label
+        ? t('designer.bpmnDom.openDocumentationFor', { label })
+        : t('designer.bpmnDom.openDocumentation'),
+    )
+  })
+
+  root.querySelectorAll<HTMLElement>('.djs-minimap').forEach((minimap) => {
+    const toggle = minimap.querySelector<HTMLElement>('.toggle')
+    if (!toggle) return
+    toggle.setAttribute(
+      'title',
+      translateBpmn(minimap.classList.contains('open') ? 'Close minimap' : 'Open minimap'),
+    )
+  })
+}
+
+function localizeModelerDom() {
+  const root = canvasRef.value
+  if (!root) return
+  localizeDiagramJsDom(root)
+  localizeTokenSimulationDom(root)
+}
+
+function scheduleModelerDomLocalization() {
+  if (modelerDomLocalizationFrame) return
+  modelerDomLocalizationFrame = window.requestAnimationFrame(() => {
+    modelerDomLocalizationFrame = 0
+    localizeModelerDom()
+  })
+}
 
 function asBusinessObject(value: unknown): BpmnBusinessObject | null {
   if (!value || typeof value !== 'object') return null
@@ -239,7 +630,7 @@ function resolvePrimaryProcess() {
 const processName = computed(() => {
   commandRevision.value
   const process = resolvePrimaryProcess()
-  return String(process?.name || process?.id || '未命名流程')
+  return String(process?.name || process?.id || t('designer.header.unnamedProcess'))
 })
 const processId = computed(() => {
   commandRevision.value
@@ -252,23 +643,29 @@ const processDescription = computed(() => {
   return String(documentation[0]?.text || '').trim()
 })
 const selectedLabel = computed(() => {
-  if (!selectedElement.value || selectedElement.value === rootElement.value) return '流程'
+  if (!selectedElement.value || selectedElement.value === rootElement.value) {
+    return t('designer.header.process')
+  }
   return String(
-    selectedElement.value.businessObject.name || selectedElement.value.businessObject.id || '未命名元素',
+    selectedElement.value.businessObject.name ||
+      selectedElement.value.businessObject.id ||
+      t('designer.header.unnamedElement'),
   )
 })
 const errorCount = computed(() => problems.value.filter((item) => item.level === 'error').length)
 const warningCount = computed(() => problems.value.filter((item) => item.level === 'warning').length)
 const savedStatus = computed(() => {
-  if (importPending.value) return '正在载入流程'
-  if (saving.value) return '正在保存模型'
-  if (dirty.value) return '有未保存更改'
-  if (lastSavedAt.value) return `已保存 ${lastSavedAt.value}`
-  return '已就绪'
+  if (importPending.value) return t('designer.header.status.loading')
+  if (saving.value) return t('designer.header.status.saving')
+  if (dirty.value) return t('designer.header.status.dirty')
+  if (lastSavedAt.value) {
+    return t('designer.header.status.savedAt', { time: formatTime(lastSavedAt.value) })
+  }
+  return t('designer.header.status.ready')
 })
 
 function service<T>(name: string) {
-  if (!modeler.value) throw new Error('BPMN modeler is not ready')
+  if (!modeler.value) throw designerError('designer.errors.modelerNotReady')
   return modeler.value.get<T>(name)
 }
 
@@ -291,7 +688,7 @@ function isInteractionReady() {
 
 function assertImportStateCoherent() {
   if (!importStateCoherent.value) {
-    throw new Error('BPMN 导入恢复失败，当前流程不可操作')
+    throw designerError('designer.errors.importStateIncoherent')
   }
 }
 
@@ -334,11 +731,14 @@ function applyValidationMarkers(items: ValidationProblem[]) {
 
 function normalizeImportWarnings(warnings: unknown[] | undefined) {
   return (warnings || []).map((warning) => {
-    if (warning instanceof Error) return warning.message
-    if (warning && typeof warning === 'object' && 'message' in warning) {
-      return String((warning as { message: unknown }).message)
+    if (warning instanceof DesignerDiagnosticError) {
+      return localDiagnostic(warning.key, { ...warning.params })
     }
-    return String(warning)
+    if (warning instanceof Error) return externalDiagnostic(warning.message)
+    if (warning && typeof warning === 'object' && 'message' in warning) {
+      return externalDiagnostic(String((warning as { message: unknown }).message))
+    }
+    return externalDiagnostic(String(warning))
   })
 }
 
@@ -393,7 +793,7 @@ async function captureImportSnapshot(instance: Modeler): Promise<ImportSnapshot>
   let xml = ''
   if (definitions) {
     xml = (await instance.saveXML({ format: true, preamble: true })).xml || ''
-    if (!xml) throw new Error('无法创建当前流程的导入回滚快照')
+    if (!xml) throw designerError('designer.errors.snapshotUnavailable')
   }
 
   let viewbox: CanvasViewboxRect | undefined
@@ -418,7 +818,7 @@ async function captureImportSnapshot(instance: Modeler): Promise<ImportSnapshot>
     dirty: dirty.value,
     fileName: fileName.value,
     lastSavedAt: lastSavedAt.value,
-    importWarnings: [...importWarnings.value],
+    importWarnings: importWarnings.value.map(cloneDiagnostic),
     importWarningsDialogVisible: importWarningsDialogVisible.value,
     problems: problems.value.map((problem) => ({ ...problem })),
     problemsDrawerVisible: problemsDrawerVisible.value,
@@ -430,7 +830,7 @@ function restoreImportUiState(instance: Modeler, snapshot: ImportSnapshot) {
   const canvas = instance.get<CanvasService>('canvas')
   const restoredRoot = getCanvasRoot(instance)
   if (snapshot.canvasRoot && !restoredRoot) {
-    throw new Error('原流程定义已恢复，但画布根元素未能重新渲染')
+    throw designerError('designer.errors.restoredRootMissing')
   }
 
   rootElement.value = restoredRoot
@@ -450,7 +850,7 @@ function restoreImportUiState(instance: Modeler, snapshot: ImportSnapshot) {
   dirty.value = snapshot.dirty
   fileName.value = snapshot.fileName
   lastSavedAt.value = snapshot.lastSavedAt
-  importWarnings.value = [...snapshot.importWarnings]
+  importWarnings.value = snapshot.importWarnings.map(cloneDiagnostic)
   importWarningsDialogVisible.value = snapshot.importWarningsDialogVisible
   problems.value = snapshot.problems.map((problem) => ({ ...problem }))
   problemsDrawerVisible.value = snapshot.problemsDrawerVisible
@@ -466,7 +866,7 @@ async function restoreFailedImport(
 ) {
   if ((instance.getDefinitions() || null) !== snapshot.definitions) {
     if (!snapshot.definitions || !snapshot.xml) {
-      throw new Error('导入已替换当前定义，但没有可重新导入的流程快照')
+      throw designerError('designer.errors.rollbackDefinitionUnavailable')
     }
     await importXML(snapshot.xml, snapshot.activeDiagramId)
   }
@@ -502,7 +902,19 @@ function bindModelerEvents(instance: Modeler) {
 
   eventBus.on('tokenSimulation.toggleMode', (event) => {
     simulationActive.value = Boolean(event.active)
+    scheduleModelerDomLocalization()
   })
+
+  eventBus.on('tokenSimulation.simulator.createScope', (event) => {
+    markTokenLifecycleDom(event, 'started')
+  })
+
+  eventBus.on('tokenSimulation.simulator.destroyScope', (event) => {
+    const scope = event.scope as { completed?: boolean } | undefined
+    markTokenLifecycleDom(event, scope?.completed ? 'finished' : 'canceled')
+  })
+
+  eventBus.on('tokenSimulation.simulator.trace', markTokenTraceDom)
 
   eventBus.on('import.done', (event) => {
     if (importing || event.error) return
@@ -514,8 +926,8 @@ function bindModelerEvents(instance: Modeler) {
     importWarnings.value = normalizeImportWarnings(event.warnings as unknown[] | undefined)
     if (importWarnings.value.length) {
       ElNotification({
-        title: '流程已载入，存在兼容提示',
-        message: `bpmn-js 返回 ${importWarnings.value.length} 条导入提示；未识别内容再次导出时可能丢失。`,
+        title: t('designer.import.loadedWithWarnings'),
+        message: t('designer.import.externalWarnings', { count: importWarnings.value.length }),
         type: 'warning',
       })
     }
@@ -575,9 +987,7 @@ async function performDiagramImport(
           ...nativeResult,
           warnings: [
             ...(nativeResult.warnings || []),
-            new Error(
-              '已将旧 Activiti 扩展命名空间规范化为 http://flowable.org/bpmn',
-            ),
+            designerError('designer.import.legacyNamespaceNormalized'),
           ],
         } as ImportResult)
       : nativeResult
@@ -597,8 +1007,8 @@ async function performDiagramImport(
 
     if (importWarnings.value.length) {
       ElNotification({
-        title: '流程已载入，存在兼容提示',
-        message: `导入包含 ${importWarnings.value.length} 条兼容处理或解析提示，请在保存前确认。`,
+        title: t('designer.import.loadedWithWarnings'),
+        message: t('designer.import.warnings', { count: importWarnings.value.length }),
         type: 'warning',
       })
     }
@@ -612,14 +1022,17 @@ async function performDiagramImport(
       recoveryError = rollbackError
       importStateCoherent.value = false
     }
-    const message = error instanceof Error ? error.message : String(error)
-    const recoveryMessage = recoveryError
-      ? `；原流程恢复失败：${recoveryError instanceof Error ? recoveryError.message : String(recoveryError)}`
-      : ''
+    const message = errorText(error, 'designer.import.failedTitle')
+    const notificationMessage = recoveryError
+      ? t('designer.import.failedWithRecovery', {
+          detail: message,
+          recovery: errorText(recoveryError, 'designer.errors.importStateIncoherent'),
+        })
+      : message
     if (options.reportError !== false) {
       ElNotification({
-        title: 'BPMN 导入失败',
-        message: `${message}${recoveryMessage}`,
+        title: t('designer.import.failedTitle'),
+        message: notificationMessage,
         type: 'error',
         duration: 7000,
       })
@@ -637,7 +1050,9 @@ function enqueueDiagramImport(
 ): Promise<ImportResult> {
   const instance = modeler.value
   const importXML = nativeImportXML
-  if (!instance || !importXML) return Promise.reject(new Error('BPMN modeler is not ready'))
+  if (!instance || !importXML) {
+    return Promise.reject(designerError('designer.errors.modelerNotReady'))
+  }
 
   const wasIdle = pendingImportCount.value === 0
   pendingImportCount.value += 1
@@ -645,7 +1060,7 @@ function enqueueDiagramImport(
   canUndo.value = false
   canRedo.value = false
   loading.value = true
-  loadingText.value = '正在载入 BPMN 流程…'
+  loadingMessageKey.value = 'designer.loading.process'
   if (wasIdle) setModelerKeyboardEnabled(instance, false)
 
   const operation = importQueue.then(async () => {
@@ -687,7 +1102,7 @@ async function loadInitialDiagram() {
       importedFileName: props.initialFileName,
       reportError: false,
     })
-    if (props.initialSavedAt) lastSavedAt.value = formatTime(props.initialSavedAt)
+    if (props.initialSavedAt) lastSavedAt.value = props.initialSavedAt
   } else {
     await importDiagram(createDefaultDiagram())
   }
@@ -697,7 +1112,7 @@ async function initialize() {
   if (!canvasRef.value) return
   const instance = new Modeler({
     container: canvasRef.value,
-    additionalModules: [minimapModule, TokenSimulationModule, gridModule],
+    additionalModules: [minimapModule, TokenSimulationModule, gridModule, bpmnI18nModule],
     moddleExtensions: {
       flowable: flowableDescriptor,
     },
@@ -711,6 +1126,7 @@ async function initialize() {
   await loadInitialDiagram()
   await waitForQueuedImports()
   await nextTick()
+  scheduleModelerDomLocalization()
   window.dispatchEvent(
     new CustomEvent('flowable-modeler-ready', {
       detail: window.flowableProcessModeler,
@@ -727,7 +1143,7 @@ async function initialize() {
 function handleInitializationError(error: unknown) {
   loading.value = false
   ready.value = false
-  initializationError.value = error instanceof Error ? error.message : '无法载入 BPMN 流程模型'
+  initializationError.value = diagnosticFromError(error, 'designer.errors.loadFailed')
 }
 
 function reloadPage() {
@@ -738,7 +1154,7 @@ async function performModelSave(showSuccess: boolean) {
   if (!modeler.value) return false
   assertImportStateCoherent()
   if (!props.persistModel) {
-    throw new Error('嵌入模式不支持直接保存，请通过 getXML() 交由宿主持久化')
+    throw designerError('designer.errors.embeddedSaveUnsupported')
   }
   const instance = modeler.value
   saving.value = true
@@ -747,7 +1163,7 @@ async function performModelSave(showSuccess: boolean) {
     await commitActiveEditor()
     const savedRevision = commandRevision.value
     const { xml } = await instance.saveXML({ format: true, preamble: true })
-    if (!xml) throw new Error('未生成 BPMN XML')
+    if (!xml) throw designerError('designer.errors.xmlNotGenerated')
     const { savedAt } = await props.persistModel({
       xml,
       fileName: fileName.value,
@@ -756,14 +1172,16 @@ async function performModelSave(showSuccess: boolean) {
       description: processDescription.value,
     })
     dirty.value = commandRevision.value !== savedRevision
-    lastSavedAt.value = formatTime(savedAt)
+    lastSavedAt.value = savedAt
     emit('saved')
     if (showSuccess) {
-      ElMessage.success(dirty.value ? '当前快照已保存，仍有后续更改' : '流程模型已保存')
+      ElMessage.success(
+        dirty.value ? t('designer.save.snapshotSaved') : t('designer.save.success'),
+      )
     }
     return true
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '保存失败')
+    ElMessage.error(errorText(error, 'designer.errors.saveFailed'))
     return false
   } finally {
     saving.value = false
@@ -815,13 +1233,13 @@ function handleLeaveDialogClosed() {
 async function confirmClose() {
   if (embeddedMode) return false
   if (!isInteractionReady()) {
-    ElMessage.warning('编辑器正在载入或保存，请稍后再离开')
+    ElMessage.warning(t('designer.save.busy'))
     return false
   }
   try {
     await commitActiveEditor()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '无法提交当前编辑内容')
+    ElMessage.error(errorText(error, 'designer.errors.commitFailed'))
     return false
   }
   if (!dirty.value) return true
@@ -838,11 +1256,15 @@ async function requestClose() {
 async function confirmDiscard() {
   if (!dirty.value) return true
   try {
-    await ElMessageBox.confirm('导入会替换当前流程，未保存更改将丢失。', '导入 BPMN', {
-      confirmButtonText: '继续导入',
-      cancelButtonText: '取消',
-      type: 'warning',
-    })
+    await ElMessageBox.confirm(
+      t('designer.import.confirmMessage'),
+      t('designer.import.confirmTitle'),
+      {
+        confirmButtonText: t('designer.import.continue'),
+        cancelButtonText: t('shell.common.cancel'),
+        type: 'warning',
+      },
+    )
     return true
   } catch {
     return false
@@ -866,7 +1288,7 @@ async function handleFileChange(event: Event) {
   try {
     await importDiagram(xml, { importedFileName: file.name, markClean: false })
     lastSavedAt.value = ''
-    ElMessage.success(`已导入 ${file.name}`)
+    ElMessage.success(t('designer.import.success', { fileName: file.name }))
   } catch {
     // importDiagram already displayed the error.
   }
@@ -897,7 +1319,7 @@ async function exportXml() {
   const xml = await getXml()
   if (!xml) return
   downloadBlob(xml, normalizedExportName('bpmn20.xml'), 'application/xml;charset=utf-8')
-  ElMessage.success('BPMN 2.0 XML 已导出')
+  ElMessage.success(t('designer.export.xmlSuccess'))
 }
 
 async function exportSvg() {
@@ -905,7 +1327,7 @@ async function exportSvg() {
   const { svg } = await modeler.value.saveSVG()
   if (!svg) return
   downloadBlob(svg, normalizedExportName('svg'), 'image/svg+xml;charset=utf-8')
-  ElMessage.success('SVG 图片已导出')
+  ElMessage.success(t('designer.export.svgSuccess'))
 }
 
 async function exportPng() {
@@ -924,19 +1346,19 @@ async function exportPng() {
     canvas.width = Math.max(1, image.naturalWidth || image.width) * scale
     canvas.height = Math.max(1, image.naturalHeight || image.height) * scale
     const context = canvas.getContext('2d')
-    if (!context) throw new Error('当前浏览器不支持 Canvas 导出')
+    if (!context) throw designerError('designer.errors.canvasExportUnsupported')
     context.fillStyle = '#ffffff'
     context.fillRect(0, 0, canvas.width, canvas.height)
     context.drawImage(image, 0, 0, canvas.width, canvas.height)
     const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
-    if (!png) throw new Error('PNG 图片生成失败')
+    if (!png) throw designerError('designer.errors.pngGenerationFailed')
     const url = URL.createObjectURL(png)
     const anchor = document.createElement('a')
     anchor.href = url
     anchor.download = normalizedExportName('png')
     anchor.click()
     URL.revokeObjectURL(url)
-    ElMessage.success('PNG 图片已导出')
+    ElMessage.success(t('designer.export.pngSuccess'))
   } finally {
     URL.revokeObjectURL(svgUrl)
   }
@@ -951,9 +1373,9 @@ async function showXml() {
 async function copyXml() {
   try {
     await navigator.clipboard.writeText(xmlContent.value)
-    ElMessage.success('XML 已复制到剪贴板')
+    ElMessage.success(t('designer.clipboard.copied'))
   } catch {
-    ElMessage.warning('浏览器未授予剪贴板权限，请在编辑器中手动复制')
+    ElMessage.warning(t('designer.clipboard.denied'))
   }
 }
 
@@ -976,11 +1398,19 @@ function runValidation(showDrawer = true) {
   applyValidationMarkers(problems.value)
 
   if (!problems.value.length) {
-    ElNotification({ title: '流程校验通过', message: '未发现结构或 Flowable 配置问题。', type: 'success' })
+    ElNotification({
+      title: t('designer.validation.passedTitle'),
+      message: t('designer.validation.passedMessage'),
+      type: 'success',
+    })
     problemsDrawerVisible.value = false
   } else if (showDrawer) {
     problemsDrawerVisible.value = true
   }
+}
+
+function validationProblemText(problem: ValidationProblem) {
+  return t(`modeler.validation.${problem.code}`, problem.params)
 }
 
 function locateProblem(problem: ValidationProblem) {
@@ -998,7 +1428,7 @@ function toggleSimulation() {
     runValidation(false)
     if (errorCount.value) {
       problemsDrawerVisible.value = true
-      ElMessage.warning('请先处理流程校验错误，再启动模拟')
+      ElMessage.warning(t('designer.validation.fixBeforeSimulation'))
       return
     }
   }
@@ -1040,7 +1470,7 @@ function alignSelection(alignment: Alignment) {
       typeof element.y === 'number',
   )
   if (alignableElements.length < 2) {
-    ElMessage.warning('请至少选择两个元素进行对齐')
+    ElMessage.warning(t('designer.validation.selectTwo'))
     return
   }
   service<AlignElementsService>('alignElements').trigger(alignableElements, alignment)
@@ -1111,7 +1541,7 @@ function downloadBlob(content: string, name: string, mimeType: string) {
 }
 
 function formatTime(value: string) {
-  return new Intl.DateTimeFormat('zh-CN', {
+  return new Intl.DateTimeFormat(locale.value === 'en' ? 'en-US' : 'zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
@@ -1119,15 +1549,42 @@ function formatTime(value: string) {
   }).format(new Date(value))
 }
 
+watch(locale, async () => {
+  const instance = modeler.value
+  if (instance) {
+    const eventBus = instance.get<EventBusService>('eventBus')
+    eventBus.fire('i18n.changed')
+
+    const contextPad = instance.get<ContextPadService>('contextPad')
+    const selection = instance.get<SelectionService>('selection').get()
+    if (contextPad.isOpen() && selection.length) {
+      contextPad.open(selection.length === 1 ? selection[0]! : selection, true)
+    }
+
+    const popupMenu = instance.get<PopupMenuService>('popupMenu')
+    if (popupMenu.isOpen()) popupMenu.refresh()
+  }
+  await nextTick()
+  scheduleModelerDomLocalization()
+})
+
 onMounted(() => {
   window.addEventListener('keydown', handleGlobalKeydown)
   window.addEventListener('beforeunload', handleBeforeUnload)
   document.addEventListener('fullscreenchange', onFullscreenChange)
+  modelerDomObserver = new MutationObserver(scheduleModelerDomLocalization)
+  modelerDomObserver.observe(document.body, {
+    childList: true,
+    subtree: true,
+    characterData: true,
+  })
   void initialize().catch(handleInitializationError)
 })
 
 onBeforeUnmount(() => {
   resizeObserver?.disconnect()
+  modelerDomObserver?.disconnect()
+  if (modelerDomLocalizationFrame) window.cancelAnimationFrame(modelerDomLocalizationFrame)
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
@@ -1176,17 +1633,24 @@ defineExpose({
       <div class="process-heading">
         <div class="flex items-center gap-2">
           <span class="process-name">{{ processName }}</span>
-          <el-tag v-if="dirty" type="warning" size="small" effect="light">未保存</el-tag>
-          <el-tag v-else type="success" size="small" effect="light">已保存</el-tag>
+          <el-tag v-if="dirty" type="warning" size="small" effect="light">
+            {{ t('designer.header.unsaved') }}
+          </el-tag>
+          <el-tag v-else type="success" size="small" effect="light">
+            {{ t('designer.header.saved') }}
+          </el-tag>
         </div>
         <div class="process-id">{{ processId }}</div>
       </div>
 
       <div class="header-status">
+        <div class="header-language"><LanguageSwitcher /></div>
         <div class="status-dot" :class="{ dirty }" />
-        <div>
+        <div class="status-copy">
           <div class="text-xs font-500 text-gray-600">{{ savedStatus }}</div>
-          <div class="mt-1 text-[11px] text-gray-400">Ctrl+S 保存模型</div>
+          <div class="mt-1 text-[11px] text-gray-400">
+            {{ t('designer.header.saveShortcut') }}
+          </div>
         </div>
       </div>
     </header>
@@ -1227,8 +1691,8 @@ defineExpose({
     >
       <el-result
         icon="error"
-        title="无法打开 BPMN 流程模型"
-        :sub-title="initializationError"
+        :title="t('designer.loadError.title')"
+        :sub-title="initializationError ? diagnosticText(initializationError) : ''"
       >
         <template #extra>
           <el-button
@@ -1237,9 +1701,11 @@ defineExpose({
             data-testid="return-from-load-error"
             @click="emit('close')"
           >
-            返回流程模型
+            {{ t('designer.loadError.back') }}
           </el-button>
-          <el-button v-else type="primary" @click="reloadPage">重新加载</el-button>
+          <el-button v-else type="primary" @click="reloadPage">
+            {{ t('designer.loadError.reload') }}
+          </el-button>
         </template>
       </el-result>
     </section>
@@ -1261,7 +1727,7 @@ defineExpose({
         </div>
 
         <div class="canvas-statusbar">
-          <span>当前：{{ selectedLabel }}</span>
+          <span>{{ t('designer.canvas.current', { name: selectedLabel }) }}</span>
           <span class="status-separator" />
           <span>{{ Math.round(zoom * 100) }}%</span>
           <template v-if="importWarnings.length">
@@ -1271,18 +1737,22 @@ defineExpose({
               :disabled="interactionLocked"
               @click="importWarningsDialogVisible = true"
             >
-              {{ importWarnings.length }} 条导入提示
+              {{ t('designer.import.warningCount', { count: importWarnings.length }) }}
             </button>
           </template>
           <template v-if="simulationActive">
             <span class="status-separator" />
-            <span class="text-emerald-600">模拟模式</span>
+            <span class="text-emerald-600">{{ t('designer.canvas.simulationMode') }}</span>
           </template>
         </div>
 
         <button
           class="panel-toggle"
-          :title="propertyPanelVisible ? '收起属性面板' : '展开属性面板'"
+          :title="
+            propertyPanelVisible
+              ? t('designer.canvas.collapseProperties')
+              : t('designer.canvas.expandProperties')
+          "
           :disabled="interactionLocked"
           @click="togglePropertyPanel"
         >
@@ -1325,8 +1795,12 @@ defineExpose({
           <div class="mt-1 text-xs text-gray-400">namespace: http://flowable.org/bpmn</div>
         </div>
         <div>
-          <el-button :icon="CopyDocument" @click="copyXml">复制</el-button>
-          <el-button :icon="Download" :disabled="!ready" @click="exportXml">下载 XML</el-button>
+          <el-button :icon="CopyDocument" @click="copyXml">
+            {{ t('designer.xml.copy') }}
+          </el-button>
+          <el-button :icon="Download" :disabled="!ready" @click="exportXml">
+            {{ t('designer.xml.download') }}
+          </el-button>
         </div>
       </div>
       <el-input
@@ -1338,42 +1812,47 @@ defineExpose({
         spellcheck="false"
       />
       <template #footer>
-        <el-button @click="xmlDialogVisible = false">关闭</el-button>
+        <el-button @click="xmlDialogVisible = false">{{ t('designer.xml.close') }}</el-button>
       </template>
     </el-dialog>
 
-    <el-dialog v-model="previewDialogVisible" title="流程预览" width="84%" top="5vh">
+    <el-dialog
+      v-model="previewDialogVisible"
+      :title="t('designer.preview.title')"
+      width="84%"
+      top="5vh"
+    >
       <div class="preview-surface" v-html="previewSvg" />
       <template #footer>
-        <el-button @click="previewDialogVisible = false">关闭</el-button>
+        <el-button @click="previewDialogVisible = false">{{ t('designer.xml.close') }}</el-button>
         <el-button type="primary" :icon="Download" :disabled="!ready" @click="exportSvg">
-          下载 SVG
+          {{ t('designer.preview.download') }}
         </el-button>
       </template>
     </el-dialog>
 
     <el-dialog
       v-model="leaveDialogVisible"
-      title="返回流程模型"
+      :title="t('designer.leave.title')"
       width="min(460px, calc(100vw - 32px))"
       :close-on-click-modal="false"
       @closed="handleLeaveDialogClosed"
     >
-      <p class="leave-dialog-message">当前流程有未保存更改。</p>
+      <p class="leave-dialog-message">{{ t('designer.leave.message') }}</p>
       <template #footer>
-        <el-button @click="chooseLeaveDecision('stay')">继续编辑</el-button>
+        <el-button @click="chooseLeaveDecision('stay')">{{ t('designer.leave.stay') }}</el-button>
         <el-button type="danger" plain @click="chooseLeaveDecision('discard')">
-          放弃更改
+          {{ t('designer.leave.discard') }}
         </el-button>
         <el-button type="primary" @click="chooseLeaveDecision('save')">
-          保存并返回
+          {{ t('designer.leave.saveAndReturn') }}
         </el-button>
       </template>
     </el-dialog>
 
     <el-dialog
       v-model="importWarningsDialogVisible"
-      title="BPMN 导入提示"
+      :title="t('designer.import.dialogTitle')"
       width="min(680px, calc(100vw - 32px))"
       top="8vh"
     >
@@ -1382,30 +1861,36 @@ defineExpose({
         type="warning"
         :closable="false"
         show-icon
-        title="提示可能包含自动兼容处理或未识别 XML；请在保存前确认导出结果。"
+        :title="t('designer.import.dialogDescription')"
       />
       <div class="import-warning-list">
         <div v-for="(warning, index) in importWarnings" :key="index" class="import-warning-item">
           <span>{{ index + 1 }}</span>
-          <code>{{ warning }}</code>
+          <code>{{ diagnosticText(warning) }}</code>
         </div>
       </div>
       <template #footer>
-        <el-button type="primary" @click="importWarningsDialogVisible = false">知道了</el-button>
+        <el-button type="primary" @click="importWarningsDialogVisible = false">
+          {{ t('designer.import.acknowledge') }}
+        </el-button>
       </template>
     </el-dialog>
 
-    <el-drawer v-model="problemsDrawerVisible" title="流程校验" size="430px">
+    <el-drawer
+      v-model="problemsDrawerVisible"
+      :title="t('designer.validation.title')"
+      size="430px"
+    >
       <div class="validation-summary">
         <div class="validation-number error">{{ errorCount }}</div>
         <div>
-          <div class="text-sm font-600">错误</div>
-          <div class="text-xs text-gray-400">必须处理后再部署或模拟</div>
+          <div class="text-sm font-600">{{ t('designer.validation.errors') }}</div>
+          <div class="text-xs text-gray-400">{{ t('designer.validation.errorsHelp') }}</div>
         </div>
         <div class="validation-number warning">{{ warningCount }}</div>
         <div>
-          <div class="text-sm font-600">警告</div>
-          <div class="text-xs text-gray-400">建议检查流程设计意图</div>
+          <div class="text-sm font-600">{{ t('designer.validation.warnings') }}</div>
+          <div class="text-xs text-gray-400">{{ t('designer.validation.warningsHelp') }}</div>
         </div>
       </div>
 
@@ -1422,22 +1907,24 @@ defineExpose({
             <CircleCheck v-else />
           </el-icon>
           <span class="min-w-0 flex-1 text-left">
-            <span class="block text-sm text-gray-700">{{ problem.message }}</span>
+            <span class="block text-sm text-gray-700">{{ validationProblemText(problem) }}</span>
             <span class="mt-1 block truncate text-xs text-gray-400">
               {{ problem.elementName }} · {{ problem.elementId }}
             </span>
           </span>
-          <span class="text-xs text-blue-500">定位</span>
+          <span class="text-xs text-blue-500">{{ t('designer.validation.locate') }}</span>
         </button>
       </div>
-      <el-empty v-else description="流程校验通过" />
+      <el-empty v-else :description="t('designer.validation.passed')" />
 
       <template #footer>
         <div class="flex items-center justify-between">
           <span class="flex items-center gap-1 text-xs text-gray-400">
-            <el-icon><Clock /></el-icon> 校验结果会在修改后自动清除
+            <el-icon><Clock /></el-icon> {{ t('designer.validation.autoClear') }}
           </span>
-          <el-button type="primary" :disabled="!ready" @click="runValidation">重新校验</el-button>
+          <el-button type="primary" :disabled="!ready" @click="runValidation">
+            {{ t('designer.validation.revalidate') }}
+          </el-button>
         </div>
       </template>
     </el-drawer>
@@ -1854,7 +2341,7 @@ defineExpose({
 @media (max-width: 767px) {
   .designer-header {
     min-height: 58px;
-    grid-template-columns: minmax(0, 1fr) auto;
+    grid-template-columns: minmax(0, 1fr) auto auto;
     padding: 0 12px;
     gap: 10px;
   }
@@ -1877,7 +2364,9 @@ defineExpose({
   }
   .process-id { max-width: 150px; }
   .process-heading :deep(.el-tag) { display: none; }
-  .header-status { display: none; }
+  .header-status { gap: 0; }
+  .header-status .status-dot,
+  .header-status .status-copy { display: none; }
 
   .designer-main { position: relative; }
   .property-panel-host {

@@ -1,5 +1,6 @@
 import { inject, type InjectionKey, type Ref } from 'vue'
 
+import { translate } from '@/i18n'
 import type {
   ModelerCredentials,
   ProcessModel,
@@ -50,6 +51,6 @@ export const modelerApplicationKey: InjectionKey<ModelerApplication> = Symbol(
 
 export function useModelerApplication() {
   const application = inject(modelerApplicationKey)
-  if (!application) throw new Error('Flowable Modeler 应用上下文尚未初始化')
+  if (!application) throw new Error(translate('modeler.errors.applicationContextMissing'))
   return application
 }

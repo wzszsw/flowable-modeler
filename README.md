@@ -18,6 +18,7 @@ bpmn-js BPMN XML  -> 浏览器转换 -> Oryx JSON -> /modeler-app/rest
   Axios 实例及请求/响应拦截器集中处理。
 - 用户名和密码只用于登录请求，不由应用持久化或保存在 API 客户端中。
 - 不使用 localStorage、sessionStorage 或 IndexedDB。
+- 界面支持简体中文和英语，语言选择保存在 URL 的 `lang` 参数中，不写入浏览器存储。
 - 登录态由 Flowable 签发的 HttpOnly `FLOWABLE_REMEMBER_ME` Cookie 维护，刷新页面会恢复会话。
 - 退出登录调用官方 `/app/logout` 并清除该 Cookie。
 - Oryx JSON 与 BPMN XML 的转换完全在浏览器中完成，不调用后端导入转换接口。
@@ -30,6 +31,7 @@ shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明�
 ## 功能
 
 - Flowable UI 风格登录页和流程模型列表
+- 简体中文/英语界面及运行时语言切换
 - 流程模型的新建、导入、搜索、排序、打开和删除
 - BPMN 原生工具栏、上下文菜单、拖拽、框选与连线
 - Flowable 属性面板和扩展 namespace `http://flowable.org/bpmn`
@@ -106,8 +108,12 @@ D:\IdeaProjects\flowable-lab\src\main\resources\static\flowable-modeler
 
 ```text
 http://127.0.0.1:8080/flowable-modeler/index.html
+http://127.0.0.1:8080/flowable-modeler/index.html#/processes?lang=en
 http://127.0.0.1:8080/flowable-modeler/index.html#/processes/{modelId}
 ```
+
+未指定 `lang` 时默认使用简体中文。可通过界面中的语言菜单切换，也可在 hash 路由查询中使用
+`?lang=zh-CN` 或 `?lang=en`；语言由 Vue Router 管理，因此页面刷新、流程路由跳转和浏览器前进/后退都会保持同步。
 
 ## 验证
 
@@ -122,7 +128,7 @@ npm run test:real-backend
 
 `test:smoke` 会使用本机 Chromium 浏览器验证登录、Vue Router 深链与编辑器刷新恢复、官方 API
 契约、模型列表、创建、Oryx 打开与保存、冲突处理、浏览器端导入、失败回滚、删除、嵌入模式以及
-零浏览器存储访问。
+中英文切换、语言刷新恢复和零浏览器存储访问。
 
 `test:flowable` 使用本地 Flowable 6.8.1 `BpmnXMLConverter` 对测试产物做引擎级解析和
 往返检查。Flowable 源码不在默认位置时可以给 `scripts/check-flowable.ps1` 传入

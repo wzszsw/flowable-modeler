@@ -18,9 +18,34 @@
         aria-atomic="true"
       >
         <span class="app-bootstrap-spinner" aria-hidden="true"></span>
-        <span>正在加载 Flowable Modeler...</span>
+        <span id="app-bootstrap-loading-text">正在加载 Flowable Modeler...</span>
       </div>
     </div>
+    <script>
+      (() => {
+        const url = new URL(window.location.href)
+        const hashQueryIndex = url.hash.indexOf('?')
+        const hashLanguage = hashQueryIndex >= 0
+          ? new URLSearchParams(url.hash.slice(hashQueryIndex + 1).split('#', 1)[0]).get('lang')
+          : null
+        const normalizeLanguage = (value) => {
+          const language = value?.trim().toLowerCase()
+          if (language === 'zh' || language === 'zh-cn' || language === 'zh-hans') return 'zh-CN'
+          if (language === 'en' || language?.startsWith('en-')) return 'en'
+          return null
+        }
+        const language = normalizeLanguage(hashLanguage)
+          ?? normalizeLanguage(url.searchParams.get('lang'))
+          ?? 'zh-CN'
+        if (language !== 'en') return
+        document.documentElement.lang = 'en'
+        document
+          .querySelector('meta[name="description"]')
+          ?.setAttribute('content', 'A Flowable BPMN 2.0 process modeler powered by bpmn-js')
+        const loadingText = document.querySelector('#app-bootstrap-loading-text')
+        if (loadingText) loadingText.textContent = 'Loading Flowable Modeler...'
+      })()
+    </script>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

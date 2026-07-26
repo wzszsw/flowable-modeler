@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
@@ -14,7 +14,9 @@ import {
   Upload,
   Workflow,
 } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
 
+import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
 import { parseBpmnMetadata } from '@/modeler/bpmnMetadata'
 import type { ModelSort, ProcessModel, ProcessModelQuery } from '@/modeler/modelerApi'
 
@@ -35,7 +37,7 @@ interface ModelCreateForm {
   description: string
 }
 
-defineProps<{
+const props = defineProps<{
   models: readonly ProcessModel[]
   total: number
   username: string
@@ -51,6 +53,7 @@ const emit = defineEmits<{
   logout: []
 }>()
 
+const { locale, t } = useI18n()
 const SEARCH_DEBOUNCE_MS = 500
 const PROCESS_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
 
@@ -65,24 +68,38 @@ const createForm = reactive<ModelCreateForm>({
   description: '',
 })
 
-const createRules: FormRules<ModelCreateForm> = {
-  name: [{ required: true, whitespace: true, message: '请输入流程名称', trigger: 'blur' }],
-  key: [
-    { required: true, whitespace: true, message: '请输入流程标识', trigger: 'blur' },
+const createRules = computed<FormRules<ModelCreateForm>>(() => ({
+  name: [
     {
-      pattern: PROCESS_KEY_PATTERN,
-      message: '以字母或下划线开头，仅可包含字母、数字、点、短横线和下划线',
+      required: true,
+      whitespace: true,
+      message: t('shell.models.nameRequired'),
       trigger: 'blur',
     },
   ],
-}
+  key: [
+    {
+      required: true,
+      whitespace: true,
+      message: t('shell.models.keyRequired'),
+      trigger: 'blur',
+    },
+    {
+      pattern: PROCESS_KEY_PATTERN,
+      message: t('shell.models.keyPattern'),
+      trigger: 'blur',
+    },
+  ],
+}))
 
-const sortOptions: Array<{ value: ModelSort; label: string }> = [
-  { value: 'modifiedDesc', label: '最近修改' },
-  { value: 'modifiedAsc', label: '最早修改' },
-  { value: 'nameAsc', label: '名称 A-Z' },
-  { value: 'nameDesc', label: '名称 Z-A' },
-]
+const sortOptions = computed<Array<{ value: ModelSort; label: string }>>(() => [
+  { value: 'modifiedDesc', label: t('shell.models.sort.modifiedDesc') },
+  { value: 'modifiedAsc', label: t('shell.models.sort.modifiedAsc') },
+  { value: 'nameAsc', label: t('shell.models.sort.nameAsc') },
+  { value: 'nameDesc', label: t('shell.models.sort.nameDesc') },
+])
+
+const modelCountLabel = computed(() => t('shell.models.count', props.total))
 
 let searchTimer: ReturnType<typeof setTimeout> | undefined
 
@@ -108,20 +125,24 @@ watch(sortMode, () => {
   clearSearchTimer()
   emit('queryChange', currentQuery())
 })
+watch(locale, () => createFormRef.value?.clearValidate())
 onBeforeUnmount(clearSearchTimer)
 
-const dateTimeFormatter = new Intl.DateTimeFormat('zh-CN', {
-  year: 'numeric',
-  month: '2-digit',
-  day: '2-digit',
-  hour: '2-digit',
-  minute: '2-digit',
-  hour12: false,
-})
+const dateTimeFormatter = computed(
+  () =>
+    new Intl.DateTimeFormat(locale.value, {
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+      hour12: false,
+    }),
+)
 
 function formatDateTime(value: string) {
   const timestamp = Date.parse(value)
-  return Number.isNaN(timestamp) ? value : dateTimeFormatter.format(timestamp)
+  return Number.isNaN(timestamp) ? value : dateTimeFormatter.value.format(timestamp)
 }
 
 function resetCreateForm() {
@@ -173,20 +194,20 @@ async function handleImportFile(event: Event) {
       ...metadata,
     })
   } catch (error) {
-    const detail = error instanceof Error ? error.message : '无法读取 BPMN 文件'
-    ElMessage.error(`导入失败：${detail}`)
+    const detail = error instanceof Error ? error.message : t('shell.models.fileReadFailed')
+    ElMessage.error(t('shell.models.importError', { detail }))
   }
 }
 
 async function confirmDelete(model: ProcessModel) {
   try {
     await ElMessageBox.confirm(
-      `删除后无法恢复，确定删除“${model.name}”吗？`,
-      '删除流程模型',
+      t('shell.models.deleteConfirm', { name: model.name }),
+      t('shell.models.deleteTitle'),
       {
         type: 'warning',
-        confirmButtonText: '删除',
-        cancelButtonText: '取消',
+        confirmButtonText: t('shell.common.delete'),
+        cancelButtonText: t('shell.common.cancel'),
         confirmButtonClass: 'el-button--danger',
       },
     )
@@ -205,16 +226,17 @@ async function confirmDelete(model: ProcessModel) {
           <span class="brand-mark" aria-hidden="true"><Workflow :size="20" /></span>
           <span>
             <span class="brand-title">Flowable Modeler</span>
-            <span class="brand-subtitle">BPMN 2.0 模型</span>
+            <span class="brand-subtitle">{{ t('shell.models.subtitle') }}</span>
           </span>
         </div>
         <div class="header-actions">
+          <LanguageSwitcher />
           <span class="signed-in-user" :title="username">{{ username }}</span>
-          <el-tooltip content="刷新模型" placement="bottom">
+          <el-tooltip :content="t('shell.models.refresh')" placement="bottom">
             <el-button
               :icon="RefreshCw"
               circle
-              aria-label="刷新模型"
+              :aria-label="t('shell.models.refresh')"
               data-testid="refresh-models"
               @click="emit('refresh')"
             />
@@ -222,25 +244,25 @@ async function confirmDelete(model: ProcessModel) {
           <el-button
             data-testid="import-model"
             :icon="Upload"
-            aria-label="导入 BPMN"
+            :aria-label="t('shell.models.import')"
             @click="chooseImportFile"
           >
-            导入 BPMN
+            {{ t('shell.models.import') }}
           </el-button>
           <el-button
             type="primary"
             :icon="Plus"
             data-testid="create-model"
-            aria-label="新建 BPMN 流程"
+            :aria-label="t('shell.models.createAria')"
             @click="openCreateDialog"
           >
-            新建流程
+            {{ t('shell.models.create') }}
           </el-button>
-          <el-tooltip content="退出登录" placement="bottom">
+          <el-tooltip :content="t('shell.models.logout')" placement="bottom">
             <el-button
               :icon="LogOut"
               circle
-              aria-label="退出登录"
+              :aria-label="t('shell.models.logout')"
               data-testid="logout"
               @click="emit('logout')"
             />
@@ -252,8 +274,8 @@ async function confirmDelete(model: ProcessModel) {
     <main class="page-main">
       <div class="list-heading">
         <div>
-          <h1>流程模型</h1>
-          <p>{{ total }} 个 BPMN 模型</p>
+          <h1>{{ t('shell.models.title') }}</h1>
+          <p>{{ modelCountLabel }}</p>
         </div>
         <div class="list-controls">
           <el-input
@@ -262,14 +284,14 @@ async function confirmDelete(model: ProcessModel) {
             :prefix-icon="Search"
             clearable
             data-testid="model-search"
-            placeholder="搜索"
-            aria-label="搜索流程模型"
+            :placeholder="t('shell.models.search')"
+            :aria-label="t('shell.models.searchAria')"
           />
           <el-select
             v-model="sortMode"
             class="sort-select"
             data-testid="model-sort"
-            aria-label="模型排序方式"
+            :aria-label="t('shell.models.sortAria')"
           >
             <template #prefix><ArrowUpDown :size="15" /></template>
             <el-option
@@ -285,13 +307,13 @@ async function confirmDelete(model: ProcessModel) {
       <section
         class="model-list"
         data-testid="model-list"
-        aria-label="BPMN 流程模型列表"
+        :aria-label="t('shell.models.listAria')"
       >
         <div v-if="models.length" class="table-heading" aria-hidden="true">
-          <span>名称</span>
-          <span>流程标识</span>
-          <span>修改时间</span>
-          <span>操作</span>
+          <span>{{ t('shell.models.columns.name') }}</span>
+          <span>{{ t('shell.models.columns.key') }}</span>
+          <span>{{ t('shell.models.columns.modified') }}</span>
+          <span>{{ t('shell.models.columns.actions') }}</span>
         </div>
 
         <div
@@ -305,13 +327,15 @@ async function confirmDelete(model: ProcessModel) {
             type="button"
             class="model-identity"
             data-testid="model-primary-open"
-            :aria-label="`打开模型 ${model.name}`"
+            :aria-label="t('shell.models.openAria', { name: model.name })"
             @click="emit('open', model.id)"
           >
             <span class="model-icon" aria-hidden="true"><FileText :size="19" /></span>
             <span class="model-copy">
               <strong data-testid="model-title">{{ model.name }}</strong>
-              <span>{{ model.description || `版本 ${model.version}` }}</span>
+              <span>
+                {{ model.description || t('shell.models.version', { version: model.version }) }}
+              </span>
             </span>
           </button>
           <code class="model-key">{{ model.key }}</code>
@@ -323,18 +347,18 @@ async function confirmDelete(model: ProcessModel) {
               text
               :icon="FolderOpen"
               data-testid="open-model"
-              :aria-label="`打开模型 ${model.name}`"
+              :aria-label="t('shell.models.openAria', { name: model.name })"
               @click.stop="emit('open', model.id)"
             >
-              打开
+              {{ t('shell.models.open') }}
             </el-button>
-            <el-tooltip content="删除模型" placement="top">
+            <el-tooltip :content="t('shell.models.delete')" placement="top">
               <el-button
                 text
                 type="danger"
                 :icon="Trash2"
                 data-testid="delete-model"
-                :aria-label="`删除模型 ${model.name}`"
+                :aria-label="t('shell.models.deleteAria', { name: model.name })"
                 @click.stop="confirmDelete(model)"
               />
             </el-tooltip>
@@ -343,26 +367,28 @@ async function confirmDelete(model: ProcessModel) {
 
         <div v-if="!models.length" class="empty-state" data-testid="model-list-empty">
           <el-empty
-            :description="searchQuery ? '没有匹配的流程模型' : '还没有 BPMN 流程模型'"
+            :description="searchQuery ? t('shell.models.noMatches') : t('shell.models.empty')"
             :image-size="92"
           >
-            <el-button v-if="searchQuery" @click="searchQuery = ''">清除搜索</el-button>
+            <el-button v-if="searchQuery" @click="searchQuery = ''">
+              {{ t('shell.models.clearSearch') }}
+            </el-button>
             <div v-else class="empty-actions">
               <el-button
                 :icon="Upload"
                 data-testid="empty-import-model"
-                aria-label="导入 BPMN"
+                :aria-label="t('shell.models.import')"
                 @click="chooseImportFile"
               >
-                导入 BPMN
+                {{ t('shell.models.import') }}
               </el-button>
               <el-button
                 type="primary"
                 :icon="Plus"
-                aria-label="新建 BPMN 流程"
+                :aria-label="t('shell.models.createAria')"
                 @click="openCreateDialog"
               >
-                新建流程
+                {{ t('shell.models.create') }}
               </el-button>
             </div>
           </el-empty>
@@ -383,7 +409,7 @@ async function confirmDelete(model: ProcessModel) {
       v-model="createDialogVisible"
       class="model-create-dialog"
       width="min(520px, calc(100vw - 32px))"
-      title="新建 BPMN 流程"
+      :title="t('shell.models.createDialogTitle')"
       data-testid="model-create-dialog"
       :teleported="false"
       @closed="resetCreateForm"
@@ -395,7 +421,7 @@ async function confirmDelete(model: ProcessModel) {
         label-position="top"
         @submit.prevent="submitCreate"
       >
-        <el-form-item label="流程名称" prop="name">
+        <el-form-item :label="t('shell.models.name')" prop="name">
           <el-input
             v-model="createForm.name"
             data-testid="model-create-name"
@@ -404,7 +430,7 @@ async function confirmDelete(model: ProcessModel) {
             autocomplete="off"
           />
         </el-form-item>
-        <el-form-item label="流程标识" prop="key">
+        <el-form-item :label="t('shell.models.key')" prop="key">
           <el-input
             v-model="createForm.key"
             data-testid="model-create-key"
@@ -412,7 +438,7 @@ async function confirmDelete(model: ProcessModel) {
             autocomplete="off"
           />
         </el-form-item>
-        <el-form-item label="描述" prop="description">
+        <el-form-item :label="t('shell.models.description')" prop="description">
           <el-input
             v-model="createForm.description"
             type="textarea"
@@ -425,13 +451,13 @@ async function confirmDelete(model: ProcessModel) {
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createDialogVisible = false">取消</el-button>
+        <el-button @click="createDialogVisible = false">{{ t('shell.common.cancel') }}</el-button>
         <el-button
           type="primary"
           data-testid="confirm-create-model"
           @click="submitCreate"
         >
-          创建并打开
+          {{ t('shell.models.createAndOpen') }}
         </el-button>
       </template>
     </el-dialog>
@@ -549,7 +575,7 @@ async function confirmDelete(model: ProcessModel) {
 
 .list-controls {
   display: flex;
-  width: min(100%, 510px);
+  width: min(100%, 580px);
   align-items: center;
   gap: 10px;
 }
@@ -560,8 +586,8 @@ async function confirmDelete(model: ProcessModel) {
 }
 
 .sort-select {
-  width: 146px;
-  flex: 0 0 146px;
+  width: 220px;
+  flex: 0 0 220px;
 }
 
 .model-list {
@@ -801,7 +827,7 @@ async function confirmDelete(model: ProcessModel) {
     display: none;
   }
 
-  .header-actions :deep(.el-button span) {
+  .header-actions :deep(.el-button:not(.language-trigger) span) {
     display: none;
   }
 

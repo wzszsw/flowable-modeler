@@ -9,6 +9,7 @@ import {
 } from 'vue-router'
 
 import BpmnDesigner from '@/components/designer/BpmnDesigner.vue'
+import { translate } from '@/i18n'
 import { useModelerApplication } from '@/modeler/modelerApplication'
 import { ROUTE_NAMES } from '@/routes'
 
@@ -57,7 +58,7 @@ async function loadRouteModel() {
 async function closeEditor() {
   bypassLeaveConfirmation = true
   try {
-    await router.push({ name: ROUTE_NAMES.processes })
+    await router.push({ name: ROUTE_NAMES.processes, query: route.query })
   } finally {
     bypassLeaveConfirmation = false
   }
@@ -75,7 +76,9 @@ function restoreRejectedRoute(from: RouteLocationNormalized) {
         force: true,
       })
       .catch((error: unknown) => {
-        ElMessage.error(error instanceof Error ? error.message : '无法恢复编辑器地址')
+        ElMessage.error(
+          error instanceof Error ? error.message : translate('shell.editor.restoreAddressFailed'),
+        )
       })
   }
 
@@ -92,7 +95,9 @@ onBeforeRouteLeave(async (_to, from) => {
   try {
     canLeave = await designerRef.value.confirmClose()
   } catch (error) {
-    ElMessage.error(error instanceof Error ? error.message : '无法确认是否离开编辑器')
+    ElMessage.error(
+      error instanceof Error ? error.message : translate('shell.editor.confirmLeaveFailed'),
+    )
   }
   if (!canLeave) restoreRejectedRoute(from)
   return canLeave

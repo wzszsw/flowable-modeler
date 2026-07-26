@@ -39,11 +39,14 @@ export interface DiagramElement {
 }
 
 export type ValidationLevel = 'error' | 'warning'
+export type ValidationParams = Record<string, string | number>
 
 export interface ValidationProblem {
   id: string
   elementId: string
   elementName: string
   level: ValidationLevel
+  code: string
+  params: ValidationParams
   message: string
 }
