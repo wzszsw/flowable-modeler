@@ -92,6 +92,9 @@ npm install
 npm run dev
 ```
 
+开发服务器会把 `/app/**` 和 `/modeler-app/**` 请求代理到
+`http://localhost:8080`，因此本地调试前需要先启动 `D:\IdeaProjects\flowable-lab`。
+
 Flowable 7 已移除表单能力，因此表单属性面板默认关闭。只有仍使用 Flowable 6 表单能力的部署才应
 在 Vite 构建环境中显式开启：
 
@@ -108,11 +111,13 @@ VITE_FLOWABLE_FORMS_ENABLED=true
 npm run build
 ```
 
-Vite 使用相对资源路径，产物可部署到后端：
+Vite 使用相对资源路径，并将生产构建产物直接输出到后端：
 
 ```text
 D:\IdeaProjects\flowable-lab\src\main\resources\static\flowable-modeler
 ```
+
+每次生产构建都会先清理这个 `flowable-modeler` 目录中的旧产物，不影响同级的其他静态资源。
 
 部署后访问：
 

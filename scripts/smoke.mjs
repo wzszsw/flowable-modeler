@@ -1,10 +1,22 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { spawn, spawnSync } from 'node:child_process'
+import { resolve } from 'node:path'
 
 import { chromium } from 'playwright-core'
 
 const port = 4174
 const origin = `http://127.0.0.1:${port}`
+const buildOutputDirectory = resolve(
+  '..',
+  '..',
+  'IdeaProjects',
+  'flowable-lab',
+  'src',
+  'main',
+  'resources',
+  'static',
+  'flowable-modeler',
+)
 const p0ExtensionXml = readFileSync(
   'scripts/fixtures/flowable-p0-extensions.bpmn20.xml',
   'utf8',
@@ -400,7 +412,7 @@ function assert(condition, message) {
   if (!condition) throw new Error(message)
 }
 
-const builtIndexHtml = readFileSync('dist/index.html', 'utf8')
+const builtIndexHtml = readFileSync(resolve(buildOutputDirectory, 'index.html'), 'utf8')
 const builtEntryMatch = builtIndexHtml.match(
   /<script[^>]+type="module"[^>]+src="([^"]*\/assets\/index-[^"]+\.js)"/,
 )
