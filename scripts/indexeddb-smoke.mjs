@@ -140,7 +140,15 @@ try {
   assert(
     createdModels.length === 1 &&
       createdModels[0].name === 'Local & Smoke' &&
-      createdModels[0].editorModel?.properties?.process_id === 'Process_local_smoke',
+      createdModels[0].editorModel?.properties?.process_id === 'Process_local_smoke' &&
+      createdModels[0].editorModel?.properties?.documentation === 'IndexedDB model' &&
+      createdModels[0].editorModel?.childShapes?.length === 1 &&
+      createdModels[0].editorModel.childShapes[0]?.resourceId === 'startEvent1' &&
+      createdModels[0].editorModel.childShapes[0]?.stencil?.id === 'StartNoneEvent' &&
+      createdModels[0].editorModel.childShapes[0]?.bounds?.upperLeft?.x === 100 &&
+      createdModels[0].editorModel.childShapes[0]?.bounds?.upperLeft?.y === 163 &&
+      createdModels[0].editorModel.childShapes[0]?.bounds?.lowerRight?.x === 130 &&
+      createdModels[0].editorModel.childShapes[0]?.bounds?.lowerRight?.y === 193,
     `新建模型未正确写入 IndexedDB：${JSON.stringify(createdModels)}`,
   )
 

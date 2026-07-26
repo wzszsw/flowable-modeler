@@ -1,4 +1,4 @@
-import { createDefaultDiagram } from './defaultDiagram'
+import { createNewProcessDiagram } from './defaultDiagram'
 import {
   BPMN_MODEL_TYPE,
   ModelerApiError,
@@ -163,7 +163,9 @@ export class IndexedDbModelerApi {
   async createModel(input: CreateProcessModelInput) {
     const id = crypto.randomUUID()
     const lastUpdated = nextUpdatedAt()
-    const editorModel = await bpmnXmlToOryxJson(createDefaultDiagram(input.key, input.name))
+    const editorModel = await bpmnXmlToOryxJson(
+      createNewProcessDiagram(input.key, input.name, input.description),
+    )
     const record: StoredProcessModel = {
       id,
       name: input.name,
