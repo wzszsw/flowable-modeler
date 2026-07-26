@@ -10,7 +10,6 @@ import {
   FullScreen,
   RefreshLeft,
   RefreshRight,
-  Upload,
   VideoPause,
   VideoPlay,
   View,
@@ -37,14 +36,12 @@ defineProps<{
   zoom: number
   simulationActive: boolean
   problemCount: number
-  embedded: boolean
   saving: boolean
 }>()
 
 const emit = defineEmits<{
   back: []
   save: []
-  import: []
   exportXml: []
   exportSvg: []
   preview: []
@@ -76,40 +73,28 @@ const alignments = computed<Array<{
 </script>
 
 <template>
-  <div class="designer-toolbar bpmn-toolbar flex items-center gap-1" :class="{ 'is-embedded': embedded }">
-    <template v-if="!embedded">
-      <el-button
-        text
-        :icon="Back"
-        :disabled="!ready"
-        data-testid="back-to-models"
-        @click="emit('back')"
-      >
-        {{ t('designer.toolbar.back') }}
-      </el-button>
-      <el-button
-        type="primary"
-        :disabled="!ready || saving"
-        :loading="saving"
-        data-testid="save-model"
-        @click="emit('save')"
-      >
-        {{ t('designer.toolbar.save') }}
-      </el-button>
-
-      <span class="toolbar-divider" />
-    </template>
-
+  <div class="designer-toolbar bpmn-toolbar flex items-center gap-1">
     <el-button
-      v-if="embedded"
       text
-      :icon="Upload"
       :disabled="!ready"
-      data-testid="import-diagram"
-      @click="emit('import')"
+      :icon="Back"
+      data-testid="back-to-models"
+      @click="emit('back')"
     >
-      {{ t('designer.toolbar.import') }}
+      {{ t('designer.toolbar.back') }}
     </el-button>
+    <el-button
+      type="primary"
+      :disabled="!ready || saving"
+      :loading="saving"
+      data-testid="save-model"
+      @click="emit('save')"
+    >
+      {{ t('designer.toolbar.save') }}
+    </el-button>
+
+    <span class="toolbar-divider" />
+
     <el-dropdown :disabled="!ready" trigger="click">
       <el-button text :icon="Download">{{ t('designer.toolbar.export') }}</el-button>
       <template #dropdown>
@@ -201,12 +186,6 @@ const alignments = computed<Array<{
   background: #fff;
   box-shadow: 0 2px 8px rgb(16 24 40 / 3%);
   z-index: 5;
-}
-
-.designer-toolbar.is-embedded {
-  min-height: 42px;
-  padding-block: 3px;
-  box-shadow: none;
 }
 
 .designer-toolbar :deep(.el-button + .el-button) {

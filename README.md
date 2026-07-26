@@ -6,7 +6,7 @@
 
 ## 架构
 
-独立模式默认不依赖后端，模型元数据和 Oryx 编辑文档保存在浏览器 IndexedDB 中：
+应用默认不依赖后端，模型元数据和 Oryx 编辑文档保存在浏览器 IndexedDB 中：
 
 ```text
 IndexedDB Oryx JSON -> 浏览器转换 -> BPMN XML -> bpmn-js
@@ -45,11 +45,10 @@ shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明�
 - Flowable/BPMN 校验与问题定位
 - `lastUpdated` 乐观锁；冲突时由用户明确选择是否覆盖
 - 未保存返回/离开提示和保存期间操作互斥
-- iframe / `?embedded=1` 嵌入模式
 
 ## 前端路由
 
-独立模式沿用 Flowable UI 的流程术语：
+前端路由沿用 Flowable UI 的流程术语：
 
 ```text
 #/login                    # 仅后端模式
@@ -165,44 +164,13 @@ http://127.0.0.1:8080/flowable-modeler/index.html#/processes/{modelId}
 ```bash
 npm run type-check
 npm run test:moddle
-npm run test:indexeddb
-npm run test:smoke
 npm run test:flowable
 npm run build
-npm run test:real-backend
 ```
-
-`test:indexeddb` 验证默认模式不会请求后端，并覆盖本地模型的新建、保存、刷新恢复和删除。
-
-`test:smoke` 会使用 backend mode 构建，并通过本机 Chromium 浏览器验证登录、Vue Router 深链与编辑器刷新恢复、官方 API
-契约、模型列表、创建、Oryx 打开与保存、冲突处理、浏览器端导入、失败回滚、删除、嵌入模式以及
-中英文切换、语言刷新恢复和零浏览器存储访问。
 
 `test:flowable` 使用本地 Flowable 6.8.1 `BpmnXMLConverter` 对测试产物做引擎级解析和
 往返检查。Flowable 源码不在默认位置时可以给 `scripts/check-flowable.ps1` 传入
 `-FlowableRoot`。
-
-`test:real-backend` 要求 `flowable-lab` 已在 8080 启动，默认验证
-`http://127.0.0.1:8080/flowable-modeler/index.html`。它会在真实浏览器中验证 Flowable UI
-Cookie 登录、刷新恢复、注销、模型 CRUD、浏览器端双向转换和零 Web Storage 持久化，并在
-结束时删除测试模型。
-
-## 集成桥
-
-设计器初始化完成后触发 `flowable-modeler-ready`，并暴露：
-
-```ts
-window.bpmnModeler
-
-window.flowableProcessModeler?.getXML()
-const result = await window.flowableProcessModeler?.importXML(xml, fileName)
-result?.warnings
-window.flowableProcessModeler?.validate()
-await window.flowableProcessModeler?.saveModel()
-```
-
-嵌入模式直接进入编辑器，不显示登录页和模型列表。宿主通过 `getXML()` 获取 XML 并负责
-持久化；未提供 `persistModel` 时调用 `saveModel()` 会明确拒绝。
 
 ## 转换边界
 

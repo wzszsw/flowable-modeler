@@ -7,7 +7,6 @@ import {
   setLocale,
   type AppLocale,
 } from '@/i18n'
-import { isEmbeddedMode } from '@/modeler/integration'
 import { ROUTE_NAMES } from '@/routes'
 
 function hashHistoryBase() {
@@ -29,14 +28,7 @@ export const router = createRouter({
   routes: [
     {
       path: '/',
-      redirect: () => ({
-        name: isEmbeddedMode() ? ROUTE_NAMES.embedded : ROUTE_NAMES.processes,
-      }),
-    },
-    {
-      path: '/embedded',
-      name: ROUTE_NAMES.embedded,
-      component: () => import('@/views/EmbeddedModelerPage.vue'),
+      redirect: { name: ROUTE_NAMES.processes },
     },
     {
       path: '/login',

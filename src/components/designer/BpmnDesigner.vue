@@ -25,9 +25,7 @@ import {
   type BpmnJsCatalogKey,
 } from '@/i18n/locales/designer'
 import flowableDescriptor from '@/modeler/flowableDescriptor'
-import { createDefaultDiagram } from '@/modeler/defaultDiagram'
 import { FLOWABLE_FORMS_ENABLED } from '@/config/features'
-import { isEmbeddedMode } from '@/modeler/integration'
 import type { BpmnBusinessObject, DiagramElement, ValidationProblem } from '@/modeler/types'
 import { validateElements } from '@/modeler/validation'
 import { normalizeLegacyActivitiNamespace } from '@/modeler/xmlCompatibility'
@@ -145,10 +143,10 @@ class DesignerDiagnosticError extends Error {
 const { t, locale } = useI18n()
 
 const props = defineProps<{
-  initialXml?: string
+  initialXml: string
   initialFileName?: string
   initialSavedAt?: string
-  persistModel?: (snapshot: ModelSnapshot) => Promise<ModelPersistenceResult>
+  persistModel: (snapshot: ModelSnapshot) => Promise<ModelPersistenceResult>
 }>()
 
 const emit = defineEmits<{
@@ -197,8 +195,6 @@ const modeler = shallowRef<Modeler | null>(null)
 const rootElement = shallowRef<DiagramElement | null>(null)
 const selectedElement = shallowRef<DiagramElement | null>(null)
 const selectedElements = shallowRef<DiagramElement[]>([])
-const embeddedMode = isEmbeddedMode()
-
 const ready = ref(false)
 const loading = ref(true)
 const loadingMessageKey = ref('designer.loading.initializing')
@@ -935,24 +931,6 @@ function bindModelerEvents(instance: Modeler) {
   })
 }
 
-function exposeIntegrationBridge(instance: Modeler) {
-  nativeImportXML = instance.importXML.bind(instance)
-  instance.importXML = ((xml: string, bpmnDiagram?: ImportTarget) =>
-    enqueueDiagramImport(xml, {}, bpmnDiagram)) as NativeImportXML
-  window.bpmnModeler = instance
-  window.flowableProcessModeler = {
-    getXML: getXml,
-    importXML: async (xml: string, importedFileName?: string) => {
-      return importDiagram(xml, { importedFileName, markClean: true })
-    },
-    validate: () => {
-      runValidation(false)
-      return [...problems.value]
-    },
-    saveModel,
-  }
-}
-
 async function performDiagramImport(
   instance: Modeler,
   importXML: NativeImportXML,
@@ -1090,15 +1068,11 @@ async function waitForQueuedImports() {
 }
 
 async function loadInitialDiagram() {
-  if (props.initialXml) {
-    await importDiagram(props.initialXml, {
-      importedFileName: props.initialFileName,
-      reportError: false,
-    })
-    if (props.initialSavedAt) lastSavedAt.value = props.initialSavedAt
-  } else {
-    await importDiagram(createDefaultDiagram())
-  }
+  await importDiagram(props.initialXml, {
+    importedFileName: props.initialFileName,
+    reportError: false,
+  })
+  if (props.initialSavedAt) lastSavedAt.value = props.initialSavedAt
 }
 
 async function initialize() {
@@ -1115,17 +1089,11 @@ async function initialize() {
   })
   modeler.value = markRaw(instance)
   bindModelerEvents(instance)
-  exposeIntegrationBridge(instance)
+  nativeImportXML = instance.importXML.bind(instance)
   await loadInitialDiagram()
   await waitForQueuedImports()
   await nextTick()
   scheduleModelerDomLocalization()
-  window.dispatchEvent(
-    new CustomEvent('flowable-modeler-ready', {
-      detail: window.flowableProcessModeler,
-    }),
-  )
-
   resizeObserver = new ResizeObserver(() => {
     if (!modeler.value) return
     service<CanvasService>('canvas').resized()
@@ -1139,16 +1107,9 @@ function handleInitializationError(error: unknown) {
   initializationError.value = diagnosticFromError(error, 'designer.errors.loadFailed')
 }
 
-function reloadPage() {
-  window.location.reload()
-}
-
 async function performModelSave(showSuccess: boolean) {
   if (!modeler.value) return false
   assertImportStateCoherent()
-  if (!props.persistModel) {
-    throw designerError('designer.errors.embeddedSaveUnsupported')
-  }
   const instance = modeler.value
   saving.value = true
   setModelerKeyboardEnabled(instance, false)
@@ -1224,7 +1185,6 @@ function handleLeaveDialogClosed() {
 }
 
 async function confirmClose() {
-  if (embeddedMode) return false
   if (!isInteractionReady()) {
     ElMessage.warning(t('designer.save.busy'))
     return false
@@ -1490,10 +1450,6 @@ function onFullscreenChange() {
 function handleGlobalKeydown(event: KeyboardEvent) {
   const modifier = event.ctrlKey || event.metaKey
   if (!modifier) return
-  if (embeddedMode && ['s', 'o'].includes(event.key.toLowerCase())) {
-    event.preventDefault()
-    return
-  }
   if (event.key.toLowerCase() === 's') {
     event.preventDefault()
     if (isInteractionReady()) void saveModel()
@@ -1505,7 +1461,7 @@ function handleGlobalKeydown(event: KeyboardEvent) {
 }
 
 function handleBeforeUnload(event: BeforeUnloadEvent) {
-  if (embeddedMode || !dirty.value) return
+  if (!dirty.value) return
   event.preventDefault()
 }
 
@@ -1581,17 +1537,11 @@ onBeforeUnmount(() => {
   window.removeEventListener('keydown', handleGlobalKeydown)
   window.removeEventListener('beforeunload', handleBeforeUnload)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
-  delete window.bpmnModeler
-  delete window.flowableProcessModeler
   nativeImportXML = null
   modeler.value?.destroy()
 })
 
 defineExpose({
-  getXML: getXml,
-  importXML: importDiagram,
-  validate: runValidation,
-  saveModel,
   confirmClose,
 })
 </script>
@@ -1602,13 +1552,12 @@ defineExpose({
     class="designer-shell"
     :class="{
       'is-fullscreen': fullscreenActive,
-      'is-embedded': embeddedMode,
       'is-importing': importPending,
       'is-interaction-locked': interactionLocked,
     }"
     :aria-busy="importPending || saving"
   >
-    <header v-if="!embeddedMode" class="designer-header">
+    <header class="designer-header">
       <div class="brand-block">
         <div class="brand-mark" aria-hidden="true">
           <span class="brand-node node-a" />
@@ -1656,10 +1605,8 @@ defineExpose({
       :zoom="zoom"
       :simulation-active="simulationActive"
       :problem-count="problems.length"
-      :embedded="embeddedMode"
       @back="requestClose"
       @save="saveModel"
-      @import="chooseImportFile"
       @export-xml="exportXml"
       @export-svg="exportSvg"
       @export-png="exportPng"
@@ -1689,15 +1636,11 @@ defineExpose({
       >
         <template #extra>
           <el-button
-            v-if="!embeddedMode"
             type="primary"
             data-testid="return-from-load-error"
             @click="emit('close')"
           >
             {{ t('designer.loadError.back') }}
-          </el-button>
-          <el-button v-else type="primary" @click="reloadPage">
-            {{ t('designer.loadError.reload') }}
           </el-button>
         </template>
       </el-result>

@@ -10,7 +10,6 @@ import {
   type TranslationParams,
 } from '@/i18n'
 import { parseBpmnMetadata } from '@/modeler/bpmnMetadata'
-import { isEmbeddedMode } from '@/modeler/integration'
 import {
   modelerApplicationKey,
   type CreateModelInput,
@@ -28,12 +27,11 @@ import { createModelerClient, type ModelerClient } from '@/modeler/modelerClient
 import { bpmnXmlToOryxJson, oryxJsonToBpmnXml } from '@/modeler/oryxConverter'
 import { ROUTE_NAMES } from '@/routes'
 
-const embeddedMode = isEmbeddedMode()
 const route = useRoute()
 const router = useRouter()
 const api = shallowRef<ModelerClient | null>(null)
 const authenticated = ref(false)
-const sessionRestoring = ref(!embeddedMode)
+const sessionRestoring = ref(true)
 const loginError = ref('')
 const loginErrorKey = ref<string | null>(null)
 const loginErrorParams = ref<TranslationParams>({})
@@ -449,12 +447,6 @@ async function deleteModel(id: string) {
 }
 
 async function syncRouteState() {
-  if (embeddedMode) {
-    if (route.name !== ROUTE_NAMES.embedded) {
-      await router.replace({ name: ROUTE_NAMES.embedded })
-    }
-    return
-  }
   if (sessionRestoring.value) return
 
   if (!authenticated.value) {
@@ -465,10 +457,6 @@ async function syncRouteState() {
   if (route.name === ROUTE_NAMES.login) {
     await router.replace(redirectAfterLogin())
     return
-  }
-
-  if (route.name === ROUTE_NAMES.embedded) {
-    await router.replace({ name: ROUTE_NAMES.processes })
   }
 }
 
@@ -517,7 +505,7 @@ watch(
 )
 
 onMounted(() => {
-  if (!embeddedMode) void restoreSession()
+  void restoreSession()
 })
 </script>
 

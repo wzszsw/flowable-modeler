@@ -166,7 +166,6 @@ export const designerZhCN = {
       restoredRootMissing: '原流程定义已恢复，但画布根元素未能重新渲染',
       rollbackDefinitionUnavailable: '导入已替换当前定义，但没有可重新导入的流程快照',
       loadFailed: '无法载入 BPMN 流程模型',
-      embeddedSaveUnsupported: '嵌入模式不支持直接保存，请通过 getXML() 交由宿主持久化',
       xmlNotGenerated: '未生成 BPMN XML',
       saveFailed: '保存失败',
       commitFailed: '无法提交当前编辑内容',
@@ -212,7 +211,6 @@ export const designerZhCN = {
     loadError: {
       title: '无法打开 BPMN 流程模型',
       back: '返回流程模型',
-      reload: '重新加载',
     },
     xml: {
       copy: '复制',
@@ -248,7 +246,6 @@ export const designerZhCN = {
     toolbar: {
       back: '返回模型',
       save: '保存模型',
-      import: '导入',
       export: '导出',
       exportSvg: 'SVG 图片',
       exportPng: 'PNG 图片',
@@ -355,7 +352,6 @@ export const designerEn = {
       restoredRootMissing: 'The original process definition was restored, but its canvas root could not be rendered.',
       rollbackDefinitionUnavailable: 'The import replaced the current definition, but no process snapshot is available to restore.',
       loadFailed: 'Unable to load the BPMN process model.',
-      embeddedSaveUnsupported: 'Direct saving is unavailable in embedded mode. Use getXML() and let the host persist it.',
       xmlNotGenerated: 'No BPMN XML was generated.',
       saveFailed: 'Save failed.',
       commitFailed: 'Unable to commit the current editor value.',
@@ -401,7 +397,6 @@ export const designerEn = {
     loadError: {
       title: 'Unable to open the BPMN process model',
       back: 'Back to process models',
-      reload: 'Reload',
     },
     xml: {
       copy: 'Copy',
@@ -437,7 +432,6 @@ export const designerEn = {
     toolbar: {
       back: 'Back to models',
       save: 'Save model',
-      import: 'Import',
       export: 'Export',
       exportSvg: 'SVG image',
       exportPng: 'PNG image',

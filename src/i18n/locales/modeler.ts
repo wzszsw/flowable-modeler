@@ -1,11 +1,5 @@
 export const modelerZhCN = {
   modeler: {
-    defaultDiagram: {
-      processName: '请假审批流程',
-      startName: '提交申请',
-      approvalName: '部门审批',
-      endName: '流程结束',
-    },
     errors: {
       applicationContextMissing: 'Flowable Modeler 应用上下文尚未初始化',
       bpmnXmlEmpty: 'BPMN XML 内容为空',
@@ -120,12 +114,6 @@ export const modelerZhCN = {
 
 export const modelerEn = {
   modeler: {
-    defaultDiagram: {
-      processName: 'Leave approval process',
-      startName: 'Submit request',
-      approvalName: 'Department approval',
-      endName: 'Process complete',
-    },
     errors: {
       applicationContextMissing: 'The Flowable Modeler application context has not been initialized.',
       bpmnXmlEmpty: 'The BPMN XML is empty.',

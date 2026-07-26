@@ -17,15 +17,3 @@ declare module 'bpmn-moddle' {
     ): Promise<{ xml: string }>
   }
 }
-
-interface FlowableModelerBridge {
-  getXML: () => Promise<string>
-  importXML: (xml: string, fileName?: string) => Promise<{ warnings: unknown[] }>
-  validate: () => import('@/modeler/types').ValidationProblem[]
-  saveModel: () => Promise<void>
-}
-
-interface Window {
-  bpmnModeler?: import('bpmn-js/lib/Modeler').default
-  flowableProcessModeler?: FlowableModelerBridge
-}
