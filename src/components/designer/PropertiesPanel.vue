@@ -169,6 +169,7 @@ type ListenerKind = 'executionListener' | 'taskListener'
 type ListenerImplementationType = 'class' | 'expression' | 'delegateExpression' | 'script'
 type ListenerTransactionPhase = '' | 'before-commit' | 'committed' | 'rolled-back'
 type ListenerResolverType = '' | 'class' | 'expression' | 'delegateExpression'
+const DEFAULT_SCRIPT_LANGUAGE = 'groovy'
 
 const listenerDialogVisible = ref(false)
 const editingListener = shallowRef<BpmnExtensionElement | null>(null)
@@ -177,7 +178,7 @@ const listenerForm = reactive({
   event: 'start',
   implementationType: 'class' as ListenerImplementationType,
   implementation: '',
-  scriptLanguage: '',
+  scriptLanguage: DEFAULT_SCRIPT_LANGUAGE,
   scriptResultVariable: '',
   scriptBody: '',
   onTransaction: '' as ListenerTransactionPhase,
@@ -1466,7 +1467,7 @@ function resetListenerForm(kind: ListenerKind) {
   listenerForm.event = kind === 'taskListener' ? 'create' : isSequenceFlow.value ? 'take' : 'start'
   listenerForm.implementationType = 'class'
   listenerForm.implementation = ''
-  listenerForm.scriptLanguage = ''
+  listenerForm.scriptLanguage = DEFAULT_SCRIPT_LANGUAGE
   listenerForm.scriptResultVariable = ''
   listenerForm.scriptBody = ''
   listenerForm.onTransaction = ''
