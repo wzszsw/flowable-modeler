@@ -696,7 +696,7 @@ function handleUserCommand(command: string | number | object) {
 
 .model-list {
   position: relative;
-  min-height: 180px;
+  min-height: 360px;
   overflow: hidden;
   border: 1px solid #e4e7ec;
   border-radius: 7px;
