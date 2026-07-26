@@ -2458,6 +2458,7 @@ try {
       response.request().method() === 'POST' &&
       new URL(response.url()).pathname === '/app/logout',
   )
+  await modelPage.locator('[data-testid="user-menu"]').click()
   await modelPage.locator('[data-testid="logout"]').click()
   await logoutResponse
   await modelPage.locator('[data-testid="login-page"]').waitFor()

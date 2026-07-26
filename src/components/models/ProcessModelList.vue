@@ -4,6 +4,7 @@ import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowUpDown,
+  ChevronDown,
   FileText,
   FolderOpen,
   LogOut,
@@ -12,6 +13,7 @@ import {
   Search,
   Trash2,
   Upload,
+  UserRound,
   Workflow,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
@@ -216,6 +218,10 @@ async function confirmDelete(model: ProcessModel) {
   }
   emit('delete', model.id)
 }
+
+function handleUserCommand(command: string | number | object) {
+  if (command === 'logout') emit('logout')
+}
 </script>
 
 <template>
@@ -231,7 +237,41 @@ async function confirmDelete(model: ProcessModel) {
         </div>
         <div class="header-actions">
           <LanguageSwitcher />
-          <span class="signed-in-user" :title="username">{{ username }}</span>
+          <span class="header-divider" aria-hidden="true" />
+          <el-dropdown trigger="click" @command="handleUserCommand">
+            <button
+              type="button"
+              class="user-menu-trigger"
+              :title="username"
+              :aria-label="username"
+              data-testid="user-menu"
+            >
+              <span class="user-avatar" aria-hidden="true"><UserRound :size="16" /></span>
+              <span class="signed-in-user">{{ username }}</span>
+              <ChevronDown class="user-menu-chevron" :size="14" aria-hidden="true" />
+            </button>
+            <template #dropdown>
+              <el-dropdown-menu>
+                <el-dropdown-item command="logout" data-testid="logout">
+                  <span class="logout-menu-label">
+                    <LogOut :size="16" aria-hidden="true" />
+                    <span>{{ t('shell.models.logout') }}</span>
+                  </span>
+                </el-dropdown-item>
+              </el-dropdown-menu>
+            </template>
+          </el-dropdown>
+        </div>
+      </div>
+    </header>
+
+    <main class="page-main">
+      <div class="list-heading">
+        <div>
+          <h1>{{ t('shell.models.title') }}</h1>
+          <p>{{ modelCountLabel }}</p>
+        </div>
+        <div class="model-actions">
           <el-tooltip :content="t('shell.models.refresh')" placement="bottom">
             <el-button
               :icon="RefreshCw"
@@ -258,50 +298,33 @@ async function confirmDelete(model: ProcessModel) {
           >
             {{ t('shell.models.create') }}
           </el-button>
-          <el-tooltip :content="t('shell.models.logout')" placement="bottom">
-            <el-button
-              :icon="LogOut"
-              circle
-              :aria-label="t('shell.models.logout')"
-              data-testid="logout"
-              @click="emit('logout')"
-            />
-          </el-tooltip>
         </div>
       </div>
-    </header>
 
-    <main class="page-main">
-      <div class="list-heading">
-        <div>
-          <h1>{{ t('shell.models.title') }}</h1>
-          <p>{{ modelCountLabel }}</p>
-        </div>
-        <div class="list-controls">
-          <el-input
-            v-model="searchQuery"
-            class="search-input"
-            :prefix-icon="Search"
-            clearable
-            data-testid="model-search"
-            :placeholder="t('shell.models.search')"
-            :aria-label="t('shell.models.searchAria')"
+      <div class="list-controls">
+        <el-input
+          v-model="searchQuery"
+          class="search-input"
+          :prefix-icon="Search"
+          clearable
+          data-testid="model-search"
+          :placeholder="t('shell.models.search')"
+          :aria-label="t('shell.models.searchAria')"
+        />
+        <el-select
+          v-model="sortMode"
+          class="sort-select"
+          data-testid="model-sort"
+          :aria-label="t('shell.models.sortAria')"
+        >
+          <template #prefix><ArrowUpDown :size="15" /></template>
+          <el-option
+            v-for="option in sortOptions"
+            :key="option.value"
+            :label="option.label"
+            :value="option.value"
           />
-          <el-select
-            v-model="sortMode"
-            class="sort-select"
-            data-testid="model-sort"
-            :aria-label="t('shell.models.sortAria')"
-          >
-            <template #prefix><ArrowUpDown :size="15" /></template>
-            <el-option
-              v-for="option in sortOptions"
-              :key="option.value"
-              :label="option.label"
-              :value="option.value"
-            />
-          </el-select>
-        </div>
+        </el-select>
       </div>
 
       <section
@@ -528,19 +551,76 @@ async function confirmDelete(model: ProcessModel) {
 .header-actions {
   display: flex;
   flex: 0 0 auto;
+  align-items: center;
   gap: 8px;
+}
+
+.header-divider {
+  width: 1px;
+  height: 24px;
+  margin: 0 2px;
+  background: #e4e7ec;
+}
+
+.user-menu-trigger {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  padding: 3px 7px 3px 3px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  gap: 8px;
+  color: inherit;
+  background: transparent;
+  cursor: pointer;
+}
+
+.user-menu-trigger:hover {
+  border-color: #e4e7ec;
+  background: #f9fafb;
+}
+
+.user-menu-trigger:focus-visible {
+  border-color: #84adff;
+  outline: 2px solid #d1e0ff;
+  outline-offset: 1px;
+}
+
+.user-avatar {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 30px;
+  place-items: center;
+  border: 1px solid #c7d7fe;
+  border-radius: 50%;
+  color: #175cd3;
+  background: #eff4ff;
 }
 
 .signed-in-user {
   overflow: hidden;
   max-width: 140px;
-  color: #667085;
-  font-size: 12px;
+  color: #344054;
+  font-size: 13px;
+  font-weight: 500;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.user-menu-chevron {
+  flex: 0 0 auto;
+  color: #98a2b3;
+}
+
+.logout-menu-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+
 .header-actions :deep(.el-button + .el-button),
+.model-actions :deep(.el-button + .el-button),
 .row-actions :deep(.el-button + .el-button) {
   margin-left: 0;
 }
@@ -553,9 +633,9 @@ async function confirmDelete(model: ProcessModel) {
 
 .list-heading {
   display: flex;
-  align-items: end;
+  align-items: center;
   justify-content: space-between;
-  margin-bottom: 18px;
+  margin-bottom: 16px;
   gap: 24px;
 }
 
@@ -577,7 +657,17 @@ async function confirmDelete(model: ProcessModel) {
   display: flex;
   width: min(100%, 580px);
   align-items: center;
+  justify-content: flex-end;
+  margin: 0 0 14px auto;
   gap: 10px;
+}
+
+.model-actions {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
 }
 
 .search-input {
@@ -758,6 +848,10 @@ async function confirmDelete(model: ProcessModel) {
     gap: 14px;
   }
 
+  .model-actions {
+    justify-content: flex-start;
+  }
+
   .list-controls {
     width: 100%;
   }
@@ -815,20 +909,16 @@ async function confirmDelete(model: ProcessModel) {
     display: none;
   }
 
-  .header-actions :deep(.el-button) {
-    padding-inline: 10px;
-  }
-
   .header-actions {
     gap: 4px;
   }
 
-  .signed-in-user {
-    display: none;
+  .header-divider {
+    margin-inline: 1px;
   }
 
-  .header-actions :deep(.el-button:not(.language-trigger) span) {
-    display: none;
+  .signed-in-user {
+    max-width: 72px;
   }
 
   .list-controls {
@@ -841,6 +931,10 @@ async function confirmDelete(model: ProcessModel) {
     width: 100%;
     min-width: 0;
     flex-basis: auto;
+  }
+
+  .model-actions {
+    width: 100%;
   }
 
   .model-row {

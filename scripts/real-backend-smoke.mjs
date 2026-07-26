@@ -622,6 +622,7 @@ try {
     `Browser Modeler requests unexpectedly used Authorization: ${JSON.stringify(browserModelerRequests)}`,
   )
 
+  await page.locator('[data-testid="user-menu"]').click()
   await page.locator('[data-testid="logout"]').click()
   await page.locator('[data-testid="login-page"]').waitFor()
   await assertHashRoute(page, '/login', 'Logout')
