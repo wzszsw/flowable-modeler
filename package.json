@@ -6,12 +6,15 @@
   "scripts": {
     "dev": "vite",
     "build": "run-p type-check \"build-only {@}\" --",
+    "build:backend": "run-p type-check build-only:backend",
     "preview": "vite preview",
     "build-only": "vite build",
+    "build-only:backend": "vite build --mode backend",
     "type-check": "vue-tsc --build",
     "test:i18n": "node --experimental-strip-types scripts/i18n-catalog.mjs",
     "test:moddle": "node --experimental-strip-types scripts/moddle-roundtrip.mjs",
-    "test:smoke": "npm run test:i18n && npm run test:moddle && npm run build-only && node scripts/smoke.mjs",
+    "test:indexeddb": "npm run build-only && node scripts/indexeddb-smoke.mjs",
+    "test:smoke": "npm run test:i18n && npm run test:moddle && npm run build-only:backend && node scripts/smoke.mjs",
     "test:real-backend": "node scripts/real-backend-smoke.mjs",
     "test:flowable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-flowable.ps1"
   },

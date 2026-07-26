@@ -641,7 +641,7 @@ function createMockModelerApi() {
       const sort = url.searchParams.get('sort') || 'modifiedDesc'
       let data = [...models.values()].filter((record) =>
         filterText
-          ? [record.name, record.key, record.description].some((value) =>
+          ? [record.name, record.description].some((value) =>
               value.toLocaleLowerCase().includes(filterText),
             )
           : true,
@@ -1330,7 +1330,7 @@ try {
   const englishUpdatedAt = (await englishPage.locator('[data-testid="model-updated-at"]').innerText()).trim()
   assert(
     (await englishPage.getByRole('heading', { name: 'Process models', exact: true }).count()) === 1 &&
-      (await englishSearch.getAttribute('placeholder')) === 'Search' &&
+      (await englishSearch.getAttribute('placeholder')) === 'Search names or descriptions' &&
       /^\d{2}\/\d{2}\/\d{4}/.test(englishUpdatedAt) &&
       !/[\u4e00-\u9fff]/.test(englishUpdatedAt) &&
       (await findModelRow(englishPage, englishModel.name).count()) === 1,
@@ -1935,12 +1935,19 @@ try {
   const modelSearchInput = modelPage.locator(
     'input[data-testid="model-search"], [data-testid="model-search"] input',
   )
-  assert((await modelSearchInput.getAttribute('placeholder')) === '搜索', '中文搜索框 placeholder 错误')
+  assert(
+    (await modelSearchInput.getAttribute('placeholder')) === '搜索名称或描述',
+    '中文搜索框 placeholder 错误',
+  )
+  assert(
+    !(await modelPage.locator('[data-testid="model-list"]').innerText()).includes('Process_model_'),
+    '流程模型列表仍显示流程标识',
+  )
   const modelQueriesBeforeSearch = modelApi.state.requests.filter(
     (request) => request.method === 'GET' && request.path === '/models',
   ).length
   const searchStartedAt = Date.now()
-  await modelSearchInput.fill('Process_model_b')
+  await modelSearchInput.fill('流程模型 B')
   await modelPage.waitForTimeout(400)
   assert(
     modelApi.state.requests.filter(
@@ -1977,8 +1984,16 @@ try {
     .reverse()
     .find((request) => request.method === 'GET' && request.path === '/models' && request.query.filterText)
   assert(
-    searchRequest?.query.filterText === 'Process_model_b' && searchRequest?.query.modelType === '0',
+    searchRequest?.query.filterText === '流程模型 B' && searchRequest?.query.modelType === '0',
     `流程模型搜索没有使用 filterText/modelType：${JSON.stringify(searchRequest?.query)}`,
+  )
+  await modelSearchInput.fill('Process_model_b')
+  await modelPage.waitForFunction(
+    () => document.querySelectorAll('[data-testid="model-row"]').length === 0,
+  )
+  assert(
+    (await modelPage.getByText('没有匹配的流程模型', { exact: true }).count()) === 1,
+    '流程标识仍能搜索到模型',
   )
   await modelSearchInput.clear()
   await modelPage.locator('[data-testid="model-sort"]').click()

@@ -6,23 +6,26 @@
 
 ## 架构
 
-独立模式直接连接 Flowable 6.8.1 Modeler 后端：
+独立模式默认不依赖后端，模型元数据和 Oryx 编辑文档保存在浏览器 IndexedDB 中：
 
 ```text
-Flowable Oryx JSON -> 浏览器转换 -> BPMN XML -> bpmn-js
-bpmn-js BPMN XML  -> 浏览器转换 -> Oryx JSON -> /modeler-app/rest
+IndexedDB Oryx JSON -> 浏览器转换 -> BPMN XML -> bpmn-js
+bpmn-js BPMN XML   -> 浏览器转换 -> Oryx JSON -> IndexedDB
 ```
 
-- 登录使用官方 `POST /app/authentication`，模型请求使用 `/modeler-app/rest`。
-- 浏览器端 Flowable API 请求统一使用 Axios；Cookie、公共请求头、全局 Loading 和错误转换由
-  Axios 实例及请求/响应拦截器集中处理。
-- 用户名和密码只用于登录请求，不由应用持久化或保存在 API 客户端中。
-- 不使用 localStorage、sessionStorage 或 IndexedDB。
+- 本地模式自动进入流程列表，不显示登录和登出入口，也不发起 Flowable REST 请求。
+- 模型列表、新建、读取、保存、导入、删除、搜索、排序和乐观锁均由 IndexedDB 客户端提供。
+- 不使用 localStorage 或 sessionStorage；数据库名为 `flowable-modeler`，对象仓库为
+  `process-models`。
+- 可用 `VITE_FLOWABLE_BACKEND_ENABLED=true` 切换到 Flowable 6.8.1 Modeler 后端。
+- 后端模式登录使用官方 `POST /app/authentication`，模型请求使用 `/modeler-app/rest`；请求仍统一
+  使用 Axios 管理 Cookie、公共请求头、全局 Loading 和错误转换。
+- 用户名和密码只用于后端登录请求，不由应用持久化或保存在 API 客户端中。
 - 界面支持简体中文和英语，语言选择保存在 URL 的 `lang` 参数中，不写入浏览器存储。
-- 登录态由 Flowable 签发的 HttpOnly `FLOWABLE_REMEMBER_ME` Cookie 维护，刷新页面会恢复会话。
-- 退出登录调用官方 `/app/logout` 并清除该 Cookie。
+- 后端登录态由 Flowable 签发的 HttpOnly `FLOWABLE_REMEMBER_ME` Cookie 维护，退出登录调用官方
+  `/app/logout`。
 - Oryx JSON 与 BPMN XML 的转换完全在浏览器中完成，不调用后端导入转换接口。
-- 后端仍保存 Flowable 官方 Oryx JSON，列表、创建、读取、保存和删除均使用原生接口。
+- 后端模式仍保存 Flowable 官方 Oryx JSON，列表、创建、读取、保存和删除均使用原生接口。
 - 页面由 Vue Router 管理，流程编辑器路由使用 Flowable 模型 UUID，刷新后会重新载入同一模型。
 
 打开官方 Oryx 模型时，转换器会生成 BPMN 语义和 DI；保存时再生成 Flowable 可读取的 Oryx
@@ -30,7 +33,8 @@ shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明�
 
 ## 功能
 
-- Flowable UI 风格登录页和流程模型列表
+- 无后端模式和可选的 Flowable 登录模式
+- Flowable UI 风格流程模型列表
 - 简体中文/英语界面及运行时语言切换
 - 流程模型的新建、导入、搜索、排序、打开和删除
 - BPMN 原生工具栏、上下文菜单、拖拽、框选与连线
@@ -48,7 +52,7 @@ shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明�
 独立模式沿用 Flowable UI 的流程术语：
 
 ```text
-#/login
+#/login                    # 仅后端模式
 #/processes
 #/processes/{modelId}
 ```
@@ -57,9 +61,23 @@ shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明�
 流程路由；不提供 DMN/CMMN 页面或兼容路由。路由使用 hash history，因此部署为 Spring Boot 静态资源后，
 刷新 `#/processes/{modelId}` 仍由 `index.html` 启动，不需要后端增加 SPA fallback。
 
+## 运行模式
+
+不设置环境变量时使用 IndexedDB。浏览器会按当前站点 origin 隔离数据；清除该站点的浏览器数据会
+一并删除本地模型。
+
+需要连接 Flowable 后端时，在 Vite 构建环境中显式开启：
+
+```dotenv
+VITE_FLOWABLE_BACKEND_ENABLED=true
+```
+
+仓库提供的 backend mode 已包含此配置，可直接运行 `npm run build:backend`。未配置或配置为其他值
+时均视为 `false`。
+
 ## 后端接口
 
-独立模式使用以下 Flowable 6.8.1 原生接口：
+后端模式使用以下 Flowable 6.8.1 原生接口：
 
 ```text
 GET    /modeler-app/rest/account
@@ -92,8 +110,14 @@ npm install
 npm run dev
 ```
 
-开发服务器会把 `/app/**` 和 `/modeler-app/**` 请求代理到
-`http://localhost:8080`，因此本地调试前需要先启动 `D:\IdeaProjects\flowable-lab`。
+默认启动后直接使用 IndexedDB，无需启动后端。开发服务器仍会把 `/app/**` 和
+`/modeler-app/**` 请求代理到 `http://localhost:8080`；调试后端模式时使用：
+
+```bash
+npm run dev -- --mode backend
+```
+
+此时需要先启动 `D:\IdeaProjects\flowable-lab`。
 
 Flowable 7 已移除表单能力，因此表单属性面板默认关闭。只有仍使用 Flowable 6 表单能力的部署才应
 在 Vite 构建环境中显式开启：
@@ -109,6 +133,12 @@ VITE_FLOWABLE_FORMS_ENABLED=true
 
 ```bash
 npm run build
+```
+
+该命令构建默认的 IndexedDB 模式。构建后端模式使用：
+
+```bash
+npm run build:backend
 ```
 
 Vite 使用相对资源路径，并将生产构建产物直接输出到后端：
@@ -135,13 +165,16 @@ http://127.0.0.1:8080/flowable-modeler/index.html#/processes/{modelId}
 ```bash
 npm run type-check
 npm run test:moddle
+npm run test:indexeddb
 npm run test:smoke
 npm run test:flowable
 npm run build
 npm run test:real-backend
 ```
 
-`test:smoke` 会使用本机 Chromium 浏览器验证登录、Vue Router 深链与编辑器刷新恢复、官方 API
+`test:indexeddb` 验证默认模式不会请求后端，并覆盖本地模型的新建、保存、刷新恢复和删除。
+
+`test:smoke` 会使用 backend mode 构建，并通过本机 Chromium 浏览器验证登录、Vue Router 深链与编辑器刷新恢复、官方 API
 契约、模型列表、创建、Oryx 打开与保存、冲突处理、浏览器端导入、失败回滚、删除、嵌入模式以及
 中英文切换、语言刷新恢复和零浏览器存储访问。
 

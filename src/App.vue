@@ -19,19 +19,19 @@ import {
   type ModelSnapshot,
 } from '@/modeler/modelerApplication'
 import {
-  ModelerApi,
   ModelerApiError,
   type ModelerCredentials,
   type ProcessModel,
   type ProcessModelQuery,
 } from '@/modeler/modelerApi'
+import { createModelerClient, type ModelerClient } from '@/modeler/modelerClient'
 import { bpmnXmlToOryxJson, oryxJsonToBpmnXml } from '@/modeler/oryxConverter'
 import { ROUTE_NAMES } from '@/routes'
 
 const embeddedMode = isEmbeddedMode()
 const route = useRoute()
 const router = useRouter()
-const api = shallowRef<ModelerApi | null>(null)
+const api = shallowRef<ModelerClient | null>(null)
 const authenticated = ref(false)
 const sessionRestoring = ref(!embeddedMode)
 const loginError = ref('')
@@ -45,7 +45,7 @@ const activeXml = ref('')
 const currentQuery = ref<ProcessModelQuery>({ sort: 'modifiedDesc' })
 
 interface SessionContext {
-  client: ModelerApi
+  client: ModelerClient
   generation: number
 }
 
@@ -192,7 +192,7 @@ function replaceModel(updated: ProcessModel) {
 async function login(credentials: ModelerCredentials) {
   const generation = ++authGeneration
   clearLoginError()
-  const candidate = new ModelerApi()
+  const candidate = createModelerClient()
   try {
     await candidate.authenticate(credentials)
     if (generation !== authGeneration) return
@@ -214,7 +214,7 @@ async function login(credentials: ModelerCredentials) {
 
 async function restoreSession() {
   const generation = ++authGeneration
-  const candidate = new ModelerApi()
+  const candidate = createModelerClient()
   try {
     const account = await candidate.getAccount()
     if (generation !== authGeneration) return

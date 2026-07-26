@@ -1,9 +1,20 @@
 import { translate } from '@/i18n'
 
+function escapeXmlAttribute(value: string) {
+  return value
+    .replaceAll('&', '&amp;')
+    .replaceAll('"', '&quot;')
+    .replaceAll('<', '&lt;')
+    .replaceAll('>', '&gt;')
+}
+
 export const createDefaultDiagram = (
   processId = 'Process_leave_request',
   processName = translate('modeler.defaultDiagram.processName'),
-) => `<?xml version="1.0" encoding="UTF-8"?>
+) => {
+  const escapedProcessId = escapeXmlAttribute(processId)
+  const escapedProcessName = escapeXmlAttribute(processName)
+  return `<?xml version="1.0" encoding="UTF-8"?>
 <bpmn2:definitions xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
   xmlns:bpmn2="http://www.omg.org/spec/BPMN/20100524/MODEL"
   xmlns:bpmndi="http://www.omg.org/spec/BPMN/20100524/DI"
@@ -12,7 +23,7 @@ export const createDefaultDiagram = (
   xmlns:flowable="http://flowable.org/bpmn"
   id="Definitions_flowable_modeler"
   targetNamespace="http://flowable.org/processdef">
-  <bpmn2:process id="${processId}" name="${processName}" isExecutable="true">
+  <bpmn2:process id="${escapedProcessId}" name="${escapedProcessName}" isExecutable="true">
     <bpmn2:startEvent id="StartEvent_apply" name="${translate('modeler.defaultDiagram.startName')}" flowable:initiator="initiator">
       <bpmn2:outgoing>Flow_apply_to_approve</bpmn2:outgoing>
     </bpmn2:startEvent>
@@ -27,7 +38,7 @@ export const createDefaultDiagram = (
     <bpmn2:sequenceFlow id="Flow_approve_to_end" sourceRef="UserTask_approve" targetRef="EndEvent_done" />
   </bpmn2:process>
   <bpmndi:BPMNDiagram id="BPMNDiagram_flowable_modeler">
-    <bpmndi:BPMNPlane id="BPMNPlane_flowable_modeler" bpmnElement="${processId}">
+    <bpmndi:BPMNPlane id="BPMNPlane_flowable_modeler" bpmnElement="${escapedProcessId}">
       <bpmndi:BPMNShape id="StartEvent_apply_di" bpmnElement="StartEvent_apply">
         <dc:Bounds x="180" y="240" width="36" height="36" />
       </bpmndi:BPMNShape>
@@ -48,3 +59,4 @@ export const createDefaultDiagram = (
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
 </bpmn2:definitions>`
+}

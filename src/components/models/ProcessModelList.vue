@@ -5,6 +5,7 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowUpDown,
   ChevronDown,
+  Database,
   FileText,
   FolderOpen,
   LogOut,
@@ -19,6 +20,7 @@ import {
 import { useI18n } from 'vue-i18n'
 
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
+import { FLOWABLE_BACKEND_ENABLED } from '@/config/features'
 import { parseBpmnMetadata } from '@/modeler/bpmnMetadata'
 import type { ModelSort, ProcessModel, ProcessModelQuery } from '@/modeler/modelerApi'
 
@@ -56,6 +58,7 @@ const emit = defineEmits<{
 }>()
 
 const { locale, t } = useI18n()
+const backendEnabled = FLOWABLE_BACKEND_ENABLED
 const SEARCH_DEBOUNCE_MS = 500
 const PROCESS_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
 
@@ -238,7 +241,7 @@ function handleUserCommand(command: string | number | object) {
         <div class="header-actions">
           <LanguageSwitcher />
           <span class="header-divider" aria-hidden="true" />
-          <el-dropdown trigger="click" @command="handleUserCommand">
+          <el-dropdown v-if="backendEnabled" trigger="click" @command="handleUserCommand">
             <button
               type="button"
               class="user-menu-trigger"
@@ -261,6 +264,10 @@ function handleUserCommand(command: string | number | object) {
               </el-dropdown-menu>
             </template>
           </el-dropdown>
+          <div v-else class="user-menu-trigger local-mode-indicator" data-testid="local-mode">
+            <span class="user-avatar" aria-hidden="true"><Database :size="16" /></span>
+            <span class="signed-in-user">{{ t('shell.models.localMode') }}</span>
+          </div>
         </div>
       </div>
     </header>
@@ -334,7 +341,6 @@ function handleUserCommand(command: string | number | object) {
       >
         <div v-if="models.length" class="table-heading" aria-hidden="true">
           <span>{{ t('shell.models.columns.name') }}</span>
-          <span>{{ t('shell.models.columns.key') }}</span>
           <span>{{ t('shell.models.columns.modified') }}</span>
           <span>{{ t('shell.models.columns.actions') }}</span>
         </div>
@@ -361,7 +367,6 @@ function handleUserCommand(command: string | number | object) {
               </span>
             </span>
           </button>
-          <code class="model-key">{{ model.key }}</code>
           <time :datetime="model.lastUpdated" data-testid="model-updated-at">
             {{ formatDateTime(model.lastUpdated) }}
           </time>
@@ -586,6 +591,15 @@ function handleUserCommand(command: string | number | object) {
   outline-offset: 1px;
 }
 
+.local-mode-indicator {
+  cursor: default;
+}
+
+.local-mode-indicator:hover {
+  border-color: transparent;
+  background: transparent;
+}
+
 .user-avatar {
   display: grid;
   width: 30px;
@@ -692,7 +706,7 @@ function handleUserCommand(command: string | number | object) {
 .table-heading,
 .model-row {
   display: grid;
-  grid-template-columns: minmax(260px, 1.6fr) minmax(170px, 0.9fr) 180px 132px;
+  grid-template-columns: minmax(260px, 1fr) 180px 132px;
   align-items: center;
   column-gap: 20px;
 }
@@ -778,15 +792,6 @@ function handleUserCommand(command: string | number | object) {
   font-size: 12px;
 }
 
-.model-key {
-  overflow: hidden;
-  color: #475467;
-  font-family: "JetBrains Mono", Consolas, monospace;
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .model-row time {
   color: #667085;
   font-size: 12px;
@@ -862,17 +867,11 @@ function handleUserCommand(command: string | number | object) {
 
   .model-row {
     grid-template-columns: minmax(0, 1fr) auto;
-    min-height: 96px;
-    row-gap: 10px;
+    min-height: 78px;
   }
 
   .model-identity {
-    grid-column: 1 / -1;
-  }
-
-  .model-key {
     grid-column: 1;
-    padding-left: 50px;
   }
 
   .model-row time {
@@ -881,7 +880,7 @@ function handleUserCommand(command: string | number | object) {
 
   .row-actions {
     grid-column: 2;
-    grid-row: 2;
+    grid-row: 1;
   }
 }
 
@@ -940,10 +939,6 @@ function handleUserCommand(command: string | number | object) {
   .model-row {
     padding-inline: 13px;
     column-gap: 8px;
-  }
-
-  .model-key {
-    padding-left: 50px;
   }
 
   .row-actions :deep(.el-button span) {
