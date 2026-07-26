@@ -100,7 +100,14 @@ const alignments = computed<Array<{
       <span class="toolbar-divider" />
     </template>
 
-    <el-button text :icon="Upload" :disabled="!ready" @click="emit('import')">
+    <el-button
+      v-if="embedded"
+      text
+      :icon="Upload"
+      :disabled="!ready"
+      data-testid="import-diagram"
+      @click="emit('import')"
+    >
       {{ t('designer.toolbar.import') }}
     </el-button>
     <el-dropdown :disabled="!ready" trigger="click">

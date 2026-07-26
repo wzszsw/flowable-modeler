@@ -1751,6 +1751,10 @@ try {
     '嵌入模式错误显示了流程模型列表',
   )
   assert(await embeddedPage.locator('.bpmn-toolbar').isVisible(), '嵌入模式未保留 BPMN 工具栏')
+  assert(
+    (await embeddedPage.locator('[data-testid="import-diagram"]').count()) === 1,
+    '嵌入模式未显示导入按钮',
+  )
   assert((await embeddedPage.locator('.designer-header').count()) === 0, '嵌入模式仍显示设计器页头')
   assert(
     (await embeddedPage.getByRole('button', { name: '保存模型', exact: true }).count()) === 0,
@@ -1885,6 +1889,10 @@ try {
     `模拟 Flowable 模型 ID 不是 UUID：${modelAId}`,
   )
   await waitForHashRoute(modelPage, `/processes/${modelAId}`)
+  assert(
+    (await modelPage.locator('[data-testid="import-diagram"]').count()) === 0,
+    '非内嵌编辑器仍显示导入按钮',
+  )
   const modelAFirstToken = modelApi.state.models.get(modelAId).lastUpdated
   await modelPage.evaluate(() => {
     const modeler = window.bpmnModeler
