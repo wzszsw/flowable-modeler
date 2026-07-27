@@ -140,13 +140,17 @@ npm run build
 npm run build:backend
 ```
 
-Vite 使用相对资源路径，并将生产构建产物直接输出到后端：
+Vite 使用相对资源路径，生产构建产物输出到默认目录：
+
+```text
+D:\WebstormProjects\flowable-process-modeler\dist
+```
+
+部署到配套 Spring Boot 后端时，将 `dist` 中的产物放入：
 
 ```text
 D:\IdeaProjects\flowable-lab\src\main\resources\static\flowable-modeler
 ```
-
-每次生产构建都会先清理这个 `flowable-modeler` 目录中的旧产物，不影响同级的其他静态资源。
 
 部署后访问：
 
