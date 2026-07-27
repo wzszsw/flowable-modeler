@@ -173,9 +173,12 @@ const dateTimeFormatter = computed(
     }),
 )
 
-function formatDateTime(value: string) {
-  const timestamp = Date.parse(value)
-  return Number.isNaN(timestamp) ? value : dateTimeFormatter.value.format(timestamp)
+function formatDateTime(value: number) {
+  return dateTimeFormatter.value.format(value)
+}
+
+function dateTimeAttribute(value: number) {
+  return new Date(value).toISOString()
 }
 
 function resetCreateForm() {
@@ -425,7 +428,7 @@ function handleUserCommand(command: string | number | object) {
               </span>
             </span>
           </button>
-          <time :datetime="model.lastUpdated" data-testid="model-updated-at">
+          <time :datetime="dateTimeAttribute(model.lastUpdated)" data-testid="model-updated-at">
             {{ formatDateTime(model.lastUpdated) }}
           </time>
           <div class="row-actions">

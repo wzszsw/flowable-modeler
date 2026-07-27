@@ -43,7 +43,7 @@ shape、properties、bounds、dockers 与 outgoing。未知 Oryx stencil 会明�
 - 撤销、重做、对齐、缩放、全屏、小地图和网格吸附
 - token simulation 流程模拟
 - Flowable/BPMN 校验与问题定位
-- `lastUpdated` 乐观锁；冲突时由用户明确选择是否覆盖
+- 毫秒时间戳 `lastUpdated` 乐观锁；冲突时由用户明确选择是否覆盖
 - 未保存返回/离开提示和保存期间操作互斥
 
 ## 前端路由
@@ -89,7 +89,7 @@ POST   /modeler-app/rest/models/{id}/editor/json
 ```
 
 保存请求为 `application/x-www-form-urlencoded`，包含 `name`、`key`、`description`、
-`json_xml`、`lastUpdated` 和 `newversion=false`。只有用户确认覆盖冲突时才发送
+`json_xml`、毫秒时间戳 `lastUpdated` 和 `newversion=false`。只有用户确认覆盖冲突时才发送
 `conflictResolveAction=overwrite`。
 
 ## 后端搭建

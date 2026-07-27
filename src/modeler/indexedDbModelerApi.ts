@@ -158,19 +158,18 @@ function toProcessModel(record: StoredProcessModel): ProcessModel {
   }
 }
 
-function nextUpdatedAt(previous?: string) {
+function nextUpdatedAt(previous = 0) {
   const now = Date.now()
-  const previousTime = previous ? Date.parse(previous) : 0
-  return new Date(Math.max(now, Number.isNaN(previousTime) ? 0 : previousTime + 1)).toISOString()
+  return Math.max(now, previous + 1)
 }
 
 function compareModels(left: ProcessModel, right: ProcessModel, sort = 'modifiedDesc') {
   if (sort === 'modifiedAsc') {
-    return Date.parse(left.lastUpdated) - Date.parse(right.lastUpdated)
+    return left.lastUpdated - right.lastUpdated
   }
   if (sort === 'nameAsc') return left.name.localeCompare(right.name)
   if (sort === 'nameDesc') return right.name.localeCompare(left.name)
-  return Date.parse(right.lastUpdated) - Date.parse(left.lastUpdated)
+  return right.lastUpdated - left.lastUpdated
 }
 
 export class IndexedDbModelerApi {

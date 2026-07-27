@@ -178,7 +178,13 @@ async function readStoredModels(page) {
           const read = transaction.objectStore('process-models').getAll()
           let records = []
           read.onsuccess = () => {
-            records = read.result.map(({ id, key, name }) => ({ id, key, name }))
+            records = read.result.map(({ id, key, name, lastUpdated, editorModel }) => ({
+              id,
+              key,
+              name,
+              lastUpdated,
+              editorModel,
+            }))
           }
           transaction.onerror = () => reject(transaction.error || read.error)
           transaction.onabort = () => reject(transaction.error || read.error)
@@ -326,6 +332,9 @@ async function runLocalModeSuite(browser) {
     })
     const modelId = await importedRow.getAttribute('data-model-id')
     assert.ok(modelId, 'the imported model was not persisted in IndexedDB')
+    const importedRecord = (await readStoredModels(page)).find(({ id }) => id === modelId)
+    assert.ok(importedRecord, 'the imported IndexedDB record is missing')
+    assert.equal(typeof importedRecord.lastUpdated, 'number')
     console.log('[pass] imported model survives a page reload')
 
     await verifyDisposedFileReadIsIgnored(page, modelId)
@@ -335,6 +344,90 @@ async function runLocalModeSuite(browser) {
 
     assert.deepEqual(pageErrors, [], `browser page errors: ${pageErrors.join('; ')}`)
     console.log('Local IndexedDB browser smoke passed.')
+    return importedRecord.editorModel
+  } finally {
+    await context.close()
+    await stopProcess(server.child)
+  }
+}
+
+async function runTimestampSaveSuite(browser, editorModel) {
+  const server = await startViteServer(true)
+  const context = await browser.newContext({ viewport: { width: 1280, height: 900 } })
+  const initialLastUpdated = 1_785_094_403_700
+  const savedLastUpdated = initialLastUpdated + 1_000
+  const model = {
+    id: 'timestamp-model',
+    name: 'Browser service regression',
+    key: 'Process_browser_service',
+    description: '',
+    createdBy: 'browser-user',
+    lastUpdatedBy: 'browser-user',
+    lastUpdated: initialLastUpdated,
+    latestVersion: true,
+    version: 1,
+    comment: '',
+    modelType: 0,
+    tenantId: '',
+  }
+  try {
+    const page = await context.newPage()
+    const pageErrors = []
+    page.on('pageerror', (error) => pageErrors.push(error.message))
+    await page.route('**/modeler-app/rest/**', async (route) => {
+      const request = route.request()
+      const path = new URL(request.url()).pathname
+      if (path.endsWith('/account')) {
+        await route.fulfill({ json: { id: 'browser-user', fullName: 'Browser User' } })
+        return
+      }
+      if (path.endsWith('/models') && request.method() === 'GET') {
+        await route.fulfill({ json: { size: 1, total: 1, start: 0, data: [model] } })
+        return
+      }
+      if (path.endsWith('/models/timestamp-model') && request.method() === 'GET') {
+        await route.fulfill({ json: model })
+        return
+      }
+      if (path.endsWith('/models/timestamp-model/editor/json')) {
+        if (request.method() === 'GET') {
+          await route.fulfill({
+            json: {
+              modelId: model.id,
+              name: model.name,
+              key: model.key,
+              description: model.description,
+              lastUpdated: initialLastUpdated,
+              lastUpdatedBy: model.lastUpdatedBy,
+              model: editorModel,
+            },
+          })
+          return
+        }
+        if (request.method() === 'POST') {
+          await route.fulfill({ json: { ...model, lastUpdated: savedLastUpdated } })
+          return
+        }
+      }
+      await route.fulfill({ status: 404, json: { message: `Unhandled browser mock: ${path}` } })
+    })
+
+    await page.goto(`${server.baseUrl}#/processes/timestamp-model`, { waitUntil: 'networkidle' })
+    const saveRequest = page.waitForRequest((request) => {
+      const path = new URL(request.url()).pathname
+      return (
+        request.method() === 'POST' && path.endsWith('/models/timestamp-model/editor/json')
+      )
+    })
+    await page.locator('[data-testid="save-model"]').click()
+    const submittedBody = new URLSearchParams((await saveRequest).postData() || '')
+    assert.equal(submittedBody.get('lastUpdated'), String(initialLastUpdated))
+    await page
+      .locator('.el-message--success')
+      .filter({ hasText: /保存|saved/i })
+      .waitFor({ state: 'visible' })
+    assert.deepEqual(pageErrors, [], `timestamp-save page errors: ${pageErrors.join('; ')}`)
+    console.log('[pass] backend saves submit lastUpdated as a millisecond timestamp')
   } finally {
     await context.close()
     await stopProcess(server.child)
@@ -373,7 +466,7 @@ async function runSessionExpirySuite(browser) {
                 description: '',
                 createdBy: 'browser-user',
                 lastUpdatedBy: 'browser-user',
-                lastUpdated: '2026-07-27T00:00:00.000Z',
+                lastUpdated: 1_785_094_403_700,
                 latestVersion: true,
                 version: 1,
                 comment: '',
@@ -416,7 +509,8 @@ const browser = await chromium.launch({
   headless: true,
 })
 try {
-  await runLocalModeSuite(browser)
+  const editorModel = await runLocalModeSuite(browser)
+  await runTimestampSaveSuite(browser, editorModel)
   await runSessionExpirySuite(browser)
   console.log('Local browser smoke passed.')
 } finally {

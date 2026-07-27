@@ -108,7 +108,7 @@ interface ModelSnapshot {
 }
 
 interface ModelPersistenceResult {
-  savedAt: string
+  savedAt: number
 }
 
 type NativeImportXML = Modeler['importXML']
@@ -145,7 +145,7 @@ const { t, locale } = useI18n()
 const props = defineProps<{
   initialXml: string
   initialFileName?: string
-  initialSavedAt?: string
+  initialSavedAt?: number
   persistModel: (snapshot: ModelSnapshot) => Promise<ModelPersistenceResult>
 }>()
 
@@ -179,7 +179,7 @@ interface ImportSnapshot {
   viewbox?: CanvasViewboxRect
   dirty: boolean
   fileName: string
-  lastSavedAt: string
+  lastSavedAt: number | null
   importWarnings: DiagnosticMessage[]
   importWarningsDialogVisible: boolean
   problems: ValidationProblem[]
@@ -202,7 +202,7 @@ const loadingText = computed(() => t(loadingMessageKey.value))
 const initializationError = ref<DiagnosticMessage | null>(null)
 const dirty = ref(false)
 const fileName = ref(props.initialFileName || 'leave-request.bpmn20.xml')
-const lastSavedAt = ref('')
+const lastSavedAt = ref<number | null>(null)
 const commandRevision = ref(0)
 const canUndo = ref(false)
 const canRedo = ref(false)
@@ -652,7 +652,7 @@ const savedStatus = computed(() => {
   if (importPending.value) return t('designer.header.status.loading')
   if (saving.value) return t('designer.header.status.saving')
   if (dirty.value) return t('designer.header.status.dirty')
-  if (lastSavedAt.value) {
+  if (lastSavedAt.value !== null) {
     return t('designer.header.status.savedAt', { time: formatTime(lastSavedAt.value) })
   }
   return t('designer.header.status.ready')
@@ -1078,7 +1078,7 @@ async function loadInitialDiagram() {
     importedFileName: props.initialFileName,
     reportError: false,
   })
-  if (props.initialSavedAt) lastSavedAt.value = props.initialSavedAt
+  if (props.initialSavedAt !== undefined) lastSavedAt.value = props.initialSavedAt
 }
 
 async function initialize() {
@@ -1253,7 +1253,7 @@ async function handleFileChange(event: Event) {
   if (!isInteractionReady()) return
   try {
     await importDiagram(xml, { importedFileName: file.name, markClean: false })
-    lastSavedAt.value = ''
+    lastSavedAt.value = null
     ElMessage.success(t('designer.import.success', { fileName: file.name }))
   } catch {
     // importDiagram already displayed the error.
@@ -1532,15 +1532,13 @@ function downloadBlob(content: string, name: string, mimeType: string) {
   }
 }
 
-function formatTime(value: string) {
-  const date = new Date(value)
-  if (Number.isNaN(date.getTime())) return value
+function formatTime(value: number) {
   return new Intl.DateTimeFormat(locale.value === 'en' ? 'en-US' : 'zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-  }).format(date)
+  }).format(value)
 }
 
 watch(locale, async () => {

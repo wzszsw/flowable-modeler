@@ -23,7 +23,7 @@ export interface ProcessModel {
   description: string
   createdBy: string
   lastUpdatedBy: string
-  lastUpdated: string
+  lastUpdated: number
   latestVersion: boolean
   version: number
   comment: string
@@ -58,7 +58,7 @@ export interface EditorModelDocument {
   name: string
   key: string
   description: string
-  lastUpdated: string
+  lastUpdated: number
   lastUpdatedBy: string
   model: Record<string, unknown>
 }
@@ -68,7 +68,7 @@ export interface SaveEditorModelInput {
   key: string
   description: string
   model: Record<string, unknown>
-  lastUpdated: string
+  lastUpdated: number
   conflictResolveAction?: 'overwrite' | 'newVersion'
 }
 
@@ -96,9 +96,8 @@ function optionalString(value: unknown) {
   return typeof value === 'string' ? value : ''
 }
 
-function normalizedDate(value: unknown, field: string) {
-  if (typeof value === 'string' && value) return value
-  if (typeof value === 'number' && Number.isFinite(value)) return new Date(value).toISOString()
+function requiredTimestamp(value: unknown, field: string) {
+  if (typeof value === 'number' && Number.isSafeInteger(value) && value >= 0) return value
   throw ModelerApiError.fromMessageKey('shell.api.missingField', {
     messageParams: { field },
   })
@@ -113,7 +112,7 @@ function parseProcessModel(value: unknown): ProcessModel {
     description: optionalString(model.description),
     createdBy: optionalString(model.createdBy),
     lastUpdatedBy: optionalString(model.lastUpdatedBy),
-    lastUpdated: normalizedDate(model.lastUpdated, 'lastUpdated'),
+    lastUpdated: requiredTimestamp(model.lastUpdated, 'lastUpdated'),
     latestVersion: model.latestVersion !== false,
     version: typeof model.version === 'number' ? model.version : 1,
     comment: optionalString(model.comment),
@@ -129,7 +128,7 @@ function parseEditorDocument(value: unknown): EditorModelDocument {
     name: requiredString(document.name, 'name'),
     key: requiredString(document.key, 'key'),
     description: optionalString(document.description),
-    lastUpdated: normalizedDate(document.lastUpdated, 'lastUpdated'),
+    lastUpdated: requiredTimestamp(document.lastUpdated, 'lastUpdated'),
     lastUpdatedBy: optionalString(document.lastUpdatedBy),
     model: asRecord(document.model),
   }
@@ -234,7 +233,7 @@ export class ModelerApi {
       key: input.key,
       description: input.description,
       json_xml: JSON.stringify(input.model),
-      lastUpdated: input.lastUpdated,
+      lastUpdated: String(input.lastUpdated),
       newversion: 'false',
     })
     if (input.conflictResolveAction) {

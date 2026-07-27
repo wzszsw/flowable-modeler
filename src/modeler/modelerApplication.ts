@@ -42,7 +42,7 @@ export interface ModelerApplication {
   loadModelForRoute: (id: string) => Promise<boolean>
   createModel: (input: CreateModelInput) => Promise<void>
   importModel: (input: ImportModelInput) => Promise<void>
-  saveActiveModel: (snapshot: ModelSnapshot) => Promise<{ savedAt: string }>
+  saveActiveModel: (snapshot: ModelSnapshot) => Promise<{ savedAt: number }>
   deleteModel: (id: string) => Promise<void>
   clearActiveModel: () => void
 }
