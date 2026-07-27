@@ -92,13 +92,79 @@ POST   /modeler-app/rest/models/{id}/editor/json
 `json_xml`、`lastUpdated` 和 `newversion=false`。只有用户确认覆盖冲突时才发送
 `conflictResolveAction=overwrite`。
 
-配套后端位于：
+## 后端搭建
 
-```text
-D:\IdeaProjects\flowable-lab
+后端不需要编写业务 Java 代码。创建一个 Spring Boot 2.7.18、Java 17、
+Maven 工程，保留生成的 `@SpringBootApplication` 启动类，然后加入以下依赖：
+
+```xml
+<properties>
+    <java.version>17</java.version>
+    <flowable.version>6.8.1</flowable.version>
+</properties>
+
+<dependencies>
+    <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-web</artifactId>
+    </dependency>
+    <dependency>
+        <groupId>org.flowable</groupId>
+        <artifactId>flowable-spring-boot-starter-rest</artifactId>
+        <version>${flowable.version}</version>
+    </dependency>
+    <dependency>
+        <groupId>org.flowable</groupId>
+        <artifactId>flowable-spring-boot-starter-ui-modeler</artifactId>
+        <version>${flowable.version}</version>
+        <exclusions>
+            <exclusion>
+                <groupId>org.flowable</groupId>
+                <artifactId>flowable-ui-modeler-frontend</artifactId>
+            </exclusion>
+        </exclusions>
+    </dependency>
+    <dependency>
+        <groupId>org.flowable</groupId>
+        <artifactId>flowable-spring-boot-starter-ui-idm</artifactId>
+        <version>${flowable.version}</version>
+        <exclusions>
+            <exclusion>
+                <groupId>org.flowable</groupId>
+                <artifactId>flowable-ui-idm-frontend</artifactId>
+            </exclusion>
+        </exclusions>
+    </dependency>
+    <dependency>
+        <groupId>com.h2database</groupId>
+        <artifactId>h2</artifactId>
+        <scope>runtime</scope>
+    </dependency>
+</dependencies>
 ```
 
-本地开发账号为 `admin` / `test`。该账号只适用于本地环境。
+两个 frontend exclusion 用于排除 Flowable 自带的旧版前端。本项目构建产物会作为唯一的 Modeler
+前端。`application.properties` 使用下面的最小配置：
+
+```properties
+spring.application.name=flowable-modeler-backend
+
+spring.datasource.url=jdbc:h2:file:./data/flowable;DB_CLOSE_ON_EXIT=FALSE
+spring.datasource.username=sa
+spring.datasource.password=
+
+spring.security.filter.dispatcher-types=REQUEST,FORWARD,ASYNC
+
+flowable.common.app.role-prefix=
+flowable.idm.app.admin.user-id=admin
+flowable.idm.app.admin.password=test
+flowable.idm.app.admin.first-name=Flowable
+flowable.idm.app.admin.last-name=Administrator
+flowable.idm.app.admin.email=admin@flowable.local
+```
+
+启动 `./mvnw spring-boot:run` 后，Flowable 会自动创建 H2 表结构和管理员账号，不需要添加
+Controller、Security 配置或其他 Java 类。本地开发账号为 `admin` / `test`，仅用于开发环境。
 
 ## 开发
 
@@ -116,7 +182,7 @@ npm run dev
 npm run dev -- --mode backend
 ```
 
-此时需要先启动 `D:\IdeaProjects\flowable-lab`。
+此时需要先启动上面创建的 Spring Boot 后端。
 
 Flowable 7 已移除表单能力，因此表单属性面板默认关闭。只有仍使用 Flowable 6 表单能力的部署才应
 在 Vite 构建环境中显式开启：
@@ -143,13 +209,13 @@ npm run build:backend
 Vite 使用相对资源路径，生产构建产物输出到默认目录：
 
 ```text
-D:\WebstormProjects\flowable-process-modeler\dist
+dist/
 ```
 
-部署到配套 Spring Boot 后端时，将 `dist` 中的产物放入：
+部署到 Spring Boot 后端时，将 `dist` 中的产物放入后端工程的：
 
 ```text
-D:\IdeaProjects\flowable-lab\src\main\resources\static\flowable-modeler
+src/main/resources/static/flowable-modeler
 ```
 
 部署后访问：
