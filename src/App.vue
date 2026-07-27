@@ -32,6 +32,8 @@ const router = useRouter()
 const api = shallowRef<ModelerClient | null>(null)
 const authenticated = ref(false)
 const sessionRestoring = ref(true)
+const authenticationPending = ref(true)
+const modelMutationPending = ref(false)
 const loginError = ref('')
 const loginErrorKey = ref<string | null>(null)
 const loginErrorParams = ref<TranslationParams>({})
@@ -107,10 +109,15 @@ async function navigateToLogin(preserveEditorRoute = false) {
   })
 }
 
-function requireSession(): SessionContext {
+function currentSession(): SessionContext | null {
   const client = api.value
-  if (!client) throw new Error(translate('shell.auth.required'))
-  return { client, generation: authGeneration }
+  return client ? { client, generation: authGeneration } : null
+}
+
+function requireSession(): SessionContext {
+  const context = currentSession()
+  if (!context) throw new Error(translate('shell.auth.required'))
+  return context
 }
 
 function isCurrentSession(context: SessionContext) {
@@ -133,6 +140,15 @@ function clearLoginError() {
   loginErrorKey.value = null
   loginErrorParams.value = {}
   loginError.value = ''
+}
+
+function sessionOrReport(fallback: string) {
+  try {
+    return requireSession()
+  } catch (error) {
+    reportError(error, fallback)
+    return null
+  }
 }
 
 function setLoginError(
@@ -164,9 +180,12 @@ function resetSession(messageKey?: string) {
   listRequest += 1
   api.value = null
   authenticated.value = false
+  authenticationPending.value = false
+  modelMutationPending.value = false
   username.value = ''
   models.value = []
   totalModels.value = 0
+  currentQuery.value = { sort: 'modifiedDesc' }
   clearActiveModel()
   sessionRestoring.value = false
   if (messageKey) setTranslatedLoginError(messageKey)
@@ -188,10 +207,12 @@ function replaceModel(updated: ProcessModel) {
 }
 
 async function login(credentials: ModelerCredentials) {
+  if (authenticationPending.value) return
+  authenticationPending.value = true
   const generation = ++authGeneration
   clearLoginError()
-  const candidate = createModelerClient()
   try {
+    const candidate = createModelerClient()
     await candidate.authenticate(credentials)
     if (generation !== authGeneration) return
     const account = await candidate.getAccount()
@@ -207,13 +228,15 @@ async function login(credentials: ModelerCredentials) {
     if (generation !== authGeneration) return
     if (isAuthenticationError(error)) setTranslatedLoginError('shell.auth.invalidCredentials')
     else setLoginErrorFrom(error, 'shell.auth.unavailable')
+  } finally {
+    if (generation === authGeneration) authenticationPending.value = false
   }
 }
 
 async function restoreSession() {
   const generation = ++authGeneration
-  const candidate = createModelerClient()
   try {
+    const candidate = createModelerClient()
     const account = await candidate.getAccount()
     if (generation !== authGeneration) return
     const result = await candidate.listModels(currentQuery.value)
@@ -229,21 +252,28 @@ async function restoreSession() {
       setLoginErrorFrom(error, 'shell.auth.unavailable')
     }
   } finally {
-    if (generation === authGeneration) sessionRestoring.value = false
+    if (generation === authGeneration) {
+      sessionRestoring.value = false
+      authenticationPending.value = false
+    }
   }
 }
 
 async function logout() {
+  if (authenticationPending.value) return
   const client = api.value
   if (!client) return
 
+  authenticationPending.value = true
   const generation = ++authGeneration
   listRequest += 1
   api.value = null
   authenticated.value = false
+  modelMutationPending.value = false
   username.value = ''
   models.value = []
   totalModels.value = 0
+  currentQuery.value = { sort: 'modifiedDesc' }
   clearActiveModel()
   clearLoginError()
 
@@ -253,11 +283,14 @@ async function logout() {
     if (generation === authGeneration) {
       setLoginErrorFrom(error, 'shell.auth.logoutFailed')
     }
+  } finally {
+    if (generation === authGeneration) authenticationPending.value = false
   }
 }
 
 async function loadModels(query: ProcessModelQuery = currentQuery.value) {
-  const context = requireSession()
+  const context = currentSession()
+  if (!context) return
   currentQuery.value = { ...query }
   const request = ++listRequest
   try {
@@ -275,7 +308,8 @@ async function loadModels(query: ProcessModelQuery = currentQuery.value) {
 }
 
 async function loadModelForRoute(id: string) {
-  const context = requireSession()
+  const context = currentSession()
+  if (!context) return false
   const request = ++editorRequest
   try {
     const [model, editorDocument] = await Promise.all([
@@ -310,7 +344,11 @@ async function loadModelForRoute(id: string) {
 }
 
 async function createModel(input: CreateModelInput) {
-  const context = requireSession()
+  if (modelMutationPending.value) return
+  const fallback = translate('shell.models.createFailed')
+  const context = sessionOrReport(fallback)
+  if (!context) return
+  modelMutationPending.value = true
   try {
     const created = await context.client.createModel(input)
     assertCurrentSession(context)
@@ -320,12 +358,18 @@ async function createModel(input: CreateModelInput) {
       query: route.query,
     })
   } catch (error) {
-    handleSessionError(error, context, translate('shell.models.createFailed'))
+    handleSessionError(error, context, fallback)
+  } finally {
+    if (isCurrentSession(context)) modelMutationPending.value = false
   }
 }
 
 async function importModel(input: ImportModelInput) {
-  const context = requireSession()
+  if (modelMutationPending.value) return
+  const fallback = translate('shell.models.importFailed')
+  const context = sessionOrReport(fallback)
+  if (!context) return
+  modelMutationPending.value = true
   let created: ProcessModel | null = null
   try {
     const metadata = parseBpmnMetadata(input.xml)
@@ -365,7 +409,9 @@ async function importModel(input: ImportModelInput) {
         }
       }
     }
-    handleSessionError(error, context, translate('shell.models.importFailed'))
+    handleSessionError(error, context, fallback)
+  } finally {
+    if (isCurrentSession(context)) modelMutationPending.value = false
   }
 }
 
@@ -434,7 +480,12 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
 }
 
 async function deleteModel(id: string) {
-  const context = requireSession()
+  if (modelMutationPending.value) return
+  const fallback = translate('shell.models.deleteFailed')
+  const context = sessionOrReport(fallback)
+  if (!context) return
+  modelMutationPending.value = true
+  listRequest += 1
   try {
     await context.client.deleteModel(id)
     assertCurrentSession(context)
@@ -442,7 +493,12 @@ async function deleteModel(id: string) {
     totalModels.value = Math.max(0, totalModels.value - 1)
     ElMessage.success(translate('shell.models.deleteSuccess'))
   } catch (error) {
-    handleSessionError(error, context, translate('shell.models.deleteFailed'))
+    handleSessionError(error, context, fallback)
+  } finally {
+    if (isCurrentSession(context)) {
+      await loadModels(currentQuery.value)
+      if (isCurrentSession(context)) modelMutationPending.value = false
+    }
   }
 }
 
@@ -462,6 +518,8 @@ async function syncRouteState() {
 
 const modelerApplication: ModelerApplication = {
   authenticated,
+  authenticationPending,
+  modelMutationPending,
   loginError,
   username,
   models,

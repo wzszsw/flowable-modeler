@@ -232,12 +232,19 @@ http://127.0.0.1:8080/flowable-modeler/index.html#/processes/{modelId}
 ## 验证
 
 ```bash
-npm run type-check
-npm run test:moddle
-npm run test:flowable
-npm run build
+npm run verify
 ```
 
+`verify` 不启动 Flowable 后台，依次执行以下本地验证：
+
+- `check`：TypeScript/Vue 类型检查、国际化目录一致性检查和 BPMN moddle 往返测试。
+- `test:flowable`：使用本地 Flowable 转换器做引擎级解析和往返检查。
+- `test:browser`：自动启动临时 Vite 服务并强制使用 IndexedDB 模式，在隔离的 Chrome/Edge
+  上验证模型导入、异步操作防重、失败恢复、会话失效竞态和服务任务实现属性清理；HTTP
+  场景由浏览器拦截模拟，不需要启动后台。
+- `build`：生产构建检查。
+
+浏览器不在常见安装位置时，可通过 `FLOWABLE_BROWSER_PATH` 指定 Chrome/Edge 可执行文件。
 `test:flowable` 使用本地 Flowable 6.8.1 `BpmnXMLConverter` 对测试产物做引擎级解析和
 往返检查。Flowable 源码不在默认位置时可以给 `scripts/check-flowable.ps1` 传入
 `-FlowableRoot`。

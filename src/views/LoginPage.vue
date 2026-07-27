@@ -8,6 +8,7 @@ const application = useModelerApplication()
 <template>
   <LoginView
     :error="application.loginError.value"
+    :pending="application.authenticationPending.value"
     @login="application.login"
   />
 </template>

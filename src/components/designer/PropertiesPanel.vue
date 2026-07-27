@@ -689,11 +689,7 @@ function hydrate() {
       text(getBusinessProperty(loop, 'flowable:collection')) ||
       text(collectionHandler?.expression) ||
       text(collectionHandler?.string)
-    form.multiSource = form.loopCardinality
-      ? 'cardinality'
-      : collectionHandler || form.collection
-        ? 'collection'
-        : 'collection'
+    form.multiSource = form.loopCardinality ? 'cardinality' : 'collection'
     form.elementVariable = text(getBusinessProperty(loop, 'flowable:elementVariable'))
     form.elementIndexVariable = text(getBusinessProperty(loop, 'flowable:elementIndexVariable'))
     form.completionCondition = text(loop.completionCondition?.body)
@@ -704,7 +700,7 @@ function hydrate() {
     form.collection = ''
     form.elementVariable = ''
     form.elementIndexVariable = ''
-  form.completionCondition = ''
+    form.completionCondition = ''
   }
 
   const definition = bo.eventDefinitions?.[0]
@@ -920,7 +916,6 @@ function changeImplementationType() {
       form.useLocalScopeForResultVariable = false
       form.storeResultVariableAsTransient = false
     }
-    return
   }
   updateImplementation()
 }

@@ -24,6 +24,7 @@ interface StoredProcessModel extends ProcessModel {
 }
 
 let databasePromise: Promise<IDBDatabase> | null = null
+let databaseInstance: IDBDatabase | null = null
 
 function storageError(details?: unknown) {
   return ModelerApiError.fromMessageKey('shell.local.storageUnavailable', { details })
@@ -36,11 +37,25 @@ function modelNotFound(id: string) {
   })
 }
 
+function invalidateDatabase(database: IDBDatabase) {
+  database.close()
+  if (databaseInstance !== database) return
+  databaseInstance = null
+  databasePromise = null
+}
+
+function rethrowStorageError(database: IDBDatabase, error: unknown): never {
+  if (error instanceof ModelerApiError) throw error
+  invalidateDatabase(database)
+  throw storageError(error)
+}
+
 function openDatabase() {
   if (!globalThis.indexedDB) return Promise.reject(storageError())
   if (databasePromise) return databasePromise
 
-  databasePromise = new Promise<IDBDatabase>((resolve, reject) => {
+  let abandoned = false
+  const openingPromise = new Promise<IDBDatabase>((resolve, reject) => {
     const request = indexedDB.open(DATABASE_NAME, DATABASE_VERSION)
     request.onupgradeneeded = () => {
       const database = request.result
@@ -50,23 +65,36 @@ function openDatabase() {
     }
     request.onsuccess = () => {
       const database = request.result
+      if (abandoned) {
+        database.close()
+        return
+      }
+      const clearCachedConnection = () => {
+        if (databaseInstance === database) databaseInstance = null
+        if (databasePromise === openingPromise) databasePromise = null
+      }
       database.onversionchange = () => {
         database.close()
-        databasePromise = null
+        clearCachedConnection()
       }
+      database.onclose = clearCachedConnection
+      databaseInstance = database
       resolve(database)
     }
     request.onerror = () => {
-      databasePromise = null
       reject(storageError(request.error))
     }
     request.onblocked = () => {
-      databasePromise = null
+      abandoned = true
       reject(storageError())
     }
   })
 
-  return databasePromise
+  databasePromise = openingPromise
+  void openingPromise.catch(() => {
+    if (databasePromise === openingPromise) databasePromise = null
+  })
+  return openingPromise
 }
 
 async function runTransaction<T>(
@@ -74,18 +102,35 @@ async function runTransaction<T>(
   execute: (store: IDBObjectStore) => IDBRequest<T>,
 ) {
   const database = await openDatabase()
-  return new Promise<T>((resolve, reject) => {
-    const transaction = database.transaction(MODEL_STORE, mode)
-    const request = execute(transaction.objectStore(MODEL_STORE))
-    let result: T
+  try {
+    return await new Promise<T>((resolve, reject) => {
+      const transaction = database.transaction(MODEL_STORE, mode)
+      const request = execute(transaction.objectStore(MODEL_STORE))
+      let requestCompleted = false
+      let result: T
 
-    request.onsuccess = () => {
-      result = request.result
-    }
-    transaction.oncomplete = () => resolve(result)
-    transaction.onerror = () => reject(storageError(transaction.error || request.error))
-    transaction.onabort = () => reject(storageError(transaction.error || request.error))
-  })
+      request.onsuccess = () => {
+        requestCompleted = true
+        result = request.result
+      }
+      transaction.oncomplete = () => {
+        if (requestCompleted) resolve(result)
+        else reject(storageError(request.error))
+      }
+      transaction.onerror = () => reject(storageError(transaction.error || request.error))
+      transaction.onabort = () => reject(storageError(transaction.error || request.error))
+    })
+  } catch (error) {
+    rethrowStorageError(database, error)
+  }
+}
+
+function cloneEditorModel(model: Record<string, unknown>) {
+  try {
+    return structuredClone(model)
+  } catch (error) {
+    throw storageError(error)
+  }
 }
 
 async function readRecord(id: string) {
@@ -198,75 +243,105 @@ export class IndexedDbModelerApi {
       description: record.description,
       lastUpdated: record.lastUpdated,
       lastUpdatedBy: record.lastUpdatedBy,
-      model: structuredClone(record.editorModel),
+      model: cloneEditorModel(record.editorModel),
     }
   }
 
   async saveEditorModel(id: string, input: SaveEditorModelInput) {
+    const editorModel = cloneEditorModel(input.model)
     const database = await openDatabase()
-    return new Promise<ProcessModel>((resolve, reject) => {
-      const transaction = database.transaction(MODEL_STORE, 'readwrite')
-      const store = transaction.objectStore(MODEL_STORE)
-      const request = store.get(id) as IDBRequest<StoredProcessModel | undefined>
-      let saved: StoredProcessModel | undefined
-      let expectedError: ModelerApiError | undefined
+    try {
+      return await new Promise<ProcessModel>((resolve, reject) => {
+        const transaction = database.transaction(MODEL_STORE, 'readwrite')
+        const store = transaction.objectStore(MODEL_STORE)
+        const request = store.get(id) as IDBRequest<StoredProcessModel | undefined>
+        let saved: StoredProcessModel | undefined
+        let expectedError: ModelerApiError | undefined
 
-      request.onsuccess = () => {
-        const record = request.result
-        if (!record) {
-          expectedError = modelNotFound(id)
-          transaction.abort()
-          return
-        }
-        if (
-          record.lastUpdated !== input.lastUpdated &&
-          input.conflictResolveAction !== 'overwrite'
-        ) {
-          expectedError = ModelerApiError.fromMessageKey('shell.local.modelConflict', {
-            status: 409,
-          })
-          transaction.abort()
-          return
-        }
+        request.onsuccess = () => {
+          try {
+            const record = request.result
+            if (!record) {
+              expectedError = modelNotFound(id)
+              transaction.abort()
+              return
+            }
+            if (
+              record.lastUpdated !== input.lastUpdated &&
+              input.conflictResolveAction !== 'overwrite'
+            ) {
+              expectedError = ModelerApiError.fromMessageKey('shell.local.modelConflict', {
+                status: 409,
+              })
+              transaction.abort()
+              return
+            }
 
-        saved = {
-          ...record,
-          name: input.name,
-          key: input.key,
-          description: input.description,
-          lastUpdated: nextUpdatedAt(record.lastUpdated),
-          lastUpdatedBy: LOCAL_ACCOUNT_ID,
-          version:
-            input.conflictResolveAction === 'newVersion' ? record.version + 1 : record.version,
-          editorModel: structuredClone(input.model),
+            saved = {
+              ...record,
+              name: input.name,
+              key: input.key,
+              description: input.description,
+              lastUpdated: nextUpdatedAt(record.lastUpdated),
+              lastUpdatedBy: LOCAL_ACCOUNT_ID,
+              version:
+                input.conflictResolveAction === 'newVersion' ? record.version + 1 : record.version,
+              editorModel,
+            }
+            store.put(saved)
+          } catch (error) {
+            expectedError = storageError(error)
+            try {
+              transaction.abort()
+            } catch {
+              reject(expectedError)
+            }
+          }
         }
-        store.put(saved)
-      }
-      transaction.oncomplete = () => resolve(toProcessModel(saved!))
-      transaction.onerror = () => reject(expectedError || storageError(transaction.error))
-      transaction.onabort = () => reject(expectedError || storageError(transaction.error))
-    })
+        transaction.oncomplete = () => {
+          if (saved) resolve(toProcessModel(saved))
+          else reject(storageError())
+        }
+        transaction.onerror = () => reject(expectedError || storageError(transaction.error))
+        transaction.onabort = () => reject(expectedError || storageError(transaction.error))
+      })
+    } catch (error) {
+      rethrowStorageError(database, error)
+    }
   }
 
   async deleteModel(id: string) {
     const database = await openDatabase()
-    await new Promise<void>((resolve, reject) => {
-      const transaction = database.transaction(MODEL_STORE, 'readwrite')
-      const store = transaction.objectStore(MODEL_STORE)
-      const request = store.getKey(id)
-      let expectedError: ModelerApiError | undefined
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(MODEL_STORE, 'readwrite')
+        const store = transaction.objectStore(MODEL_STORE)
+        const request = store.getKey(id)
+        let expectedError: ModelerApiError | undefined
 
-      request.onsuccess = () => {
-        if (request.result === undefined) {
-          expectedError = modelNotFound(id)
-          transaction.abort()
-          return
+        request.onsuccess = () => {
+          try {
+            if (request.result === undefined) {
+              expectedError = modelNotFound(id)
+              transaction.abort()
+              return
+            }
+            store.delete(id)
+          } catch (error) {
+            expectedError = storageError(error)
+            try {
+              transaction.abort()
+            } catch {
+              reject(expectedError)
+            }
+          }
         }
-        store.delete(id)
-      }
-      transaction.oncomplete = () => resolve()
-      transaction.onerror = () => reject(expectedError || storageError(transaction.error))
-      transaction.onabort = () => reject(expectedError || storageError(transaction.error))
-    })
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(expectedError || storageError(transaction.error))
+        transaction.onabort = () => reject(expectedError || storageError(transaction.error))
+      })
+    } catch (error) {
+      rethrowStorageError(database, error)
+    }
   }
 }

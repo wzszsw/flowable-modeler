@@ -45,6 +45,7 @@ const props = defineProps<{
   models: readonly ProcessModel[]
   total: number
   username: string
+  operationPending: boolean
 }>()
 
 const emit = defineEmits<{
@@ -67,6 +68,11 @@ const sortMode = ref<ModelSort>('modifiedDesc')
 const createDialogVisible = ref(false)
 const createFormRef = ref<FormInstance>()
 const importInputRef = ref<HTMLInputElement>()
+const createSubmitting = ref(false)
+const importReading = ref(false)
+const interactionPending = computed(
+  () => props.operationPending || createSubmitting.value || importReading.value,
+)
 const createForm = reactive<ModelCreateForm>({
   name: '',
   key: '',
@@ -107,6 +113,9 @@ const sortOptions = computed<Array<{ value: ModelSort; label: string }>>(() => [
 const modelCountLabel = computed(() => t('shell.models.count', props.total))
 
 let searchTimer: ReturnType<typeof setTimeout> | undefined
+let queryDeferred = false
+let importReadGeneration = 0
+let disposed = false
 
 function currentQuery(): ProcessModelQuery {
   return { filterText: searchQuery.value.trim(), sort: sortMode.value }
@@ -118,20 +127,39 @@ function clearSearchTimer() {
   searchTimer = undefined
 }
 
+function emitCurrentQuery() {
+  if (interactionPending.value) {
+    queryDeferred = true
+    return
+  }
+  queryDeferred = false
+  emit('queryChange', currentQuery())
+}
+
 watch(searchQuery, () => {
   clearSearchTimer()
   searchTimer = setTimeout(() => {
     searchTimer = undefined
-    emit('queryChange', currentQuery())
+    emitCurrentQuery()
   }, SEARCH_DEBOUNCE_MS)
 })
 
 watch(sortMode, () => {
   clearSearchTimer()
-  emit('queryChange', currentQuery())
+  emitCurrentQuery()
 })
+watch(
+  interactionPending,
+  (pending) => {
+    if (!pending && queryDeferred) emitCurrentQuery()
+  },
+)
 watch(locale, () => createFormRef.value?.clearValidate())
-onBeforeUnmount(clearSearchTimer)
+onBeforeUnmount(() => {
+  disposed = true
+  importReadGeneration += 1
+  clearSearchTimer()
+})
 
 const dateTimeFormatter = computed(
   () =>
@@ -158,29 +186,36 @@ function resetCreateForm() {
 }
 
 function openCreateDialog() {
+  if (interactionPending.value) return
   resetCreateForm()
   createDialogVisible.value = true
   void nextTick(() => createFormRef.value?.clearValidate())
 }
 
 async function submitCreate() {
+  if (interactionPending.value) return
   if (!createFormRef.value) return
+  createSubmitting.value = true
   try {
-    const valid = await createFormRef.value.validate()
-    if (!valid) return
-  } catch {
-    return
+    try {
+      const valid = await createFormRef.value.validate()
+      if (!valid) return
+    } catch {
+      return
+    }
+    if (disposed || props.operationPending || importReading.value) return
+    emit('create', {
+      name: createForm.name.trim(),
+      key: createForm.key.trim(),
+      description: createForm.description.trim(),
+    })
+  } finally {
+    createSubmitting.value = false
   }
-
-  emit('create', {
-    name: createForm.name.trim(),
-    key: createForm.key.trim(),
-    description: createForm.description.trim(),
-  })
-  createDialogVisible.value = false
 }
 
 function chooseImportFile() {
+  if (interactionPending.value) return
   importInputRef.value?.click()
 }
 
@@ -188,23 +223,31 @@ async function handleImportFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file) return
+  if (!file || interactionPending.value) return
 
+  const generation = ++importReadGeneration
+  importReading.value = true
   try {
     const xml = await file.text()
+    if (disposed || generation !== importReadGeneration || props.operationPending) return
     const metadata = parseBpmnMetadata(xml)
+    if (disposed || generation !== importReadGeneration || props.operationPending) return
     emit('import', {
       xml,
       fileName: file.name || `${metadata.key}.bpmn20.xml`,
       ...metadata,
     })
   } catch (error) {
+    if (disposed || generation !== importReadGeneration) return
     const detail = error instanceof Error ? error.message : t('shell.models.fileReadFailed')
     ElMessage.error(t('shell.models.importError', { detail }))
+  } finally {
+    if (generation === importReadGeneration) importReading.value = false
   }
 }
 
 async function confirmDelete(model: ProcessModel) {
+  if (interactionPending.value) return
   try {
     await ElMessageBox.confirm(
       t('shell.models.deleteConfirm', { name: model.name }),
@@ -219,11 +262,12 @@ async function confirmDelete(model: ProcessModel) {
   } catch {
     return
   }
+  if (interactionPending.value) return
   emit('delete', model.id)
 }
 
 function handleUserCommand(command: string | number | object) {
-  if (command === 'logout') emit('logout')
+  if (!interactionPending.value && command === 'logout') emit('logout')
 }
 </script>
 
@@ -241,10 +285,16 @@ function handleUserCommand(command: string | number | object) {
         <div class="header-actions">
           <LanguageSwitcher />
           <span class="header-divider" aria-hidden="true" />
-          <el-dropdown v-if="backendEnabled" trigger="click" @command="handleUserCommand">
+          <el-dropdown
+            v-if="backendEnabled"
+            :disabled="interactionPending"
+            trigger="click"
+            @command="handleUserCommand"
+          >
             <button
               type="button"
               class="user-menu-trigger"
+              :disabled="interactionPending"
               :title="username"
               :aria-label="username"
               data-testid="user-menu"
@@ -283,6 +333,7 @@ function handleUserCommand(command: string | number | object) {
             <el-button
               :icon="RefreshCw"
               circle
+              :disabled="interactionPending"
               :aria-label="t('shell.models.refresh')"
               data-testid="refresh-models"
               @click="emit('refresh')"
@@ -291,6 +342,8 @@ function handleUserCommand(command: string | number | object) {
           <el-button
             data-testid="import-model"
             :icon="Upload"
+            :loading="importReading"
+            :disabled="interactionPending"
             :aria-label="t('shell.models.import')"
             @click="chooseImportFile"
           >
@@ -299,6 +352,8 @@ function handleUserCommand(command: string | number | object) {
           <el-button
             type="primary"
             :icon="Plus"
+            :loading="operationPending || createSubmitting"
+            :disabled="interactionPending"
             data-testid="create-model"
             :aria-label="t('shell.models.createAria')"
             @click="openCreateDialog"
@@ -312,6 +367,7 @@ function handleUserCommand(command: string | number | object) {
         <el-input
           v-model="searchQuery"
           class="search-input"
+          :disabled="interactionPending"
           :prefix-icon="Search"
           clearable
           data-testid="model-search"
@@ -321,6 +377,7 @@ function handleUserCommand(command: string | number | object) {
         <el-select
           v-model="sortMode"
           class="sort-select"
+          :disabled="interactionPending"
           data-testid="model-sort"
           :aria-label="t('shell.models.sortAria')"
         >
@@ -355,6 +412,7 @@ function handleUserCommand(command: string | number | object) {
           <button
             type="button"
             class="model-identity"
+            :disabled="interactionPending"
             data-testid="model-primary-open"
             :aria-label="t('shell.models.openAria', { name: model.name })"
             @click="emit('open', model.id)"
@@ -374,6 +432,7 @@ function handleUserCommand(command: string | number | object) {
             <el-button
               text
               :icon="FolderOpen"
+              :disabled="interactionPending"
               data-testid="open-model"
               :aria-label="t('shell.models.openAria', { name: model.name })"
               @click.stop="emit('open', model.id)"
@@ -385,6 +444,7 @@ function handleUserCommand(command: string | number | object) {
                 text
                 type="danger"
                 :icon="Trash2"
+                :disabled="interactionPending"
                 data-testid="delete-model"
                 :aria-label="t('shell.models.deleteAria', { name: model.name })"
                 @click.stop="confirmDelete(model)"
@@ -404,6 +464,8 @@ function handleUserCommand(command: string | number | object) {
             <div v-else class="empty-actions">
               <el-button
                 :icon="Upload"
+                :loading="importReading"
+                :disabled="interactionPending"
                 data-testid="empty-import-model"
                 :aria-label="t('shell.models.import')"
                 @click="chooseImportFile"
@@ -413,6 +475,8 @@ function handleUserCommand(command: string | number | object) {
               <el-button
                 type="primary"
                 :icon="Plus"
+                :loading="operationPending || createSubmitting"
+                :disabled="interactionPending"
                 :aria-label="t('shell.models.createAria')"
                 @click="openCreateDialog"
               >
@@ -428,6 +492,7 @@ function handleUserCommand(command: string | number | object) {
       ref="importInputRef"
       class="visually-hidden"
       type="file"
+      :disabled="interactionPending"
       accept=".bpmn,.xml,.bpmn20.xml,application/xml,text/xml"
       data-testid="model-import-input"
       @change="handleImportFile"
@@ -438,6 +503,9 @@ function handleUserCommand(command: string | number | object) {
       class="model-create-dialog"
       width="min(520px, calc(100vw - 32px))"
       :title="t('shell.models.createDialogTitle')"
+      :close-on-click-modal="!interactionPending"
+      :close-on-press-escape="!interactionPending"
+      :show-close="!interactionPending"
       data-testid="model-create-dialog"
       :teleported="false"
       @closed="resetCreateForm"
@@ -446,6 +514,7 @@ function handleUserCommand(command: string | number | object) {
         ref="createFormRef"
         :model="createForm"
         :rules="createRules"
+        :disabled="interactionPending"
         label-position="top"
         @submit.prevent="submitCreate"
       >
@@ -479,9 +548,13 @@ function handleUserCommand(command: string | number | object) {
         </el-form-item>
       </el-form>
       <template #footer>
-        <el-button @click="createDialogVisible = false">{{ t('shell.common.cancel') }}</el-button>
+        <el-button :disabled="interactionPending" @click="createDialogVisible = false">
+          {{ t('shell.common.cancel') }}
+        </el-button>
         <el-button
           type="primary"
+          :loading="operationPending || createSubmitting"
+          :disabled="interactionPending"
           data-testid="confirm-create-model"
           @click="submitCreate"
         >
@@ -583,6 +656,12 @@ function handleUserCommand(command: string | number | object) {
 .user-menu-trigger:hover {
   border-color: #e4e7ec;
   background: #f9fafb;
+}
+
+.user-menu-trigger:disabled,
+.model-identity:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
 }
 
 .user-menu-trigger:focus-visible {

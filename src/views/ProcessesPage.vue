@@ -23,6 +23,9 @@ function openModel(id: string) {
     :models="application.models.value"
     :total="application.totalModels.value"
     :username="application.username.value"
+    :operation-pending="
+      application.authenticationPending.value || application.modelMutationPending.value
+    "
     @create="application.createModel"
     @import="application.importModel"
     @open="openModel"

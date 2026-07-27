@@ -233,6 +233,7 @@ let nativeImportXML: NativeImportXML | null = null
 let resizeObserver: ResizeObserver | null = null
 let modelerDomObserver: MutationObserver | null = null
 let modelerDomLocalizationFrame = 0
+let disposed = false
 
 const importPending = computed(() => pendingImportCount.value > 0)
 const interactionLocked = computed(
@@ -962,6 +963,7 @@ async function performDiagramImport(
           ],
         } as ImportResult)
       : nativeResult
+    if (disposed || modeler.value !== instance) return result
     importWarnings.value = normalizeImportWarnings(result.warnings)
     const canvas = instance.get<CanvasService>('canvas')
     rootElement.value = canvas.getRootElement()
@@ -985,6 +987,7 @@ async function performDiagramImport(
     }
     return result
   } catch (error) {
+    if (disposed || modeler.value !== instance) throw error
     let recoveryError: unknown
     try {
       await restoreFailedImport(instance, importXML, snapshot)
@@ -1036,11 +1039,14 @@ function enqueueDiagramImport(
 
   const operation = importQueue.then(async () => {
     await nextTick()
+    if (disposed || modeler.value !== instance) {
+      throw designerError('designer.errors.modelerNotReady')
+    }
     return performDiagramImport(instance, importXML, xml, options, bpmnDiagram)
   })
   const settledOperation = operation.finally(async () => {
     pendingImportCount.value -= 1
-    if (pendingImportCount.value === 0) {
+    if (pendingImportCount.value === 0 && !disposed && modeler.value === instance) {
       loading.value = false
       ready.value = importStateCoherent.value && Boolean(rootElement.value)
       if (ready.value) setModelerKeyboardEnabled(instance, true)
@@ -1076,7 +1082,7 @@ async function loadInitialDiagram() {
 }
 
 async function initialize() {
-  if (!canvasRef.value) return
+  if (!canvasRef.value || disposed) return
   const instance = new Modeler({
     container: canvasRef.value,
     additionalModules: [minimapModule, TokenSimulationModule, gridModule, bpmnI18nModule],
@@ -1092,6 +1098,7 @@ async function initialize() {
   nativeImportXML = instance.importXML.bind(instance)
   await loadInitialDiagram()
   await waitForQueuedImports()
+  if (disposed || modeler.value !== instance) return
   await nextTick()
   scheduleModelerDomLocalization()
   resizeObserver = new ResizeObserver(() => {
@@ -1236,7 +1243,13 @@ async function handleFileChange(event: Event) {
   if (!isInteractionReady()) return
   if (!file || !(await confirmDiscard())) return
 
-  const xml = await file.text()
+  let xml: string
+  try {
+    xml = await file.text()
+  } catch (error) {
+    ElMessage.error(errorText(error, 'designer.errors.fileReadFailed'))
+    return
+  }
   if (!isInteractionReady()) return
   try {
     await importDiagram(xml, { importedFileName: file.name, markClean: false })
@@ -1269,58 +1282,77 @@ async function commitActiveEditor() {
 
 async function exportXml() {
   if (!isInteractionReady()) return
-  const xml = await getXml()
-  if (!xml) return
-  downloadBlob(xml, normalizedExportName('bpmn20.xml'), 'application/xml;charset=utf-8')
-  ElMessage.success(t('designer.export.xmlSuccess'))
+  try {
+    const xml = await getXml()
+    if (!xml) return
+    downloadBlob(xml, normalizedExportName('bpmn20.xml'), 'application/xml;charset=utf-8')
+    ElMessage.success(t('designer.export.xmlSuccess'))
+  } catch (error) {
+    ElMessage.error(errorText(error, 'designer.errors.exportFailed'))
+  }
 }
 
 async function exportSvg() {
   if (!modeler.value || !isInteractionReady()) return
-  const { svg } = await modeler.value.saveSVG()
-  if (!svg) return
-  downloadBlob(svg, normalizedExportName('svg'), 'image/svg+xml;charset=utf-8')
-  ElMessage.success(t('designer.export.svgSuccess'))
+  try {
+    const { svg } = await modeler.value.saveSVG()
+    if (!svg) return
+    downloadBlob(svg, normalizedExportName('svg'), 'image/svg+xml;charset=utf-8')
+    ElMessage.success(t('designer.export.svgSuccess'))
+  } catch (error) {
+    ElMessage.error(errorText(error, 'designer.errors.exportFailed'))
+  }
 }
 
 async function exportPng() {
   if (!modeler.value || !isInteractionReady()) return
-  const { svg } = await modeler.value.saveSVG()
-  if (!svg) return
-  const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
-  const svgUrl = URL.createObjectURL(svgBlob)
   try {
-    const image = new Image()
-    image.decoding = 'async'
-    image.src = svgUrl
-    await image.decode()
-    const scale = 2
-    const canvas = document.createElement('canvas')
-    canvas.width = Math.max(1, image.naturalWidth || image.width) * scale
-    canvas.height = Math.max(1, image.naturalHeight || image.height) * scale
-    const context = canvas.getContext('2d')
-    if (!context) throw designerError('designer.errors.canvasExportUnsupported')
-    context.fillStyle = '#ffffff'
-    context.fillRect(0, 0, canvas.width, canvas.height)
-    context.drawImage(image, 0, 0, canvas.width, canvas.height)
-    const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
-    if (!png) throw designerError('designer.errors.pngGenerationFailed')
-    const url = URL.createObjectURL(png)
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = normalizedExportName('png')
-    anchor.click()
-    URL.revokeObjectURL(url)
-    ElMessage.success(t('designer.export.pngSuccess'))
-  } finally {
-    URL.revokeObjectURL(svgUrl)
+    const { svg } = await modeler.value.saveSVG()
+    if (!svg) return
+    const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
+    const svgUrl = URL.createObjectURL(svgBlob)
+    try {
+      const image = new Image()
+      image.decoding = 'async'
+      image.src = svgUrl
+      await image.decode()
+      const scale = 2
+      const canvas = document.createElement('canvas')
+      canvas.width = Math.max(1, image.naturalWidth || image.width) * scale
+      canvas.height = Math.max(1, image.naturalHeight || image.height) * scale
+      const context = canvas.getContext('2d')
+      if (!context) throw designerError('designer.errors.canvasExportUnsupported')
+      context.fillStyle = '#ffffff'
+      context.fillRect(0, 0, canvas.width, canvas.height)
+      context.drawImage(image, 0, 0, canvas.width, canvas.height)
+      const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
+      if (!png) throw designerError('designer.errors.pngGenerationFailed')
+      const url = URL.createObjectURL(png)
+      try {
+        const anchor = document.createElement('a')
+        anchor.href = url
+        anchor.download = normalizedExportName('png')
+        anchor.click()
+      } finally {
+        URL.revokeObjectURL(url)
+      }
+      ElMessage.success(t('designer.export.pngSuccess'))
+    } finally {
+      URL.revokeObjectURL(svgUrl)
+    }
+  } catch (error) {
+    ElMessage.error(errorText(error, 'designer.errors.exportFailed'))
   }
 }
 
 async function showXml() {
   if (!isInteractionReady()) return
-  xmlContent.value = await getXml()
-  xmlDialogVisible.value = true
+  try {
+    xmlContent.value = await getXml()
+    xmlDialogVisible.value = true
+  } catch (error) {
+    ElMessage.error(errorText(error, 'designer.errors.xmlReadFailed'))
+  }
 }
 
 async function copyXml() {
@@ -1334,9 +1366,13 @@ async function copyXml() {
 
 async function showPreview() {
   if (!modeler.value || !isInteractionReady()) return
-  const { svg } = await modeler.value.saveSVG()
-  previewSvg.value = svg || ''
-  previewDialogVisible.value = true
+  try {
+    const { svg } = await modeler.value.saveSVG()
+    previewSvg.value = svg || ''
+    previewDialogVisible.value = true
+  } catch (error) {
+    ElMessage.error(errorText(error, 'designer.errors.previewFailed'))
+  }
 }
 
 function runValidation(showDrawer = true) {
@@ -1438,8 +1474,12 @@ async function togglePropertyPanel() {
 
 async function toggleFullscreen() {
   if (!shellRef.value) return
-  if (!document.fullscreenElement) await shellRef.value.requestFullscreen()
-  else await document.exitFullscreen()
+  try {
+    if (!document.fullscreenElement) await shellRef.value.requestFullscreen()
+    else await document.exitFullscreen()
+  } catch (error) {
+    ElMessage.error(errorText(error, 'designer.errors.fullscreenFailed'))
+  }
 }
 
 function onFullscreenChange() {
@@ -1482,20 +1522,25 @@ function sanitizeFileName(name: string) {
 function downloadBlob(content: string, name: string, mimeType: string) {
   const blob = new Blob([content], { type: mimeType })
   const url = URL.createObjectURL(blob)
-  const anchor = document.createElement('a')
-  anchor.href = url
-  anchor.download = name
-  anchor.click()
-  URL.revokeObjectURL(url)
+  try {
+    const anchor = document.createElement('a')
+    anchor.href = url
+    anchor.download = name
+    anchor.click()
+  } finally {
+    URL.revokeObjectURL(url)
+  }
 }
 
 function formatTime(value: string) {
+  const date = new Date(value)
+  if (Number.isNaN(date.getTime())) return value
   return new Intl.DateTimeFormat(locale.value === 'en' ? 'en-US' : 'zh-CN', {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
     hour12: false,
-  }).format(new Date(value))
+  }).format(date)
 }
 
 watch(locale, async () => {
@@ -1527,10 +1572,13 @@ onMounted(() => {
     subtree: true,
     characterData: true,
   })
-  void initialize().catch(handleInitializationError)
+  void initialize().catch((error: unknown) => {
+    if (!disposed) handleInitializationError(error)
+  })
 })
 
 onBeforeUnmount(() => {
+  disposed = true
   resizeObserver?.disconnect()
   modelerDomObserver?.disconnect()
   if (modelerDomLocalizationFrame) window.cancelAnimationFrame(modelerDomLocalizationFrame)
@@ -1538,7 +1586,11 @@ onBeforeUnmount(() => {
   window.removeEventListener('beforeunload', handleBeforeUnload)
   document.removeEventListener('fullscreenchange', onFullscreenChange)
   nativeImportXML = null
-  modeler.value?.destroy()
+  resolveLeaveDecision?.('stay')
+  resolveLeaveDecision = null
+  const instance = modeler.value
+  modeler.value = null
+  instance?.destroy()
 })
 
 defineExpose({

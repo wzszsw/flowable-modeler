@@ -74,6 +74,7 @@ export interface SaveEditorModelInput {
 
 const AUTHENTICATION_URL = '/app/authentication'
 const LOGOUT_URL = '/app/logout'
+const REPEATABLE_REQUEST_TIMEOUT_MS = 30_000
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -154,6 +155,7 @@ export class ModelerApi {
     })
     await this.http.post(AUTHENTICATION_URL, body, {
       baseURL: '/',
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8',
       },
@@ -161,13 +163,16 @@ export class ModelerApi {
   }
 
   async getAccount() {
-    const response = await this.http.get('/account')
+    const response = await this.http.get('/account', {
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
+    })
     return parseAccount(response.data)
   }
 
   async logout() {
     await this.http.post(LOGOUT_URL, undefined, {
       baseURL: '/',
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
       validateStatus: (status) => (status >= 200 && status < 300) || status === 401,
     })
   }
@@ -187,6 +192,7 @@ export class ModelerApi {
     const response = await this.http.get('/models', {
       params: parameters,
       showGlobalLoading: options.showGlobalLoading,
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
     })
     const result = asRecord(response.data)
     const data = Array.isArray(result.data) ? result.data.map(parseProcessModel) : []
@@ -209,12 +215,16 @@ export class ModelerApi {
   }
 
   async getModel(id: string) {
-    const response = await this.http.get(`/models/${encodeURIComponent(id)}`)
+    const response = await this.http.get(`/models/${encodeURIComponent(id)}`, {
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
+    })
     return parseProcessModel(response.data)
   }
 
   async getEditorModel(id: string) {
-    const response = await this.http.get(`/models/${encodeURIComponent(id)}/editor/json`)
+    const response = await this.http.get(`/models/${encodeURIComponent(id)}/editor/json`, {
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
+    })
     return parseEditorDocument(response.data)
   }
 
@@ -238,6 +248,8 @@ export class ModelerApi {
   }
 
   async deleteModel(id: string) {
-    await this.http.delete(`/models/${encodeURIComponent(id)}`)
+    await this.http.delete(`/models/${encodeURIComponent(id)}`, {
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
+    })
   }
 }

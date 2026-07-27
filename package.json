@@ -10,10 +10,13 @@
     "preview": "vite preview",
     "build-only": "vite build",
     "build-only:backend": "vite build --mode backend",
+    "check": "run-p type-check test:i18n test:moddle",
+    "verify": "run-s check test:flowable test:browser build",
     "type-check": "vue-tsc --build",
     "test:i18n": "node --experimental-strip-types scripts/i18n-catalog.mjs",
     "test:moddle": "node --experimental-strip-types scripts/moddle-roundtrip.mjs",
-    "test:flowable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-flowable.ps1"
+    "test:flowable": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/check-flowable.ps1",
+    "test:browser": "node scripts/local-browser-smoke.mjs"
   },
   "dependencies": {
     "@element-plus/icons-vue": "^2.3.2",
@@ -37,6 +40,7 @@
     "@vitejs/plugin-vue": "^6.0.8",
     "@vue/tsconfig": "^0.9.1",
     "npm-run-all2": "^9.0.2",
+    "playwright-core": "^1.62.0",
     "typescript": "~6.0.0",
     "unocss": "^66.7.5",
     "vite": "^8.1.5",

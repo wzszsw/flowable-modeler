@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, reactive, ref, watch } from 'vue'
-import type { FormInstance, FormRules } from 'element-plus'
+import { computed, nextTick, reactive, ref, watch } from 'vue'
+import type { FormInstance, FormRules, InputInstance } from 'element-plus'
 import { LockKeyhole, UserRound, Workflow } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 
@@ -11,8 +11,9 @@ interface LoginForm {
   password: string
 }
 
-defineProps<{
+const props = defineProps<{
   error: string
+  pending: boolean
 }>()
 
 const emit = defineEmits<{
@@ -21,6 +22,8 @@ const emit = defineEmits<{
 
 const { locale, t } = useI18n()
 const formRef = ref<FormInstance>()
+const usernameInputRef = ref<InputInstance>()
+const passwordInputRef = ref<InputInstance>()
 const form = reactive<LoginForm>({ username: '', password: '' })
 const rules = computed<FormRules<LoginForm>>(() => ({
   username: [
@@ -41,14 +44,25 @@ const rules = computed<FormRules<LoginForm>>(() => ({
 }))
 
 watch(locale, () => formRef.value?.clearValidate())
+watch(
+  () => props.pending,
+  async (pending, wasPending) => {
+    if (pending || !wasPending) return
+    await nextTick()
+    if (form.username) passwordInputRef.value?.focus()
+    else usernameInputRef.value?.focus()
+  },
+)
 
 async function submit() {
+  if (props.pending) return
   if (!formRef.value) return
   try {
     if (!(await formRef.value.validate())) return
   } catch {
     return
   }
+  if (props.pending) return
   const credentials = { username: form.username.trim(), password: form.password }
   form.password = ''
   emit('login', credentials)
@@ -87,12 +101,14 @@ async function submit() {
         ref="formRef"
         :model="form"
         :rules="rules"
+        :disabled="pending"
         label-position="top"
         size="large"
         @submit.prevent="submit"
       >
         <el-form-item :label="t('shell.login.username')" prop="username">
           <el-input
+            ref="usernameInputRef"
             v-model="form.username"
             :prefix-icon="UserRound"
             autocomplete="username"
@@ -102,6 +118,7 @@ async function submit() {
         </el-form-item>
         <el-form-item :label="t('shell.login.password')" prop="password">
           <el-input
+            ref="passwordInputRef"
             v-model="form.password"
             :prefix-icon="LockKeyhole"
             type="password"
@@ -114,6 +131,8 @@ async function submit() {
           class="login-submit"
           type="primary"
           native-type="submit"
+          :loading="pending"
+          :disabled="pending"
           data-testid="login-submit"
         >
           {{ t('shell.login.submit') }}

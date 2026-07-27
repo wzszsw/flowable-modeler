@@ -28,6 +28,8 @@ export interface ImportModelInput extends CreateModelInput {
 
 export interface ModelerApplication {
   authenticated: Ref<boolean>
+  authenticationPending: Ref<boolean>
+  modelMutationPending: Ref<boolean>
   loginError: Ref<string>
   username: Ref<string>
   models: Ref<ProcessModel[]>
