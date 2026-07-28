@@ -37,12 +37,6 @@ function navigationQuery(extra: Record<string, string> = {}) {
   return { ...(language ? { lang: language } : {}), ...extra }
 }
 
-function routeNameForCategory(category: ModelCategory) {
-  if (category === 'cases') return ROUTE_NAMES.cases
-  if (category === 'decisions') return ROUTE_NAMES.decisions
-  return ROUTE_NAMES.processes
-}
-
 function openModel(id: string) {
   const model = application.models.value.find((candidate) => candidate.id === id)
   if (!model) return
@@ -50,13 +44,6 @@ function openModel(id: string) {
     name: editorRouteName(model.modelType),
     params: { modelId: id },
     query: navigationQuery(),
-  })
-}
-
-function changeCategory(category: ModelCategory) {
-  void router.push({
-    name: routeNameForCategory(category),
-    query: navigationQuery(category === 'decisions' ? { type: 'table' } : {}),
   })
 }
 
@@ -98,7 +85,6 @@ watch(
     @query-change="application.loadModels"
     @refresh="application.loadModels()"
     @logout="application.logout"
-    @category-change="changeCategory"
     @decision-type-change="changeDecisionType"
   />
 </template>

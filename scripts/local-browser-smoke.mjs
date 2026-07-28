@@ -1021,37 +1021,43 @@ async function selectStructuredElement(page, semanticId) {
   await page.locator('[data-testid="structured-element-name"]').waitFor({ state: 'visible' })
 }
 
-async function verifyModelTabs(page, baseUrl) {
+async function verifyModelMenu(page, baseUrl) {
   await page.goto(`${baseUrl}#/processes?lang=zh-CN`, { waitUntil: 'domcontentloaded' })
   await page.locator('[data-testid="model-list-page"]').waitFor({ state: 'visible' })
-  const chineseTabs = page.locator('[data-testid="model-category-tabs"] .el-tabs__item')
+  const chineseItems = page.locator('[data-testid="model-category-menu"] .el-menu-item')
   assert.deepEqual(
-    (await chineseTabs.allTextContents()).map((value) => value.trim()),
+    (await chineseItems.allTextContents()).map((value) => value.trim()),
     ['流程', '案例模型', '决策表'],
   )
 
   await openList(page, baseUrl)
-  const tabs = page.locator('[data-testid="model-category-tabs"] .el-tabs__item')
+  const menuItems = page.locator('[data-testid="model-category-menu"] .el-menu-item')
+  const activeMenuItem = page.locator(
+    '[data-testid="model-category-menu"] .el-menu-item.is-active',
+  )
   assert.deepEqual(
-    (await tabs.allTextContents()).map((value) => value.trim()),
+    (await menuItems.allTextContents()).map((value) => value.trim()),
     ['Processes', 'Case models', 'Decisions'],
   )
   assert.match(page.url(), /#\/processes/)
+  assert.equal((await activeMenuItem.textContent())?.trim(), 'Processes')
 
-  await tabs.filter({ hasText: 'Case models' }).click()
+  await menuItems.filter({ hasText: 'Case models' }).click()
   await page.waitForURL(/#\/cases/)
   await page.locator('[data-testid="model-list-page"]').waitFor()
+  assert.equal((await activeMenuItem.textContent())?.trim(), 'Case models')
 
   await page
-    .locator('[data-testid="model-category-tabs"] .el-tabs__item')
+    .locator('[data-testid="model-category-menu"] .el-menu-item')
     .filter({ hasText: 'Decisions' })
     .click()
   await page.waitForURL(/#\/decisions/)
+  assert.equal((await activeMenuItem.textContent())?.trim(), 'Decisions')
   const decisionType = page.locator('[data-testid="decision-type"]')
   await decisionType.waitFor({ state: 'visible' })
   assert.match((await decisionType.textContent()) || '', /Decision tables/)
   assert.match((await decisionType.textContent()) || '', /Decision services/)
-  console.log('[pass] Flowable model terminology and default process tab')
+  console.log('[pass] Flowable model navigation menu and default process route')
 }
 
 function assertDecisionTableRoundTrip(editorModel) {
@@ -1233,7 +1239,7 @@ async function runLocalModeSuite(browser) {
       if (message.type() === 'error') console.error(`[browser console] ${message.text()}`)
     })
 
-    await verifyModelTabs(page, server.baseUrl)
+    await verifyModelMenu(page, server.baseUrl)
     const processTarget = await createAndReopenModel(
       page,
       server.baseUrl,
@@ -1807,7 +1813,7 @@ async function runBackendMockSuite(browser, localRecords) {
       await route.fulfill({ status: 500, json: { message: `Unhandled browser mock: ${path}` } })
     })
 
-    await verifyModelTabs(page, server.baseUrl)
+    await verifyModelMenu(page, server.baseUrl)
     for (const modelType of Object.values(MODEL_TYPES)) {
       await createBackendModel(
         page,

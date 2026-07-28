@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
-import type { FormInstance, FormRules, TabsPaneContext } from 'element-plus'
+import type { FormInstance, FormRules } from 'element-plus'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowUpDown,
@@ -71,7 +71,6 @@ const emit = defineEmits<{
   queryChange: [query: ModelQuery]
   refresh: []
   logout: []
-  categoryChange: [category: ModelCategory]
   decisionTypeChange: [modelType: DecisionModelType]
 }>()
 
@@ -265,13 +264,6 @@ async function handleImportFile(event: Event) {
   }
 }
 
-function handleTabClick(tab: TabsPaneContext) {
-  const category = String(tab.paneName) as ModelCategory
-  if (!interactionPending.value && category !== props.activeCategory) {
-    emit('categoryChange', category)
-  }
-}
-
 function handleDecisionType(value: string | number | boolean) {
   const modelType = Number(value) as DecisionModelType
   if (!interactionPending.value && modelType !== props.decisionType) {
@@ -369,16 +361,24 @@ function modelTypeLabel(modelType: ModelType) {
     </header>
 
     <main class="page-main">
-      <el-tabs
-        :model-value="activeCategory"
-        class="model-category-tabs"
-        data-testid="model-category-tabs"
-        @tab-click="handleTabClick"
+      <el-menu
+        :default-active="`/${activeCategory}`"
+        :ellipsis="false"
+        class="model-category-menu"
+        data-testid="model-category-menu"
+        mode="horizontal"
+        router
       >
-        <el-tab-pane :label="t('shell.navigation.processes')" name="processes" />
-        <el-tab-pane :label="t('shell.navigation.cases')" name="cases" />
-        <el-tab-pane :label="t('shell.navigation.decisions')" name="decisions" />
-      </el-tabs>
+        <el-menu-item index="/processes" :disabled="interactionPending">
+          {{ t('shell.navigation.processes') }}
+        </el-menu-item>
+        <el-menu-item index="/cases" :disabled="interactionPending">
+          {{ t('shell.navigation.cases') }}
+        </el-menu-item>
+        <el-menu-item index="/decisions" :disabled="interactionPending">
+          {{ t('shell.navigation.decisions') }}
+        </el-menu-item>
+      </el-menu>
 
       <div class="list-heading">
         <div>
@@ -619,9 +619,13 @@ function modelTypeLabel(modelType: ModelType) {
 .user-menu-chevron { flex: 0 0 auto; color: #98a2b3; }
 .logout-menu-label { display: inline-flex; align-items: center; gap: 8px; }
 .page-main { width: min(1180px, calc(100% - 40px)); margin: 0 auto; padding: 18px 0 48px; }
-.model-category-tabs { margin-bottom: 22px; }
-.model-category-tabs :deep(.el-tabs__header) { margin-bottom: 0; }
-.model-category-tabs :deep(.el-tabs__item) { min-width: 112px; font-size: 14px; font-weight: 600; }
+.model-category-menu {
+  --el-menu-bg-color: transparent;
+  --el-menu-hover-bg-color: #eef4ff;
+  --el-menu-horizontal-height: 40px;
+  margin-bottom: 22px;
+}
+.model-category-menu :deep(.el-menu-item) { min-width: 112px; justify-content: center; font-size: 14px; font-weight: 600; }
 .list-heading { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 24px; }
 .list-heading h1 { margin: 0; color: #101828; font-size: 22px; font-weight: 650; letter-spacing: 0; }
 .list-heading p { margin: 5px 0 0; color: #667085; font-size: 13px; }
@@ -668,7 +672,7 @@ function modelTypeLabel(modelType: ModelType) {
   .brand-mark { width: 32px; height: 32px; flex-basis: 32px; }
   .brand-subtitle { display: none; }
   .signed-in-user { max-width: 72px; }
-  .model-category-tabs :deep(.el-tabs__item) { min-width: 0; padding-inline: 12px; }
+  .model-category-menu :deep(.el-menu-item) { min-width: 0; padding-inline: 12px; }
   .list-controls { flex-direction: column; }
   .list-controls :deep(.el-segmented), .search-input, .sort-select { width: 100%; min-width: 0; flex-basis: auto; }
   .model-actions { width: 100%; flex-wrap: wrap; }
