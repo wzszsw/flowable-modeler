@@ -9,10 +9,15 @@ import {
   translate,
   type TranslationParams,
 } from '@/i18n'
-import { parseBpmnMetadata } from '@/modeler/bpmnMetadata'
+import {
+  parseDecisionServiceTables,
+  parseModelMetadata,
+  type ModelMetadata,
+} from '@/modeler/modelMetadata'
 import {
   modelerApplicationKey,
   type CreateModelInput,
+  type DuplicateModelInput,
   type ImportModelInput,
   type ModelerApplication,
   type ModelSnapshot,
@@ -24,7 +29,12 @@ import {
   type ModelQuery,
 } from '@/modeler/modelerApi'
 import { createModelerClient, type ModelerClient } from '@/modeler/modelerClient'
-import { editorJsonToXml, xmlToEditorJson } from '@/modeler/modelAdapters'
+import {
+  decisionTableXmlToEditorJson,
+  editorJsonToXml,
+  retargetEditorJson,
+  xmlToEditorJson,
+} from '@/modeler/modelAdapters'
 import {
   MODEL_TYPES,
   modelTypesForCategory,
@@ -420,79 +430,211 @@ async function createModel(input: CreateModelInput) {
   }
 }
 
+async function duplicateModel(input: DuplicateModelInput) {
+  if (modelMutationPending.value) return
+  const fallback = translate('shell.models.duplicateFailed')
+  const context = sessionOrReport(fallback)
+  if (!context) return
+  modelMutationPending.value = true
+  let createdId = ''
+  let duplicateCommitted = false
+  try {
+    const source = await context.client.getModel(input.sourceId)
+    assertCurrentSession(context)
+    const sourceDocument = await context.client.getEditorModel(source.id, source.modelType)
+    assertCurrentSession(context)
+    const editorJson = retargetEditorJson(sourceDocument.model, source.modelType, input)
+    const created = await context.client.createModel({
+      name: input.name,
+      key: input.key,
+      description: input.description,
+      modelType: source.modelType,
+    })
+    createdId = created.id
+    assertCurrentSession(context)
+    const saved = await context.client.saveEditorModel(created.id, created.modelType, {
+      name: input.name,
+      key: input.key,
+      description: input.description,
+      model: editorJson,
+      lastUpdated: created.lastUpdated,
+    })
+    assertCurrentSession(context)
+    duplicateCommitted = true
+    await router.push({
+      name: editorRouteName(saved.modelType),
+      params: { modelId: saved.id },
+      query: route.query,
+    })
+    ElMessage.success(translate('shell.models.duplicateSuccess', { name: saved.name }))
+  } catch (error) {
+    if (!duplicateCommitted && createdId) await rollbackCreatedModels(context, [createdId])
+    handleSessionError(error, context, fallback)
+  } finally {
+    if (isCurrentSession(context)) modelMutationPending.value = false
+  }
+}
+
+async function loadModelHistory(id: string) {
+  const fallback = translate('shell.history.loadFailed')
+  const context = sessionOrReport(fallback)
+  if (!context) return []
+  try {
+    const result = await context.client.listModelHistory(id)
+    assertCurrentSession(context)
+    return result.data
+  } catch (error) {
+    handleSessionError(error, context, fallback)
+    return []
+  }
+}
+
+async function restoreModelHistory(id: string, historyId: string, comment: string) {
+  if (modelMutationPending.value) return null
+  const fallback = translate('shell.history.restoreFailed')
+  const context = sessionOrReport(fallback)
+  if (!context) return null
+  modelMutationPending.value = true
+  try {
+    const restored = await context.client.restoreModelHistory(id, historyId, comment)
+    assertCurrentSession(context)
+    replaceModel(restored)
+    ElMessage.success(
+      translate('shell.history.restoreSuccess', { version: restored.version }),
+    )
+    return restored
+  } catch (error) {
+    handleSessionError(error, context, fallback)
+    return null
+  } finally {
+    if (isCurrentSession(context)) modelMutationPending.value = false
+  }
+}
+
 async function importModel(input: ImportModelInput) {
   if (modelMutationPending.value) return
   const fallback = translate('shell.models.importFailed')
   const context = sessionOrReport(fallback)
   if (!context) return
   modelMutationPending.value = true
+  const createdIds: string[] = []
+  let importCommitted = false
   try {
-    if (input.modelType !== MODEL_TYPES.process) {
-      throw new Error(translate('shell.models.importUnsupported'))
-    }
-    const metadata = parseBpmnMetadata(input.xml)
-    const references = (
+    const metadata = parseModelMetadata(input.xml, input.modelType)
+    let references = (
       await context.client.listModels(
         {
           sort: 'nameAsc',
-          modelTypes: referenceModelTypes(MODEL_TYPES.process),
+          modelTypes: referenceModelTypes(input.modelType),
         },
         { showGlobalLoading: false },
       )
     ).data
     assertCurrentSession(context)
-    const importedModel: ModelerModel = {
-      id: crypto.randomUUID(),
-      name: input.name || metadata.name,
-      key: input.key || metadata.key,
-      description: input.description || metadata.description,
-      createdBy: username.value,
-      lastUpdatedBy: username.value,
-      lastUpdated: 0,
-      latestVersion: true,
-      version: 1,
-      comment: '',
-      modelType: MODEL_TYPES.process,
-      tenantId: '',
+
+    if (input.modelType === MODEL_TYPES.decisionService) {
+      const importedTables: ModelerModel[] = []
+      for (const table of parseDecisionServiceTables(input.xml)) {
+        const tableModel = transientImportedModel(table, MODEL_TYPES.decisionTable)
+        const tableEditorJson = await decisionTableXmlToEditorJson(
+          input.xml,
+          { model: tableModel },
+          table.decisionId,
+        )
+        assertCurrentSession(context)
+        importedTables.push(
+          await createAndSaveImportedModel(
+            context,
+            table,
+            MODEL_TYPES.decisionTable,
+            tableEditorJson,
+            createdIds,
+          ),
+        )
+      }
+      references = [...importedTables, ...references]
     }
+
+    const importedModel = transientImportedModel(metadata, input.modelType)
     const editorJson = await xmlToEditorJson(input.xml, {
       model: importedModel,
       references,
     })
     assertCurrentSession(context)
-    const created = await context.client.createModel({
-      name: importedModel.name,
-      key: importedModel.key,
-      description: importedModel.description,
-      modelType: MODEL_TYPES.process,
-    })
-    assertCurrentSession(context)
-    const saved = await context.client.saveEditorModel(created.id, created.modelType, {
-      name: importedModel.name,
-      key: importedModel.key,
-      description: importedModel.description,
-      model: editorJson,
-      lastUpdated: created.lastUpdated,
-    })
-    assertCurrentSession(context)
+    const saved = await createAndSaveImportedModel(
+      context,
+      metadata,
+      input.modelType,
+      editorJson,
+      createdIds,
+    )
     const xml = await editorJsonToXml(editorJson, {
       model: saved,
       references,
     })
     assertCurrentSession(context)
+    importCommitted = true
     activeModel.value = saved
     referenceModels.value = references.filter((reference) => reference.id !== saved.id)
     activeXml.value = xml
     await router.push({
-      name: ROUTE_NAMES.processEditor,
+      name: editorRouteName(saved.modelType),
       params: { modelId: saved.id },
       query: route.query,
     })
     ElMessage.success(translate('shell.models.importSuccess', { fileName: input.fileName }))
   } catch (error) {
+    if (!importCommitted) await rollbackCreatedModels(context, createdIds)
     handleSessionError(error, context, fallback)
   } finally {
     if (isCurrentSession(context)) modelMutationPending.value = false
+  }
+}
+
+function transientImportedModel(metadata: ModelMetadata, modelType: ModelerModel['modelType']) {
+  return {
+    id: crypto.randomUUID(),
+    name: metadata.name,
+    key: metadata.key,
+    description: metadata.description,
+    createdBy: username.value,
+    lastUpdatedBy: username.value,
+    lastUpdated: 0,
+    latestVersion: true,
+    version: 1,
+    comment: '',
+    modelType,
+    tenantId: '',
+  }
+}
+
+async function createAndSaveImportedModel(
+  context: SessionContext,
+  metadata: ModelMetadata,
+  modelType: ModelerModel['modelType'],
+  editorJson: Record<string, unknown>,
+  createdIds: string[],
+) {
+  const created = await context.client.createModel({ ...metadata, modelType })
+  createdIds.push(created.id)
+  assertCurrentSession(context)
+  const saved = await context.client.saveEditorModel(created.id, created.modelType, {
+    ...metadata,
+    model: editorJson,
+    lastUpdated: created.lastUpdated,
+  })
+  assertCurrentSession(context)
+  return saved
+}
+
+async function rollbackCreatedModels(context: SessionContext, createdIds: string[]) {
+  if (!isCurrentSession(context)) return
+  for (const id of [...createdIds].reverse()) {
+    try {
+      await context.client.deleteModel(id)
+    } catch {
+      // The original import error is more useful than a best-effort rollback failure.
+    }
   }
 }
 
@@ -518,6 +660,8 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
     description: snapshot.description,
     model: editorJson,
     lastUpdated: model.lastUpdated,
+    newVersion: snapshot.newVersion,
+    comment: snapshot.comment,
   }
 
   let saved: ModelerModel
@@ -687,6 +831,9 @@ const modelerApplication: ModelerApplication = {
   loadModelForRoute,
   createModel,
   importModel,
+  duplicateModel,
+  loadModelHistory,
+  restoreModelHistory,
   saveActiveModel,
   downloadModel,
   deleteModel,

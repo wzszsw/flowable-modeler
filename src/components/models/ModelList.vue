@@ -6,11 +6,13 @@ import {
   ArrowUpDown,
   BriefcaseBusiness,
   ChevronDown,
+  Copy,
   Database,
   Download,
   FileText,
   FolderOpen,
   GitBranch,
+  History,
   LogOut,
   Plus,
   RefreshCw,
@@ -25,7 +27,7 @@ import { useI18n } from 'vue-i18n'
 
 import LanguageSwitcher from '@/components/common/LanguageSwitcher.vue'
 import { FLOWABLE_BACKEND_ENABLED } from '@/config/features'
-import { parseBpmnMetadata } from '@/modeler/bpmnMetadata'
+import { parseModelMetadata } from '@/modeler/modelMetadata'
 import type { ModelerModel, ModelQuery, ModelSort } from '@/modeler/modelerApi'
 import {
   MODEL_TYPES,
@@ -47,6 +49,10 @@ interface ModelImportPayload extends ModelCreatePayload {
   fileName: string
 }
 
+interface ModelDuplicatePayload extends ModelCreatePayload {
+  sourceId: string
+}
+
 interface ModelCreateForm {
   name: string
   key: string
@@ -65,6 +71,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   create: [model: ModelCreatePayload]
   import: [model: ModelImportPayload]
+  duplicate: [model: ModelDuplicatePayload]
+  history: [model: ModelerModel]
   open: [id: string]
   download: [id: string]
   delete: [id: string]
@@ -82,6 +90,8 @@ const MODEL_KEY_PATTERN = /^[A-Za-z_][A-Za-z0-9_.-]*$/
 const searchQuery = ref('')
 const sortMode = ref<ModelSort>('modifiedDesc')
 const createDialogVisible = ref(false)
+const modelDialogMode = ref<'create' | 'duplicate'>('create')
+const duplicateSource = ref<ModelerModel | null>(null)
 const createFormRef = ref<FormInstance>()
 const importInputRef = ref<HTMLInputElement>()
 const createSubmitting = ref(false)
@@ -96,7 +106,15 @@ const activeModelType = computed<ModelType>(() =>
     ? props.decisionType
     : modelTypesForCategory(props.activeCategory)[0]!,
 )
-const supportsImport = computed(() => activeModelType.value === MODEL_TYPES.process)
+const importAccept = computed(() => {
+  if (activeModelType.value === MODEL_TYPES.process) {
+    return '.bpmn,.bpmn20.xml,.xml,application/xml,text/xml'
+  }
+  if (activeModelType.value === MODEL_TYPES.case) {
+    return '.cmmn,.cmmn.xml,.xml,application/xml,text/xml'
+  }
+  return '.dmn,.dmn.xml,.xml,application/xml,text/xml'
+})
 const typeKey = computed(() => {
   if (activeModelType.value === MODEL_TYPES.case) return 'case'
   if (activeModelType.value === MODEL_TYPES.decisionTable) return 'decisionTable'
@@ -123,6 +141,18 @@ const decisionTypeOptions = computed(() => [
   { label: t('shell.modelTypes.decisionService.plural'), value: MODEL_TYPES.decisionService },
 ])
 const title = computed(() => t(`shell.modelTypes.${typeKey.value}.plural`))
+const modelDialogTitle = computed(() =>
+  modelDialogMode.value === 'duplicate'
+    ? t('shell.models.duplicateDialogTitle', {
+        type: modelTypeLabel(duplicateSource.value?.modelType || activeModelType.value),
+      })
+    : t('shell.models.createDialogTitle', { type: modelTypeLabel(activeModelType.value) }),
+)
+const modelDialogSubmitLabel = computed(() =>
+  modelDialogMode.value === 'duplicate'
+    ? t('shell.models.duplicateAndOpen')
+    : t('shell.models.createAndOpen'),
+)
 const modelCountLabel = computed(() =>
   t('shell.models.count', { count: props.total, type: title.value }),
 )
@@ -206,7 +236,20 @@ function resetCreateForm() {
 
 function openCreateDialog() {
   if (interactionPending.value) return
+  modelDialogMode.value = 'create'
+  duplicateSource.value = null
   resetCreateForm()
+  createDialogVisible.value = true
+  void nextTick(() => createFormRef.value?.clearValidate())
+}
+
+function openDuplicateDialog(model: ModelerModel) {
+  if (interactionPending.value) return
+  modelDialogMode.value = 'duplicate'
+  duplicateSource.value = model
+  createForm.name = t('shell.models.duplicateName', { name: model.name })
+  createForm.key = `${model.key}_copy`
+  createForm.description = model.description
   createDialogVisible.value = true
   void nextTick(() => createFormRef.value?.clearValidate())
 }
@@ -221,39 +264,51 @@ async function submitCreate() {
       return
     }
     if (disposed || props.operationPending || importReading.value) return
-    emit('create', {
+    const payload = {
       name: createForm.name.trim(),
       key: createForm.key.trim(),
       description: createForm.description.trim(),
-      modelType: activeModelType.value,
-    })
+      modelType: duplicateSource.value?.modelType || activeModelType.value,
+    }
+    if (modelDialogMode.value === 'duplicate' && duplicateSource.value) {
+      emit('duplicate', { ...payload, sourceId: duplicateSource.value.id })
+    } else {
+      emit('create', payload)
+    }
   } finally {
     createSubmitting.value = false
   }
 }
 
 function chooseImportFile() {
-  if (!supportsImport.value || interactionPending.value) return
+  if (interactionPending.value) return
   importInputRef.value?.click()
+}
+
+function fallbackImportFileName(modelType: ModelType, key: string) {
+  if (modelType === MODEL_TYPES.process) return `${key}.bpmn20.xml`
+  if (modelType === MODEL_TYPES.case) return `${key}.cmmn.xml`
+  return `${key}.dmn`
 }
 
 async function handleImportFile(event: Event) {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   input.value = ''
-  if (!file || !supportsImport.value || interactionPending.value) return
+  if (!file || interactionPending.value) return
 
   const generation = ++importReadGeneration
+  const modelType = activeModelType.value
   importReading.value = true
   try {
     const xml = await file.text()
     if (disposed || generation !== importReadGeneration || props.operationPending) return
-    const metadata = parseBpmnMetadata(xml)
+    const metadata = parseModelMetadata(xml, modelType)
     emit('import', {
       xml,
-      fileName: file.name || `${metadata.key}.bpmn20.xml`,
+      fileName: file.name || fallbackImportFileName(modelType, metadata.key),
       ...metadata,
-      modelType: MODEL_TYPES.process,
+      modelType,
     })
   } catch (error) {
     if (disposed || generation !== importReadGeneration) return
@@ -397,14 +452,13 @@ function modelTypeLabel(modelType: ModelType) {
             />
           </el-tooltip>
           <el-button
-            v-if="supportsImport"
             data-testid="import-model"
             :icon="Upload"
             :loading="importReading"
             :disabled="interactionPending"
             @click="chooseImportFile"
           >
-            {{ t('shell.models.import') }}
+            {{ t('shell.models.import', { type: modelTypeLabel(activeModelType) }) }}
           </el-button>
           <el-button
             type="primary"
@@ -502,6 +556,26 @@ function modelTypeLabel(modelType: ModelType) {
             >
               {{ t('shell.models.open') }}
             </el-button>
+            <el-tooltip :content="t('shell.models.duplicate')" placement="top">
+              <el-button
+                text
+                :icon="Copy"
+                :disabled="interactionPending"
+                data-testid="duplicate-model"
+                :aria-label="t('shell.models.duplicateAria', { name: model.name })"
+                @click.stop="openDuplicateDialog(model)"
+              />
+            </el-tooltip>
+            <el-tooltip :content="t('shell.models.history')" placement="top">
+              <el-button
+                text
+                :icon="History"
+                :disabled="interactionPending"
+                data-testid="model-history"
+                :aria-label="t('shell.models.historyAria', { name: model.name })"
+                @click.stop="emit('history', model)"
+              />
+            </el-tooltip>
             <el-tooltip :content="t('shell.models.delete')" placement="top">
               <el-button
                 text
@@ -540,12 +614,11 @@ function modelTypeLabel(modelType: ModelType) {
     </main>
 
     <input
-      v-if="supportsImport"
       ref="importInputRef"
       class="visually-hidden"
       type="file"
       :disabled="interactionPending"
-      accept=".bpmn,.xml,.bpmn20.xml,application/xml,text/xml"
+      :accept="importAccept"
       data-testid="model-import-input"
       @change="handleImportFile"
     />
@@ -554,7 +627,7 @@ function modelTypeLabel(modelType: ModelType) {
       v-model="createDialogVisible"
       class="model-create-dialog"
       width="min(520px, calc(100vw - 32px))"
-      :title="t('shell.models.createDialogTitle', { type: modelTypeLabel(activeModelType) })"
+      :title="modelDialogTitle"
       :close-on-click-modal="!interactionPending"
       :close-on-press-escape="!interactionPending"
       :show-close="!interactionPending"
@@ -591,7 +664,7 @@ function modelTypeLabel(modelType: ModelType) {
           data-testid="confirm-create-model"
           @click="submitCreate"
         >
-          {{ t('shell.models.createAndOpen') }}
+          {{ modelDialogSubmitLabel }}
         </el-button>
       </template>
     </el-dialog>
@@ -635,7 +708,7 @@ function modelTypeLabel(modelType: ModelType) {
 .search-input { width: 280px; }
 .sort-select { width: 220px; flex: 0 0 220px; }
 .model-list { position: relative; min-height: 360px; overflow: hidden; border: 1px solid #e4e7ec; border-radius: 7px; background: #fff; }
-.table-heading, .model-row { display: grid; grid-template-columns: minmax(260px, 1fr) 180px 176px; align-items: center; column-gap: 20px; }
+.table-heading, .model-row { display: grid; grid-template-columns: minmax(260px, 1fr) 180px 256px; align-items: center; column-gap: 20px; }
 .table-heading { min-height: 42px; padding: 0 18px; border-bottom: 1px solid #eaecf0; color: #667085; background: #f9fafb; font-size: 12px; font-weight: 600; }
 .model-row { min-height: 78px; padding: 12px 18px; border-bottom: 1px solid #eaecf0; }
 .model-row:last-child { border-bottom: 0; }

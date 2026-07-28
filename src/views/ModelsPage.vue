@@ -1,8 +1,11 @@
 <script setup lang="ts">
-import { computed, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
+import { ElMessageBox } from 'element-plus'
+import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 
 import ModelList from '@/components/models/ModelList.vue'
+import ModelHistoryDialog from '@/components/models/ModelHistoryDialog.vue'
 import { useModelerApplication } from '@/modeler/modelerApplication'
 import {
   MODEL_TYPES,
@@ -10,10 +13,17 @@ import {
   type ModelCategory,
 } from '@/modeler/modelTypes'
 import { editorRouteName, ROUTE_NAMES } from '@/routes'
+import type { ModelerModel } from '@/modeler/modelerApi'
 
 const application = useModelerApplication()
 const route = useRoute()
 const router = useRouter()
+const { t } = useI18n()
+const historyVisible = ref(false)
+const historyLoading = ref(false)
+const historyModel = ref<ModelerModel | null>(null)
+const historyVersions = ref<ModelerModel[]>([])
+let historyGeneration = 0
 
 const activeCategory = computed<ModelCategory>(() => {
   if (route.name === ROUTE_NAMES.cases) return 'cases'
@@ -56,6 +66,62 @@ function changeDecisionType(modelType: DecisionModelType) {
   })
 }
 
+async function openHistory(model: ModelerModel) {
+  const generation = ++historyGeneration
+  historyModel.value = model
+  historyVersions.value = []
+  historyVisible.value = true
+  historyLoading.value = true
+  const versions = await application.loadModelHistory(model.id)
+  if (generation !== historyGeneration || historyModel.value?.id !== model.id) return
+  historyVersions.value = versions
+  historyLoading.value = false
+}
+
+function closeHistory(visible: boolean) {
+  historyVisible.value = visible
+  if (visible) return
+  historyGeneration += 1
+  historyLoading.value = false
+}
+
+async function restoreHistory(version: ModelerModel) {
+  const model = historyModel.value
+  if (!model || application.modelMutationPending.value) return
+  const generation = historyGeneration
+  let comment = ''
+  try {
+    const result = await ElMessageBox.prompt(
+      t('shell.history.restoreMessage', { version: version.version }),
+      t('shell.history.restoreTitle'),
+      {
+        inputType: 'textarea',
+        inputPlaceholder: t('shell.history.commentPlaceholder'),
+        confirmButtonText: t('shell.history.restore'),
+        cancelButtonText: t('shell.common.cancel'),
+        type: 'warning',
+      },
+    )
+    comment = result.value.trim()
+  } catch {
+    return
+  }
+  const restored = await application.restoreModelHistory(model.id, version.id, comment)
+  if (
+    !restored ||
+    generation !== historyGeneration ||
+    historyModel.value?.id !== model.id
+  ) {
+    return
+  }
+  historyModel.value = restored
+  historyLoading.value = true
+  const versions = await application.loadModelHistory(model.id)
+  if (generation !== historyGeneration || historyModel.value?.id !== model.id) return
+  historyVersions.value = versions
+  historyLoading.value = false
+}
+
 watch(
   () => [application.authenticated.value, activeModelType.value] as const,
   ([authenticated, modelType]) => {
@@ -79,6 +145,8 @@ watch(
     :decision-type="decisionType"
     @create="application.createModel"
     @import="application.importModel"
+    @duplicate="application.duplicateModel"
+    @history="openHistory"
     @open="openModel"
     @download="application.downloadModel"
     @delete="application.deleteModel"
@@ -86,5 +154,14 @@ watch(
     @refresh="application.loadModels()"
     @logout="application.logout"
     @decision-type-change="changeDecisionType"
+  />
+  <ModelHistoryDialog
+    :visible="historyVisible"
+    :model="historyModel"
+    :versions="historyVersions"
+    :loading="historyLoading"
+    :operation-pending="application.modelMutationPending.value"
+    @update:visible="closeHistory"
+    @restore="restoreHistory"
   />
 </template>

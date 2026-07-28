@@ -1112,7 +1112,10 @@ function handleInitializationError(error: unknown) {
   initializationError.value = diagnosticFromError(error, 'designer.errors.loadFailed')
 }
 
-async function performModelSave(showSuccess: boolean) {
+async function performModelSave(
+  showSuccess: boolean,
+  version: { newVersion?: boolean; comment?: string } = {},
+) {
   if (!modeler.value) return false
   assertImportStateCoherent()
   const instance = modeler.value
@@ -1129,13 +1132,18 @@ async function performModelSave(showSuccess: boolean) {
       name: processName.value,
       key: processId.value,
       description: processDescription.value,
+      ...version,
     })
     dirty.value = commandRevision.value !== savedRevision
     lastSavedAt.value = savedAt
     emit('saved')
     if (showSuccess) {
       ElMessage.success(
-        dirty.value ? t('designer.save.snapshotSaved') : t('designer.save.success'),
+        dirty.value
+          ? t('designer.save.snapshotSaved')
+          : version.newVersion
+            ? t('designer.save.newVersionSuccess')
+            : t('designer.save.success'),
       )
     }
     return true
@@ -1150,12 +1158,15 @@ async function performModelSave(showSuccess: boolean) {
   }
 }
 
-function persistCurrentModel(showSuccess = true) {
+function persistCurrentModel(
+  showSuccess = true,
+  version: { newVersion?: boolean; comment?: string } = {},
+) {
   if (savePromise) return savePromise
   if (!modeler.value) return Promise.resolve(false)
   assertImportStateCoherent()
   if (!isInteractionReady()) return Promise.resolve(false)
-  const operation = performModelSave(showSuccess)
+  const operation = performModelSave(showSuccess, version)
   savePromise = operation.finally(() => {
     savePromise = null
   })
@@ -1164,6 +1175,27 @@ function persistCurrentModel(showSuccess = true) {
 
 async function saveModel() {
   await persistCurrentModel()
+}
+
+async function saveNewVersion() {
+  try {
+    const result = await ElMessageBox.prompt(
+      t('designer.save.newVersionMessage'),
+      t('designer.save.newVersionTitle'),
+      {
+        inputType: 'textarea',
+        inputPlaceholder: t('designer.save.versionCommentPlaceholder'),
+        confirmButtonText: t('designer.save.createVersion'),
+        cancelButtonText: t('designer.save.cancelVersion'),
+      },
+    )
+    await persistCurrentModel(true, {
+      newVersion: true,
+      comment: result.value.trim(),
+    })
+  } catch {
+    // Cancel keeps the current editor state unchanged.
+  }
 }
 
 function chooseLeaveDecision(decision: LeaveDecision) {
@@ -1494,6 +1526,7 @@ defineExpose({
       :problem-count="problems.length"
       @back="requestClose"
       @save="saveModel"
+      @save-new-version="saveNewVersion"
       @preview="showPreview"
       @validate="runValidation"
       @simulate="toggleSimulation"

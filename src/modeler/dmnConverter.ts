@@ -1,4 +1,10 @@
 import type { ModelerModel } from './modelerApi'
+import {
+  DMN_DI_NAMESPACE_13,
+  DMN_DI_NAMESPACES,
+  DMN_MODEL_NAMESPACE_13,
+  isDmnModelNamespace,
+} from './dmnNamespaces'
 import { MODEL_TYPES, type ModelType } from './modelTypes'
 
 type JsonObject = Record<string, unknown>
@@ -30,10 +36,11 @@ interface DmnConverterOptions {
   key: string
   description: string
   references?: readonly ModelerModel[]
+  decisionId?: string
 }
 
-const DMN_NAMESPACE = 'https://www.omg.org/spec/DMN/20191111/MODEL/'
-const DMNDI_NAMESPACE = 'https://www.omg.org/spec/DMN/20191111/DMNDI/'
+const DMN_NAMESPACE = DMN_MODEL_NAMESPACE_13
+const DMNDI_NAMESPACE = DMN_DI_NAMESPACE_13
 const DC_NAMESPACE = 'http://www.omg.org/spec/DMN/20180521/DC/'
 const DI_NAMESPACE = 'http://www.omg.org/spec/DMN/20180521/DI/'
 const MODELER_NAMESPACE = 'http://flowable.org/modeler/frontend'
@@ -146,6 +153,19 @@ function directChildren(element: Element, names?: readonly string[]) {
   return [...element.children].filter(
     (child) => !names || names.includes(child.localName),
   )
+}
+
+function dmnElements(element: Element, localName: string) {
+  const namespace = element.ownerDocument?.documentElement.namespaceURI
+  return isDmnModelNamespace(namespace)
+    ? [...element.getElementsByTagNameNS(namespace, localName)]
+    : []
+}
+
+function dmnDiElements(element: Element, localName: string) {
+  return DMN_DI_NAMESPACES.flatMap((namespace) => [
+    ...element.getElementsByTagNameNS(namespace, localName),
+  ])
 }
 
 function firstDirectChild(element: Element | undefined, name: string) {
@@ -450,10 +470,13 @@ function expressionFromOutput(
 export function decisionTableXmlToOryx(xml: string, options: DmnConverterOptions) {
   const document = parseXml(xml)
   const definitions = document.documentElement
-  const decision = [...definitions.getElementsByTagNameNS(DMN_NAMESPACE, 'decision')][0]
-  const table = decision
-    ? [...decision.getElementsByTagNameNS(DMN_NAMESPACE, 'decisionTable')][0]
-    : undefined
+  const decisions = dmnElements(definitions, 'decision')
+  const decision = options.decisionId
+    ? decisions.find((candidate) => candidate.id === options.decisionId)
+    : decisions.find(
+        (candidate) => candidate.id === options.key && dmnElements(candidate, 'decisionTable').length,
+      ) || decisions.find((candidate) => dmnElements(candidate, 'decisionTable').length)
+  const table = decision ? dmnElements(decision, 'decisionTable')[0] : undefined
   if (!decision || !table) throw new Error('DMN decision table is missing')
   const snapshot = snapshots.get(options.modelId)
   const previousInputs = new Map(
@@ -762,7 +785,7 @@ function modelReference(
   references: readonly ModelerModel[],
 ) {
   const storedId = modelerAttribute(decision, 'modelId')
-  const storedKey = modelerAttribute(decision, 'modelKey')
+  const storedKey = modelerAttribute(decision, 'modelKey') || decision.id
   const match =
     references.find((model) => model.id === storedId) ||
     references.find(
@@ -780,9 +803,9 @@ function modelReference(
 export function decisionServiceXmlToOryx(xml: string, options: DmnConverterOptions) {
   const document = parseXml(xml)
   const definitions = document.documentElement
-  const service = [...definitions.getElementsByTagNameNS(DMN_NAMESPACE, 'decisionService')][0]
+  const service = dmnElements(definitions, 'decisionService')[0]
   if (!service) throw new Error('DMN decision service is missing')
-  const decisions = [...definitions.getElementsByTagNameNS(DMN_NAMESPACE, 'decision')]
+  const decisions = dmnElements(definitions, 'decision')
   const outputIds = new Set(directChildren(service, ['outputDecision']).map(hrefId))
   const encapsulatedIds = new Set(directChildren(service, ['encapsulatedDecision']).map(hrefId))
   const snapshot = snapshots.get(options.modelId)
@@ -798,12 +821,12 @@ export function decisionServiceXmlToOryx(xml: string, options: DmnConverterOptio
     makeBounds(0, 240, 600, 240),
   )
   const dmnShapes = new Map<string, Element>()
-  for (const shape of definitions.getElementsByTagNameNS(DMNDI_NAMESPACE, 'DMNShape')) {
+  for (const shape of dmnDiElements(definitions, 'DMNShape')) {
     const reference = (shape.getAttribute('dmnElementRef') || '').replace(/^#/, '')
     if (reference) dmnShapes.set(reference, shape)
   }
   const dmnEdges = new Map<string, Element>()
-  for (const edge of definitions.getElementsByTagNameNS(DMNDI_NAMESPACE, 'DMNEdge')) {
+  for (const edge of dmnDiElements(definitions, 'DMNEdge')) {
     const reference = (edge.getAttribute('dmnElementRef') || '').replace(/^#/, '')
     if (reference) dmnEdges.set(reference, edge)
   }

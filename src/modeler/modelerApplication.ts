@@ -14,6 +14,8 @@ export interface ModelSnapshot {
   name: string
   key: string
   description: string
+  newVersion?: boolean
+  comment?: string
 }
 
 export interface CreateModelInput {
@@ -26,6 +28,10 @@ export interface CreateModelInput {
 export interface ImportModelInput extends CreateModelInput {
   xml: string
   fileName: string
+}
+
+export interface DuplicateModelInput extends CreateModelInput {
+  sourceId: string
 }
 
 export interface ModelerApplication {
@@ -45,6 +51,13 @@ export interface ModelerApplication {
   loadModelForRoute: (id: string) => Promise<boolean>
   createModel: (input: CreateModelInput) => Promise<void>
   importModel: (input: ImportModelInput) => Promise<void>
+  duplicateModel: (input: DuplicateModelInput) => Promise<void>
+  loadModelHistory: (id: string) => Promise<ModelerModel[]>
+  restoreModelHistory: (
+    id: string,
+    historyId: string,
+    comment: string,
+  ) => Promise<ModelerModel | null>
   saveActiveModel: (snapshot: ModelSnapshot) => Promise<{ savedAt: number }>
   downloadModel: (id: string) => Promise<void>
   deleteModel: (id: string) => Promise<void>

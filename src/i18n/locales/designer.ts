@@ -231,6 +231,12 @@ export const designerZhCN = {
       snapshotSaved: '当前快照已保存，仍有后续更改',
       success: '模型已保存',
       busy: '编辑器正在载入或保存，请稍后再离开',
+      newVersionTitle: '保存为新版本',
+      newVersionMessage: '当前保存内容会成为新版本，旧版本将保留在历史记录中。',
+      versionCommentPlaceholder: '版本说明（可选）',
+      createVersion: '创建新版本',
+      cancelVersion: '取消',
+      newVersionSuccess: '新版本已保存',
     },
     canvas: {
       current: '当前：{name}',
@@ -270,6 +276,8 @@ export const designerZhCN = {
     toolbar: {
       back: '返回模型',
       save: '保存模型',
+      saveOptions: '保存选项',
+      saveNewVersion: '保存为新版本',
       preview: '预览',
       exitSimulation: '退出模拟',
       simulation: '流程模拟',
@@ -438,6 +446,12 @@ export const designerEn = {
       snapshotSaved: 'The current snapshot was saved, but newer changes remain.',
       success: 'Model saved.',
       busy: 'The modeler is loading or saving. Wait before leaving.',
+      newVersionTitle: 'Save as new version',
+      newVersionMessage: 'This save becomes a new version and the previous version remains in history.',
+      versionCommentPlaceholder: 'Version comment (optional)',
+      createVersion: 'Create version',
+      cancelVersion: 'Cancel',
+      newVersionSuccess: 'New version saved.',
     },
     canvas: {
       current: 'Current: {name}',
@@ -477,6 +491,8 @@ export const designerEn = {
     toolbar: {
       back: 'Back to models',
       save: 'Save model',
+      saveOptions: 'Save options',
+      saveNewVersion: 'Save as new version',
       preview: 'Preview',
       exitSimulation: 'Exit simulation',
       simulation: 'Process simulation',

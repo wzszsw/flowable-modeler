@@ -14,12 +14,17 @@ import {
 import { MODEL_TYPES, type ModelType } from './modelTypes'
 
 const DATABASE_NAME = 'flowable-modeler'
-const DATABASE_VERSION = 1
+const DATABASE_VERSION = 2
 const MODEL_STORE = 'process-models'
+const HISTORY_STORE = 'model-history'
 const LOCAL_ACCOUNT_ID = 'local'
 
 interface StoredModel extends ModelerModel {
   editorModel: Record<string, unknown>
+}
+
+interface StoredModelHistory extends StoredModel {
+  modelId: string
 }
 
 let databasePromise: Promise<IDBDatabase> | null = null
@@ -60,6 +65,10 @@ function openDatabase() {
       const database = request.result
       if (!database.objectStoreNames.contains(MODEL_STORE)) {
         database.createObjectStore(MODEL_STORE, { keyPath: 'id' })
+      }
+      if (!database.objectStoreNames.contains(HISTORY_STORE)) {
+        const history = database.createObjectStore(HISTORY_STORE, { keyPath: 'id' })
+        history.createIndex('modelId', 'modelId', { unique: false })
       }
     }
     request.onsuccess = () => {
@@ -162,6 +171,16 @@ function nextUpdatedAt(previous = 0) {
   return Math.max(now, previous + 1)
 }
 
+function createHistory(record: StoredModel): StoredModelHistory {
+  return {
+    ...record,
+    id: crypto.randomUUID(),
+    modelId: record.id,
+    latestVersion: false,
+    editorModel: cloneEditorModel(record.editorModel),
+  }
+}
+
 function compareModels(left: ModelerModel, right: ModelerModel, sort = 'modifiedDesc') {
   if (sort === 'modifiedAsc') {
     return left.lastUpdated - right.lastUpdated
@@ -259,8 +278,9 @@ export class IndexedDbModelerApi {
     const database = await openDatabase()
     try {
       return await new Promise<ModelerModel>((resolve, reject) => {
-        const transaction = database.transaction(MODEL_STORE, 'readwrite')
+        const transaction = database.transaction([MODEL_STORE, HISTORY_STORE], 'readwrite')
         const store = transaction.objectStore(MODEL_STORE)
+        const historyStore = transaction.objectStore(HISTORY_STORE)
         const request = store.get(id) as IDBRequest<StoredModel | undefined>
         let saved: StoredModel | undefined
         let expectedError: ModelerApiError | undefined
@@ -276,6 +296,7 @@ export class IndexedDbModelerApi {
             if (
               modelType !== MODEL_TYPES.decisionTable &&
               record.lastUpdated !== input.lastUpdated &&
+              input.newVersion !== true &&
               input.conflictResolveAction !== 'overwrite'
             ) {
               expectedError = ModelerApiError.fromMessageKey('shell.local.modelConflict', {
@@ -285,6 +306,9 @@ export class IndexedDbModelerApi {
               return
             }
 
+            const createVersion =
+              input.newVersion === true || input.conflictResolveAction === 'newVersion'
+            if (createVersion) historyStore.add(createHistory(record))
             saved = {
               ...record,
               name: input.name,
@@ -292,8 +316,8 @@ export class IndexedDbModelerApi {
               description: input.description,
               lastUpdated: nextUpdatedAt(record.lastUpdated),
               lastUpdatedBy: LOCAL_ACCOUNT_ID,
-              version:
-                input.conflictResolveAction === 'newVersion' ? record.version + 1 : record.version,
+              version: createVersion ? record.version + 1 : record.version,
+              comment: createVersion ? input.comment || '' : record.comment,
               editorModel,
             }
             store.put(saved)
@@ -322,9 +346,10 @@ export class IndexedDbModelerApi {
     const database = await openDatabase()
     try {
       await new Promise<void>((resolve, reject) => {
-        const transaction = database.transaction(MODEL_STORE, 'readwrite')
-        const store = transaction.objectStore(MODEL_STORE)
-        const request = store.getKey(id)
+        const transaction = database.transaction([MODEL_STORE, HISTORY_STORE], 'readwrite')
+        const modelStore = transaction.objectStore(MODEL_STORE)
+        const historyStore = transaction.objectStore(HISTORY_STORE)
+        const request = modelStore.getKey(id)
         let expectedError: ModelerApiError | undefined
 
         request.onsuccess = () => {
@@ -334,7 +359,14 @@ export class IndexedDbModelerApi {
               transaction.abort()
               return
             }
-            store.delete(id)
+            modelStore.delete(id)
+            const histories = historyStore.index('modelId').openKeyCursor(IDBKeyRange.only(id))
+            histories.onsuccess = () => {
+              const cursor = histories.result
+              if (!cursor) return
+              historyStore.delete(cursor.primaryKey)
+              cursor.continue()
+            }
           } catch (error) {
             expectedError = storageError(error)
             try {
@@ -345,6 +377,94 @@ export class IndexedDbModelerApi {
           }
         }
         transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(expectedError || storageError(transaction.error))
+        transaction.onabort = () => reject(expectedError || storageError(transaction.error))
+      })
+    } catch (error) {
+      rethrowStorageError(database, error)
+    }
+  }
+
+  async listModelHistory(id: string): Promise<ModelListResult> {
+    await readRecord(id)
+    const database = await openDatabase()
+    try {
+      const records = await new Promise<StoredModelHistory[]>((resolve, reject) => {
+        const transaction = database.transaction(HISTORY_STORE, 'readonly')
+        const request = transaction
+          .objectStore(HISTORY_STORE)
+          .index('modelId')
+          .getAll(IDBKeyRange.only(id))
+        let result: StoredModelHistory[] = []
+        request.onsuccess = () => {
+          result = request.result
+        }
+        transaction.oncomplete = () => resolve(result)
+        transaction.onerror = () => reject(storageError(transaction.error || request.error))
+        transaction.onabort = () => reject(storageError(transaction.error || request.error))
+      })
+      const data = records
+        .map(toModel)
+        .sort((left, right) => right.version - left.version || right.lastUpdated - left.lastUpdated)
+      return { size: data.length, total: data.length, start: 0, data }
+    } catch (error) {
+      rethrowStorageError(database, error)
+    }
+  }
+
+  async restoreModelHistory(id: string, historyId: string, comment: string) {
+    const database = await openDatabase()
+    try {
+      return await new Promise<ModelerModel>((resolve, reject) => {
+        const transaction = database.transaction([MODEL_STORE, HISTORY_STORE], 'readwrite')
+        const modelStore = transaction.objectStore(MODEL_STORE)
+        const historyStore = transaction.objectStore(HISTORY_STORE)
+        const modelRequest = modelStore.get(id) as IDBRequest<StoredModel | undefined>
+        const historyRequest = historyStore.get(historyId) as IDBRequest<
+          StoredModelHistory | undefined
+        >
+        let saved: StoredModel | undefined
+        let expectedError: ModelerApiError | undefined
+        let modelReady = false
+        let historyReady = false
+
+        const restore = () => {
+          if (!modelReady || !historyReady) return
+          if (!modelRequest.result || !historyRequest.result) return
+          const current = modelRequest.result
+          const history = historyRequest.result
+          if (history.modelId !== id) {
+            expectedError = modelNotFound(historyId)
+            transaction.abort()
+            return
+          }
+          historyStore.add(createHistory(current))
+          saved = {
+            ...current,
+            name: history.name,
+            key: history.key,
+            description: history.description,
+            lastUpdated: nextUpdatedAt(current.lastUpdated),
+            lastUpdatedBy: LOCAL_ACCOUNT_ID,
+            version: current.version + 1,
+            comment,
+            editorModel: cloneEditorModel(history.editorModel),
+          }
+          modelStore.put(saved)
+        }
+
+        modelRequest.onsuccess = () => {
+          modelReady = true
+          restore()
+        }
+        historyRequest.onsuccess = () => {
+          historyReady = true
+          restore()
+        }
+        transaction.oncomplete = () => {
+          if (saved) resolve(toModel(saved))
+          else reject(expectedError || modelNotFound(historyId))
+        }
         transaction.onerror = () => reject(expectedError || storageError(transaction.error))
         transaction.onabort = () => reject(expectedError || storageError(transaction.error))
       })

@@ -70,6 +70,8 @@ export interface SaveEditorModelInput {
   description: string
   model: Record<string, unknown>
   lastUpdated: number
+  newVersion?: boolean
+  comment?: string
   conflictResolveAction?: 'overwrite' | 'newVersion'
 }
 
@@ -266,7 +268,9 @@ export class ModelerApi {
       const response = await this.http.put(
         `/decision-table-models/${encodeURIComponent(id)}`,
         {
-          newVersion: input.conflictResolveAction === 'newVersion',
+          newVersion:
+            input.newVersion === true || input.conflictResolveAction === 'newVersion',
+          comment: input.comment || '',
           decisionTableImageBase64: TRANSPARENT_PNG_DATA_URL,
           decisionTableRepresentation: {
             name: input.name,
@@ -284,8 +288,9 @@ export class ModelerApi {
       description: input.description,
       json_xml: JSON.stringify(input.model),
       lastUpdated: String(input.lastUpdated),
-      newversion: 'false',
+      newversion: input.newVersion ? 'true' : 'false',
     })
+    if (input.comment) body.set('comment', input.comment)
     if (input.conflictResolveAction) {
       body.set('conflictResolveAction', input.conflictResolveAction)
     }
@@ -300,6 +305,23 @@ export class ModelerApi {
     await this.http.delete(`/models/${encodeURIComponent(id)}`, {
       timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
     })
+  }
+
+  async listModelHistory(id: string): Promise<ModelListResult> {
+    const response = await this.http.get(`/models/${encodeURIComponent(id)}/history`, {
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
+    })
+    const result = asRecord(response.data)
+    const data = Array.isArray(result.data) ? result.data.map(parseModel) : []
+    return { size: data.length, total: data.length, start: 0, data }
+  }
+
+  async restoreModelHistory(id: string, historyId: string, comment: string) {
+    await this.http.post(
+      `/models/${encodeURIComponent(id)}/history/${encodeURIComponent(historyId)}`,
+      { action: 'useAsNewVersion', comment },
+    )
+    return this.getModel(id)
   }
 }
 

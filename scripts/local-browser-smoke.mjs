@@ -106,6 +106,26 @@ const crossModelProcessXml = `<?xml version="1.0" encoding="UTF-8"?>
   </bpmndi:BPMNDiagram>
 </bpmn:definitions>`
 
+const noDiProcessXml = `<?xml version="1.0" encoding="UTF-8"?>
+<bpmn:definitions xmlns:bpmn="http://www.omg.org/spec/BPMN/20100524/MODEL"
+  id="Definitions_auto_layout_process"
+  targetNamespace="http://flowable.org/test">
+  <bpmn:process id="auto_layout_process" name="Auto-layout process" isExecutable="true">
+    <bpmn:startEvent id="StartEvent_auto">
+      <bpmn:outgoing>Flow_auto_1</bpmn:outgoing>
+    </bpmn:startEvent>
+    <bpmn:userTask id="Task_auto" name="Review">
+      <bpmn:incoming>Flow_auto_1</bpmn:incoming>
+      <bpmn:outgoing>Flow_auto_2</bpmn:outgoing>
+    </bpmn:userTask>
+    <bpmn:endEvent id="EndEvent_auto">
+      <bpmn:incoming>Flow_auto_2</bpmn:incoming>
+    </bpmn:endEvent>
+    <bpmn:sequenceFlow id="Flow_auto_1" sourceRef="StartEvent_auto" targetRef="Task_auto" />
+    <bpmn:sequenceFlow id="Flow_auto_2" sourceRef="Task_auto" targetRef="EndEvent_auto" />
+  </bpmn:process>
+</bpmn:definitions>`
+
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds))
 }
@@ -470,7 +490,7 @@ async function readStoredModels(page) {
   return page.evaluate(
     () =>
       new Promise((resolve, reject) => {
-        const request = indexedDB.open('flowable-modeler', 1)
+        const request = indexedDB.open('flowable-modeler', 2)
         request.onerror = () => reject(request.error)
         request.onsuccess = () => {
           const database = request.result
@@ -491,11 +511,36 @@ async function readStoredModels(page) {
   )
 }
 
+async function readStoredHistories(page) {
+  return page.evaluate(
+    () =>
+      new Promise((resolve, reject) => {
+        const request = indexedDB.open('flowable-modeler', 2)
+        request.onerror = () => reject(request.error)
+        request.onsuccess = () => {
+          const database = request.result
+          const transaction = database.transaction('model-history', 'readonly')
+          const read = transaction.objectStore('model-history').getAll()
+          let records = []
+          read.onsuccess = () => {
+            records = structuredClone(read.result)
+          }
+          transaction.onerror = () => reject(transaction.error || read.error)
+          transaction.onabort = () => reject(transaction.error || read.error)
+          transaction.oncomplete = () => {
+            database.close()
+            resolve(records)
+          }
+        }
+      }),
+  )
+}
+
 async function replaceStoredEditorModel(page, id, editorModel) {
   await page.evaluate(
     ({ modelId, nextEditorModel }) =>
       new Promise((resolve, reject) => {
-        const request = indexedDB.open('flowable-modeler', 1)
+        const request = indexedDB.open('flowable-modeler', 2)
         request.onerror = () => reject(request.error)
         request.onsuccess = () => {
           const database = request.result
@@ -706,13 +751,11 @@ async function assertDecisionServiceCapabilityBoundary(page) {
 async function createAndReopenModel(page, baseUrl, modelType, name, key) {
   const description = `${name} description`
   await openList(page, baseUrl, listPath(modelType))
-  if (modelType !== MODEL_TYPES.process) {
-    assert.equal(
-      await page.locator('[data-testid="import-model"]').count(),
-      0,
-      'CMMN and DMN lists must not expose an import action',
-    )
-  }
+  assert.equal(
+    await page.locator('[data-testid="import-model"]').count(),
+    1,
+    'every Flowable model list must expose its XML import action',
+  )
   await page.locator('[data-testid="create-model"]').click()
   await page.locator('[data-testid="model-create-name"]').fill(name)
   await page.locator('[data-testid="model-create-key"]').fill(key)
@@ -746,6 +789,7 @@ async function createAndReopenModel(page, baseUrl, modelType, name, key) {
   await page.locator('[data-testid="back-to-models"]').click()
   await page.locator('[data-testid="model-list-page"]').waitFor({ state: 'visible' })
   const modelRow = page.locator(`[data-testid="model-row"][data-model-id="${id}"]`)
+  await modelRow.waitFor({ state: 'visible' })
   assert.equal(
     await modelRow.locator('[data-testid="delete-model"]').count(),
     1,
@@ -775,7 +819,215 @@ async function createAndReopenModel(page, baseUrl, modelType, name, key) {
   assert.match(downloadedXml, /<[^>]*definitions\b/i, `downloaded XML is invalid: ${key}`)
   console.log(`[pass] Flowable XML download: ${expectedFileName}`)
   console.log(`[pass] create, save, refresh and reopen: ${key}`)
-  return record
+  return { ...record, downloadedXml }
+}
+
+async function importXmlModel(page, baseUrl, modelType, fileName, xml, expected) {
+  await openList(page, baseUrl, listPath(modelType))
+  await page.locator('[data-testid="model-import-input"]').setInputFiles({
+    name: fileName,
+    mimeType: 'application/xml',
+    buffer: Buffer.from(xml),
+  })
+  await waitForEditor(page, modelType)
+  const id = currentEditorId(page)
+  const record = (await readStoredModels(page)).find((candidate) => candidate.id === id)
+  assert.ok(record, `imported model was not stored: ${expected.key}`)
+  assert.equal(record.modelType, modelType)
+  assert.equal(record.key, expected.key)
+  assert.equal(record.name, expected.name)
+  await saveModel(page)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await waitForEditor(page, modelType)
+  assert.equal(currentEditorId(page), id, `refresh changed imported model id: ${expected.key}`)
+  console.log(`[pass] Flowable XML import, save and reopen: ${expected.key}`)
+  return (await readStoredModels(page)).find((candidate) => candidate.id === id)
+}
+
+function storedEditorKey(record) {
+  if (record.modelType === MODEL_TYPES.decisionTable) return record.editorModel.key
+  if (record.modelType === MODEL_TYPES.process) return record.editorModel.properties.process_id
+  if (record.modelType === MODEL_TYPES.case) return record.editorModel.properties.case_id
+  return record.editorModel.properties.drd_id
+}
+
+async function duplicateAndAssert(page, baseUrl, source, name, key) {
+  await openList(page, baseUrl, listPath(source.modelType))
+  const sourceRow = page.locator(
+    `[data-testid="model-row"][data-model-id="${source.id}"]`,
+  )
+  await sourceRow.locator('[data-testid="duplicate-model"]').click()
+  await page.locator('[data-testid="model-create-dialog"]').waitFor({ state: 'visible' })
+  await page.locator('[data-testid="model-create-name"]').fill(name)
+  await page.locator('[data-testid="model-create-key"]').fill(key)
+  await page.locator('[data-testid="confirm-create-model"]').click()
+  await waitForEditor(page, source.modelType)
+  const id = currentEditorId(page)
+  const duplicated = (await readStoredModels(page)).find((record) => record.id === id)
+  assert.ok(duplicated, `duplicated model was not stored: ${key}`)
+  assert.equal(duplicated.name, name)
+  assert.equal(duplicated.key, key)
+  assert.equal(duplicated.modelType, source.modelType)
+  assert.equal(storedEditorKey(duplicated), key)
+  assert.equal(duplicated.editorModel.flowableModelerBpmn20Xml, undefined)
+  assert.equal(duplicated.editorModel.flowableModelerCmmn11Xml, undefined)
+  assert.equal(duplicated.editorModel.flowableModelerDmn13Xml, undefined)
+  console.log(`[pass] Flowable model duplicate retargets Oryx metadata: ${key}`)
+  return duplicated
+}
+
+async function waitForStoredVersion(page, id, expectedVersion) {
+  await page.waitForFunction(
+    ({ modelId, version }) =>
+      new Promise((resolve) => {
+        const request = indexedDB.open('flowable-modeler', 2)
+        request.onerror = () => resolve(false)
+        request.onsuccess = () => {
+          const database = request.result
+          const read = database
+            .transaction('process-models', 'readonly')
+            .objectStore('process-models')
+            .get(modelId)
+          read.onerror = () => {
+            database.close()
+            resolve(false)
+          }
+          read.onsuccess = () => {
+            const matches = read.result?.version === version
+            database.close()
+            resolve(matches)
+          }
+        }
+      }),
+    { modelId: id, version: expectedVersion },
+  )
+}
+
+async function triggerSaveAsNewVersion(page, comment) {
+  await page.locator('[data-testid="save-model-menu"]').click()
+  const action = page.locator('[data-testid="save-new-version"]:visible')
+  await action.waitFor({ state: 'visible' })
+  await action.click()
+  const dialog = page.locator('.el-message-box:visible')
+  await dialog.waitFor({ state: 'visible' })
+  await dialog.locator('textarea').fill(comment)
+  await dialog.getByRole('button', { name: 'Create version', exact: true }).click()
+  await page
+    .locator('.el-message--success')
+    .filter({ hasText: 'New version saved' })
+    .last()
+    .waitFor({ state: 'visible' })
+}
+
+async function saveAsNewVersion(page, id, expectedVersion, comment) {
+  await triggerSaveAsNewVersion(page, comment)
+  await waitForStoredVersion(page, id, expectedVersion)
+}
+
+async function assertVersionHistoryAndRestore(page, baseUrl, source) {
+  await openStoredEditor(page, baseUrl, source)
+  await saveAsNewVersion(page, source.id, 2, 'First saved version')
+  await saveAsNewVersion(page, source.id, 3, 'Second saved version')
+  await page.locator('[data-testid="back-to-models"]').click()
+  await page.locator('[data-testid="model-list-page"]').waitFor({ state: 'visible' })
+  const row = page.locator(`[data-testid="model-row"][data-model-id="${source.id}"]`)
+  await row.locator('[data-testid="model-history"]').click()
+  const dialog = page.locator('[data-testid="model-history-dialog"]')
+  await dialog.waitFor({ state: 'visible' })
+  await dialog.locator('[data-testid="model-history-table"] tbody tr').first().waitFor()
+  assert.equal(
+    await dialog.locator('[data-testid="model-history-table"] tbody tr').count(),
+    2,
+    'two explicit version saves must create two history snapshots',
+  )
+  assert.match(await dialog.textContent(), /First saved version/)
+  const versionOneRow = dialog
+    .locator('[data-testid="model-history-table"] tbody tr')
+    .filter({ hasText: 'v1' })
+  await versionOneRow.locator('[data-testid="restore-model-history"]').click()
+  const restoreDialog = page.locator('.el-message-box:visible')
+  await restoreDialog.waitFor({ state: 'visible' })
+  await restoreDialog.locator('textarea').fill('Restore the original')
+  await restoreDialog
+    .getByRole('button', { name: 'Restore as new version', exact: true })
+    .click()
+  await waitForStoredVersion(page, source.id, 4)
+
+  const restored = (await readStoredModels(page)).find((record) => record.id === source.id)
+  assert.equal(restored.version, 4)
+  assert.equal(restored.comment, 'Restore the original')
+  const histories = (await readStoredHistories(page)).filter(
+    (record) => record.modelId === source.id,
+  )
+  assert.equal(histories.length, 3)
+  assert.ok(histories.some((record) => record.version === 3 && record.comment === 'Second saved version'))
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  console.log('[pass] save-as-version, history listing and restore-as-new-version')
+}
+
+async function deleteVersionedLocalModelAndAssert(page, baseUrl, source) {
+  assert.ok(
+    (await readStoredHistories(page)).some((record) => record.modelId === source.id),
+    'versioned local model has no history fixture',
+  )
+  await openList(page, baseUrl, listPath(source.modelType))
+  const row = page.locator(`[data-testid="model-row"][data-model-id="${source.id}"]`)
+  await row.locator('[data-testid="delete-model"]').click()
+  await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  await row.waitFor({ state: 'detached' })
+  assert.equal(
+    (await readStoredHistories(page)).some((record) => record.modelId === source.id),
+    false,
+    'deleting a local model left orphaned history snapshots',
+  )
+  console.log('[pass] local delete removes the model and its version history')
+}
+
+function embeddedDecisionServiceXml(decisionTableXml) {
+  const tableXml = decisionTableXml
+    .replaceAll('risk_table', 'imported_embedded_table')
+    .replaceAll('Risk table', 'Imported embedded table')
+    .replace(
+      '<dmn:definitions ',
+      '<dmn:definitions xmlns:dmndi="https://www.omg.org/spec/DMN/20191111/DMNDI/" xmlns:dc="http://www.omg.org/spec/DMN/20180521/DC/" xmlns:di="http://www.omg.org/spec/DMN/20180521/DI/" ',
+    )
+  return tableXml.replace(
+    '</dmn:definitions>',
+    `  <dmn:decisionService id="imported_embedded_service" name="Imported embedded service">
+    <dmn:outputDecision href="#imported_embedded_table" />
+  </dmn:decisionService>
+  <dmndi:DMNDI>
+    <dmndi:DMNDiagram id="imported_service_diagram">
+      <dmndi:DMNShape id="imported_table_shape" dmnElementRef="imported_embedded_table">
+        <dc:Bounds x="180" y="160" width="180" height="80" />
+      </dmndi:DMNShape>
+      <dmndi:DMNShape id="imported_service_shape" dmnElementRef="imported_embedded_service">
+        <dc:Bounds x="120" y="100" width="400" height="300" />
+      </dmndi:DMNShape>
+    </dmndi:DMNDiagram>
+  </dmndi:DMNDI>
+</dmn:definitions>`,
+  )
+}
+
+function dmn11Xml(xml) {
+  return xml.replaceAll(
+    'https://www.omg.org/spec/DMN/20191111/MODEL/',
+    'http://www.omg.org/spec/DMN/20151101',
+  )
+}
+
+function dmn12Xml(xml) {
+  return xml
+    .replaceAll(
+      'https://www.omg.org/spec/DMN/20191111/MODEL/',
+      'http://www.omg.org/spec/DMN/20180521/MODEL/',
+    )
+    .replaceAll(
+      'https://www.omg.org/spec/DMN/20191111/DMNDI/',
+      'http://www.omg.org/spec/DMN/20180521/DMNDI/',
+    )
 }
 
 async function createAndDeleteLocalModel(page, baseUrl) {
@@ -1268,6 +1520,7 @@ async function runLocalModeSuite(browser) {
       'Risk service',
       'risk_service',
     )
+    const decisionTableImportSource = table.downloadedXml
     let caseModel = await createAndReopenModel(
       page,
       server.baseUrl,
@@ -1488,6 +1741,157 @@ async function runLocalModeSuite(browser) {
     await assertNoUnsupportedActions(page)
     console.log('[pass] BPMN -> CMMN, decision table, and decision service references')
 
+    const duplicatedProcess = await duplicateAndAssert(
+      page,
+      server.baseUrl,
+      processTarget,
+      'Duplicated process',
+      'duplicated_process',
+    )
+    await duplicateAndAssert(
+      page,
+      server.baseUrl,
+      caseModel,
+      'Duplicated case',
+      'duplicated_case',
+    )
+    const duplicatedTable = await duplicateAndAssert(
+      page,
+      server.baseUrl,
+      table,
+      'Duplicated table',
+      'duplicated_table',
+    )
+    await duplicateAndAssert(
+      page,
+      server.baseUrl,
+      service,
+      'Duplicated service',
+      'duplicated_service',
+    )
+    await assertVersionHistoryAndRestore(page, server.baseUrl, duplicatedProcess)
+    await deleteVersionedLocalModelAndAssert(page, server.baseUrl, duplicatedProcess)
+    await openStoredEditor(page, server.baseUrl, duplicatedTable)
+    await saveAsNewVersion(page, duplicatedTable.id, 2, 'Decision table version')
+    assert.equal(
+      (await readStoredHistories(page)).filter(
+        (record) => record.modelId === duplicatedTable.id,
+      ).length,
+      1,
+      'decision-table new-version save must create a history snapshot',
+    )
+    console.log('[pass] structured decision-table editor saves a new version')
+
+    const autoLayoutProcess = await importXmlModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.process,
+      'auto-layout-process.bpmn20.xml',
+      noDiProcessXml,
+      { key: 'auto_layout_process', name: 'Auto-layout process' },
+    )
+    assert.match(
+      String(autoLayoutProcess.editorModel.flowableModelerBpmn20Xml || ''),
+      /<bpmndi:BPMNShape\b/,
+      'BPMN import without DI was not laid out in the browser',
+    )
+    console.log('[pass] BPMN import without DI is auto-laid out in the browser')
+
+    const importedCase = await importXmlModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.case,
+      'imported-case.cmmn.xml',
+      caseTarget.downloadedXml
+        .replaceAll('target_case', 'imported_case')
+        .replaceAll('Target case', 'Imported case'),
+      { key: 'imported_case', name: 'Imported case' },
+    )
+    assert.ok(importedCase, 'CMMN import did not return its stored model')
+
+    const importedTable = await importXmlModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.decisionTable,
+      'imported-table.dmn',
+      decisionTableImportSource
+        .replaceAll('risk_table', 'imported_table')
+        .replaceAll('Risk table', 'Imported table'),
+      { key: 'imported_table', name: 'Imported table' },
+    )
+    assert.equal(importedTable.editorModel.key, 'imported_table')
+    assert.equal(importedTable.editorModel.modelVersion, '3')
+
+    const importedDmn11Table = await importXmlModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.decisionTable,
+      'imported-dmn11-table.dmn',
+      dmn11Xml(
+        decisionTableImportSource
+          .replaceAll('risk_table', 'imported_dmn11_table')
+          .replaceAll('Risk table', 'Imported DMN 1.1 table'),
+      ),
+      { key: 'imported_dmn11_table', name: 'Imported DMN 1.1 table' },
+    )
+    assert.match(
+      String(importedDmn11Table.editorModel.flowableModelerDmn13Xml || ''),
+      /DMN\/20191111\/MODEL/,
+      'DMN 1.1 import was not upgraded for dmn-js',
+    )
+
+    const importedService = await importXmlModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.decisionService,
+      'imported-service.dmn',
+      embeddedDecisionServiceXml(decisionTableImportSource),
+      { key: 'imported_embedded_service', name: 'Imported embedded service' },
+    )
+    const importedRecords = await readStoredModels(page)
+    const importedDependency = importedRecords.find(
+      (record) => record.key === 'imported_embedded_table',
+    )
+    assert.ok(importedDependency, 'decision-service import did not create its decision table')
+    assertReference(
+      findShape(importedService.editorModel, 'imported_embedded_table').properties
+        .decisiondecisiontablereference,
+      importedDependency,
+      'imported decision-service dependency',
+    )
+    console.log('[pass] decision-service import creates and links embedded decision tables')
+
+    const importedDmn12Service = await importXmlModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.decisionService,
+      'imported-dmn12-service.dmn',
+      dmn12Xml(
+        embeddedDecisionServiceXml(decisionTableImportSource)
+          .replaceAll('imported_embedded_table', 'imported_dmn12_table')
+          .replaceAll('Imported embedded table', 'Imported DMN 1.2 table')
+          .replaceAll('imported_embedded_service', 'imported_dmn12_service')
+          .replaceAll('Imported embedded service', 'Imported DMN 1.2 service'),
+      ),
+      { key: 'imported_dmn12_service', name: 'Imported DMN 1.2 service' },
+    )
+    const dmn12Dependency = (await readStoredModels(page)).find(
+      (record) => record.key === 'imported_dmn12_table',
+    )
+    assert.ok(dmn12Dependency, 'DMN 1.2 decision-service dependency is missing')
+    assertReference(
+      findShape(importedDmn12Service.editorModel, 'imported_dmn12_table').properties
+        .decisiondecisiontablereference,
+      dmn12Dependency,
+      'imported DMN 1.2 decision-service dependency',
+    )
+    assert.match(
+      String(importedDmn12Service.editorModel.flowableModelerDmn13Xml || ''),
+      /DMN\/20191111\/MODEL/,
+      'DMN 1.2 import was not upgraded for dmn-js',
+    )
+    console.log('[pass] DMN 1.1/1.2 imports are upgraded to DMN 1.3 in the browser')
+
     await createAndDeleteLocalModel(page, server.baseUrl)
     const records = await readStoredModels(page)
     assertCrossModelReferences(records)
@@ -1652,6 +2056,156 @@ async function createBackendModel(page, baseUrl, modelType, createRequests, save
   }
 }
 
+async function importBackendModel(page, baseUrl, modelType, fileName, xml, records, expected) {
+  await openList(page, baseUrl, listPath(modelType))
+  await page.locator('[data-testid="model-import-input"]').setInputFiles({
+    name: fileName,
+    mimeType: 'application/xml',
+    buffer: Buffer.from(xml),
+  })
+  await waitForEditor(page, modelType)
+  const id = currentEditorId(page)
+  const record = records.get(id)
+  assert.ok(record, `backend imported model is missing: ${expected.key}`)
+  assert.equal(record.modelType, modelType)
+  assert.equal(record.key, expected.key)
+  assert.equal(record.name, expected.name)
+  console.log(`[pass] backend-mode browser conversion import: ${expected.key}`)
+  return record
+}
+
+async function duplicateBackendModel(
+  page,
+  baseUrl,
+  source,
+  name,
+  key,
+  records,
+  createRequests,
+  saveRequests,
+) {
+  await openList(page, baseUrl, listPath(source.modelType))
+  const sourceRow = page.locator(
+    `[data-testid="model-row"][data-model-id="${source.id}"]`,
+  )
+  await sourceRow.waitFor({ state: 'visible' })
+  await sourceRow.locator('[data-testid="duplicate-model"]').click()
+  await page.locator('[data-testid="model-create-dialog"]').waitFor({ state: 'visible' })
+  await page.locator('[data-testid="model-create-name"]').fill(name)
+  await page.locator('[data-testid="model-create-key"]').fill(key)
+  await page.locator('[data-testid="confirm-create-model"]').click()
+  await waitForEditor(page, source.modelType)
+
+  const id = currentEditorId(page)
+  const duplicated = records.get(id)
+  assert.ok(duplicated, `backend duplicated model is missing: ${key}`)
+  assert.deepEqual(createRequests.find((request) => request.id === id)?.body, {
+    name,
+    key,
+    description: source.description,
+    modelType: source.modelType,
+  })
+  assert.equal(saveRequests.findLast((request) => request.id === id)?.id, id)
+  assert.equal(duplicated.name, name)
+  assert.equal(duplicated.key, key)
+  assert.equal(duplicated.modelType, source.modelType)
+  assert.equal(storedEditorKey(duplicated), key)
+  assert.equal(duplicated.editorModel.flowableModelerBpmn20Xml, undefined)
+  assert.equal(duplicated.editorModel.flowableModelerCmmn11Xml, undefined)
+  assert.equal(duplicated.editorModel.flowableModelerDmn13Xml, undefined)
+  console.log(`[pass] backend-mode duplicate uses create/save and retargets metadata: ${key}`)
+  return duplicated
+}
+
+async function assertBackendVersionHistoryAndRestore(
+  page,
+  baseUrl,
+  source,
+  records,
+  saveRequests,
+  historyRequests,
+) {
+  const versionComment = 'Backend process version'
+  await openStoredEditor(page, baseUrl, source)
+  await triggerSaveAsNewVersion(page, versionComment)
+
+  const versioned = records.get(source.id)
+  assert.equal(versioned.version, 2)
+  assert.equal(versioned.comment, versionComment)
+  const versionSave = saveRequests.findLast((request) => request.id === source.id)
+  assert.equal(versionSave.kind, 'editor-json')
+  assert.equal(versionSave.body.newversion, 'true')
+  assert.equal(versionSave.body.comment, versionComment)
+
+  await page.locator('[data-testid="back-to-models"]').click()
+  await page.locator('[data-testid="model-list-page"]').waitFor({ state: 'visible' })
+  const row = page.locator(`[data-testid="model-row"][data-model-id="${source.id}"]`)
+  await row.locator('[data-testid="model-history"]').click()
+  const dialog = page.locator('[data-testid="model-history-dialog"]')
+  await dialog.waitFor({ state: 'visible' })
+  await dialog.locator('[data-testid="model-history-table"] tbody tr').first().waitFor()
+  assert.equal(
+    await dialog.locator('[data-testid="model-history-table"] tbody tr').count(),
+    1,
+    'backend history list must expose the archived version',
+  )
+  assert.ok(
+    historyRequests.some((request) => request.kind === 'list' && request.id === source.id),
+    'official Flowable history list request was not made',
+  )
+
+  await dialog
+    .locator('[data-testid="model-history-table"] tbody tr')
+    .filter({ hasText: 'v1' })
+    .locator('[data-testid="restore-model-history"]')
+    .click()
+  const restoreDialog = page.locator('.el-message-box:visible')
+  await restoreDialog.waitFor({ state: 'visible' })
+  const restoreComment = 'Restore backend original'
+  await restoreDialog.locator('textarea').fill(restoreComment)
+  await restoreDialog
+    .getByRole('button', { name: 'Restore as new version', exact: true })
+    .click()
+  await dialog.locator('.current-version strong').filter({ hasText: 'v3' }).waitFor()
+
+  const restored = records.get(source.id)
+  assert.equal(restored.version, 3)
+  assert.equal(restored.comment, restoreComment)
+  const restoreRequest = historyRequests.findLast(
+    (request) => request.kind === 'restore' && request.id === source.id,
+  )
+  assert.ok(restoreRequest, 'official Flowable history restore request was not made')
+  assert.deepEqual(restoreRequest.body, {
+    action: 'useAsNewVersion',
+    comment: restoreComment,
+  })
+  assert.ok(
+    historyRequests.filter((request) => request.kind === 'list' && request.id === source.id)
+      .length >= 2,
+    'history was not refreshed after restore',
+  )
+  await dialog.getByRole('button', { name: 'Close', exact: true }).click()
+  await dialog.waitFor({ state: 'hidden' })
+  console.log('[pass] backend-mode new version, history list and restore contracts')
+}
+
+async function deleteBackendModelAndAssert(
+  page,
+  baseUrl,
+  source,
+  records,
+  deleteRequests,
+) {
+  await openList(page, baseUrl, listPath(source.modelType))
+  const row = page.locator(`[data-testid="model-row"][data-model-id="${source.id}"]`)
+  await row.locator('[data-testid="delete-model"]').click()
+  await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  await row.waitFor({ state: 'detached' })
+  assert.equal(records.has(source.id), false, 'backend deleted model remains in the mock store')
+  assert.equal(deleteRequests.filter((id) => id === source.id).length, 1)
+  console.log('[pass] backend-mode delete uses the official model resource')
+}
+
 async function runBackendMockSuite(browser, localRecords) {
   const server = await startViteServer(true)
   const context = await browser.newContext({ viewport: { width: 1366, height: 930 } })
@@ -1659,8 +2213,33 @@ async function runBackendMockSuite(browser, localRecords) {
   const listRequests = []
   const createRequests = []
   const saveRequests = []
+  const historyRequests = []
+  const deleteRequests = []
   const forbiddenRequests = []
   const unhandledRequests = []
+  const histories = new Map()
+  let forcedEditorSaveFailureKey = ''
+
+  function historyFor(id) {
+    let versions = histories.get(id)
+    if (!versions) {
+      versions = []
+      histories.set(id, versions)
+    }
+    return versions
+  }
+
+  function archive(record) {
+    const versions = historyFor(record.id)
+    const snapshot = {
+      ...structuredClone(record),
+      id: `history-${record.id}-${versions.length + 1}`,
+      modelId: record.id,
+      latestVersion: false,
+    }
+    versions.push(snapshot)
+    return snapshot
+  }
 
   try {
     const page = await context.newPage()
@@ -1673,8 +2252,7 @@ async function runBackendMockSuite(browser, localRecords) {
       const method = request.method()
 
       if (
-        method === 'DELETE' ||
-        /\/bpmn20(?:\/|$)|import-process-model|parent-relations|\/deploy|\/publish|\/export/i.test(path)
+        /\/bpmn20(?:\/|$)|\/cmmn(?:\/|$)|\/dmn(?:\/|$)|import-(?:process|case|decision)|import-decision-table|parent-relations|\/deploy|\/publish|\/export/i.test(path)
       ) {
         forbiddenRequests.push(`${method} ${path}`)
         await route.fulfill({ status: 410, json: { message: 'Forbidden modeler endpoint' } })
@@ -1734,12 +2312,16 @@ async function runBackendMockSuite(browser, localRecords) {
         if (method === 'PUT') {
           const body = request.postDataJSON()
           const representation = body.decisionTableRepresentation || {}
+          if (body.newVersion === true) archive(record)
           record.name = representation.name || record.name
           record.key = representation.key || record.key
           record.description = representation.description || ''
           record.editorModel = structuredClone(representation.decisionTableDefinition || {})
           record.lastUpdated = Math.max(Date.now(), record.lastUpdated + 1)
-          if (body.newVersion === true) record.version += 1
+          if (body.newVersion === true) {
+            record.version += 1
+            record.comment = body.comment || ''
+          }
           saveRequests.push({
             id,
             kind: 'decision-table',
@@ -1783,7 +2365,15 @@ async function runBackendMockSuite(browser, localRecords) {
         }
         if (method === 'POST') {
           const body = new URLSearchParams(request.postData() || '')
+          if (body.get('key') === forcedEditorSaveFailureKey) {
+            await route.fulfill({
+              status: 500,
+              json: { message: 'Forced import save failure' },
+            })
+            return
+          }
           const editorModel = JSON.parse(body.get('json_xml') || '{}')
+          if (body.get('newversion') === 'true') archive(record)
           saveRequests.push({
             id,
             kind: 'editor-json',
@@ -1795,16 +2385,61 @@ async function runBackendMockSuite(browser, localRecords) {
           record.description = body.get('description') || ''
           record.editorModel = editorModel
           record.lastUpdated = Math.max(Date.now(), record.lastUpdated + 1)
+          if (body.get('newversion') === 'true') {
+            record.version += 1
+            record.comment = body.get('comment') || ''
+          }
           await route.fulfill({ json: publicModel(record) })
           return
         }
       }
 
+      const historyItemMatch = path.match(/\/models\/([^/]+)\/history\/([^/]+)$/)
+      if (historyItemMatch && method === 'POST') {
+        const id = decodeURIComponent(historyItemMatch[1])
+        const historyId = decodeURIComponent(historyItemMatch[2])
+        const record = records.get(id)
+        const version = historyFor(id).find((candidate) => candidate.id === historyId)
+        const body = request.postDataJSON()
+        if (!record || !version || body.action !== 'useAsNewVersion') {
+          await route.fulfill({ status: 404, json: { message: 'Unknown model history' } })
+          return
+        }
+        archive(record)
+        record.name = version.name
+        record.key = version.key
+        record.description = version.description
+        record.editorModel = structuredClone(version.editorModel)
+        record.version += 1
+        record.comment = body.comment || ''
+        record.lastUpdated = Math.max(Date.now(), record.lastUpdated + 1)
+        historyRequests.push({ kind: 'restore', id, historyId, body })
+        await route.fulfill({ json: { unresolvedModels: [] } })
+        return
+      }
+
+      const historyListMatch = path.match(/\/models\/([^/]+)\/history$/)
+      if (historyListMatch && method === 'GET') {
+        const id = decodeURIComponent(historyListMatch[1])
+        const data = [...historyFor(id)].reverse().map(publicModel)
+        historyRequests.push({ kind: 'list', id })
+        await route.fulfill({ json: { size: data.length, total: data.length, start: 0, data } })
+        return
+      }
+
       const modelMatch = path.match(/\/models\/([^/]+)$/)
-      if (modelMatch && method === 'GET') {
-        const record = records.get(decodeURIComponent(modelMatch[1]))
-        if (record) {
+      if (modelMatch) {
+        const id = decodeURIComponent(modelMatch[1])
+        const record = records.get(id)
+        if (record && method === 'GET') {
           await route.fulfill({ json: publicModel(record) })
+          return
+        }
+        if (record && method === 'DELETE') {
+          records.delete(id)
+          histories.delete(id)
+          deleteRequests.push(id)
+          await route.fulfill({ status: 204 })
           return
         }
       }
@@ -1894,6 +2529,146 @@ async function runBackendMockSuite(browser, localRecords) {
     assert.equal(saveRequests.at(-1)?.id, sourceCase.id)
     assert.equal(saveRequests.at(-1)?.kind, 'editor-json')
     console.log('[pass] Flowable reference navigation saves before opening its target')
+
+    const caseImportSource = byKey('target_case')?.editorModel.flowableModelerCmmn11Xml
+    const tableImportSource = byKey('risk_table')?.editorModel.flowableModelerDmn13Xml
+    assert.equal(typeof caseImportSource, 'string', 'backend CMMN import fixture is missing')
+    assert.equal(typeof tableImportSource, 'string', 'backend DMN import fixture is missing')
+    const importCreateStart = createRequests.length
+    const importedProcess = await importBackendModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.process,
+      'backend-imported-process.bpmn20.xml',
+      noDiProcessXml
+        .replaceAll('auto_layout_process', 'backend_imported_process')
+        .replaceAll('Auto-layout process', 'Backend imported process'),
+      records,
+      { key: 'backend_imported_process', name: 'Backend imported process' },
+    )
+    assert.match(
+      String(importedProcess.editorModel.flowableModelerBpmn20Xml || ''),
+      /<bpmndi:BPMNShape\b/,
+      'backend-mode BPMN import did not receive browser-generated DI',
+    )
+    await importBackendModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.case,
+      'backend-imported-case.cmmn.xml',
+      caseImportSource
+        .replaceAll('target_case', 'backend_imported_case')
+        .replaceAll('Target case', 'Backend imported case'),
+      records,
+      { key: 'backend_imported_case', name: 'Backend imported case' },
+    )
+    const importedTable = await importBackendModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.decisionTable,
+      'backend-imported-table.dmn',
+      tableImportSource
+        .replaceAll('risk_table', 'backend_imported_table')
+        .replaceAll('Risk table', 'Backend imported table'),
+      records,
+      { key: 'backend_imported_table', name: 'Backend imported table' },
+    )
+    const importedService = await importBackendModel(
+      page,
+      server.baseUrl,
+      MODEL_TYPES.decisionService,
+      'backend-imported-service.dmn',
+      embeddedDecisionServiceXml(tableImportSource)
+        .replaceAll('imported_embedded_table', 'backend_imported_embedded_table')
+        .replaceAll('Imported embedded table', 'Backend imported embedded table')
+        .replaceAll('imported_embedded_service', 'backend_imported_embedded_service')
+        .replaceAll('Imported embedded service', 'Backend imported embedded service'),
+      records,
+      {
+        key: 'backend_imported_embedded_service',
+        name: 'Backend imported embedded service',
+      },
+    )
+    assert.equal(
+      createRequests.length,
+      importCreateStart + 5,
+      'four imports must create four models plus the embedded decision table',
+    )
+    const importedDependency = byKey('backend_imported_embedded_table')
+    assert.ok(importedDependency, 'backend decision-service dependency is missing')
+    assertReference(
+      findShape(importedService.editorModel, 'backend_imported_embedded_table').properties
+        .decisiondecisiontablereference,
+      importedDependency,
+      'backend imported decision-service dependency',
+    )
+    console.log('[pass] backend-mode four-type imports use browser-side conversion')
+
+    const rollbackDeleteStart = deleteRequests.length
+    forcedEditorSaveFailureKey = 'rollback_embedded_service'
+    await openList(page, server.baseUrl, '/decisions?type=service')
+    await page.locator('[data-testid="model-import-input"]').setInputFiles({
+      name: 'rollback-service.dmn',
+      mimeType: 'application/xml',
+      buffer: Buffer.from(
+        embeddedDecisionServiceXml(tableImportSource)
+          .replaceAll('imported_embedded_table', 'rollback_embedded_table')
+          .replaceAll('Imported embedded table', 'Rollback embedded table')
+          .replaceAll('imported_embedded_service', 'rollback_embedded_service')
+          .replaceAll('Imported embedded service', 'Rollback embedded service'),
+      ),
+    })
+    await page
+      .locator('.el-message--error')
+      .filter({ hasText: 'Forced import save failure' })
+      .waitFor({ state: 'visible' })
+    forcedEditorSaveFailureKey = ''
+    assert.equal(byKey('rollback_embedded_table'), undefined)
+    assert.equal(byKey('rollback_embedded_service'), undefined)
+    assert.equal(
+      deleteRequests.length,
+      rollbackDeleteStart + 2,
+      'failed decision-service import did not roll back both created models',
+    )
+    console.log('[pass] backend-mode import failure rolls back every created model')
+
+    const duplicatedProcess = await duplicateBackendModel(
+      page,
+      server.baseUrl,
+      importedProcess,
+      'Backend duplicated process',
+      'backend_duplicated_process',
+      records,
+      createRequests,
+      saveRequests,
+    )
+    await assertBackendVersionHistoryAndRestore(
+      page,
+      server.baseUrl,
+      duplicatedProcess,
+      records,
+      saveRequests,
+      historyRequests,
+    )
+    await deleteBackendModelAndAssert(
+      page,
+      server.baseUrl,
+      duplicatedProcess,
+      records,
+      deleteRequests,
+    )
+
+    const decisionTableVersionComment = 'Backend decision table version'
+    await openStoredEditor(page, server.baseUrl, importedTable)
+    await triggerSaveAsNewVersion(page, decisionTableVersionComment)
+    assert.equal(records.get(importedTable.id).version, 2)
+    const decisionTableVersionSave = saveRequests.findLast(
+      (request) => request.id === importedTable.id,
+    )
+    assert.equal(decisionTableVersionSave.kind, 'decision-table')
+    assert.equal(decisionTableVersionSave.body.newVersion, true)
+    assert.equal(decisionTableVersionSave.body.comment, decisionTableVersionComment)
+    console.log('[pass] backend-mode decision-table new-version contract')
 
     for (const request of listRequests) {
       assert.equal(

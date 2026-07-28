@@ -13,6 +13,8 @@ import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
   Check,
+  ChevronDown,
+  GitBranch,
   Pencil,
   Plus,
   Maximize2,
@@ -691,7 +693,10 @@ async function currentXml() {
   return result.xml || ''
 }
 
-async function performSave(showSuccess = true) {
+async function performSave(
+  showSuccess = true,
+  version: { newVersion?: boolean; comment?: string } = {},
+) {
   if (!ready.value || !modeler.value) return false
   saving.value = true
   const savedRevision = revision.value
@@ -703,11 +708,18 @@ async function performSave(showSuccess = true) {
       name: name.value.trim(),
       key: key.value.trim(),
       description: description.value.trim(),
+      ...version,
     })
     lastSavedAt.value = result.savedAt
     dirty.value = revision.value !== savedRevision
     emit('saved')
-    if (showSuccess) ElMessage.success(t('designer.save.success'))
+    if (showSuccess) {
+      ElMessage.success(
+        version.newVersion
+          ? t('designer.save.newVersionSuccess')
+          : t('designer.save.success'),
+      )
+    }
     return true
   } catch (error) {
     ElMessage.error(error instanceof Error ? error.message : t('designer.errors.saveFailed'))
@@ -717,12 +729,33 @@ async function performSave(showSuccess = true) {
   }
 }
 
-function saveModel(showSuccess = true) {
+function saveModel(
+  showSuccess = true,
+  version: { newVersion?: boolean; comment?: string } = {},
+) {
   if (savePromise) return savePromise
-  savePromise = performSave(showSuccess).finally(() => {
+  savePromise = performSave(showSuccess, version).finally(() => {
     savePromise = null
   })
   return savePromise
+}
+
+async function saveNewVersion() {
+  try {
+    const result = await ElMessageBox.prompt(
+      t('designer.save.newVersionMessage'),
+      t('designer.save.newVersionTitle'),
+      {
+        inputType: 'textarea',
+        inputPlaceholder: t('designer.save.versionCommentPlaceholder'),
+        confirmButtonText: t('designer.save.createVersion'),
+        cancelButtonText: t('designer.save.cancelVersion'),
+      },
+    )
+    await saveModel(true, { newVersion: true, comment: result.value.trim() })
+  } catch {
+    // Cancel keeps the current editor state unchanged.
+  }
 }
 
 async function confirmClose() {
@@ -812,9 +845,28 @@ defineExpose({ confirmClose })
       <el-button text :icon="ArrowLeft" :disabled="saving" data-testid="back-to-models" @click="requestClose">
         {{ t('designer.toolbar.back') }}
       </el-button>
-      <el-button type="primary" :icon="Save" :loading="saving" :disabled="!ready" data-testid="save-model" @click="saveModel()">
-        {{ t('designer.toolbar.save') }}
-      </el-button>
+      <el-button-group>
+        <el-button type="primary" :icon="Save" :loading="saving" :disabled="!ready" data-testid="save-model" @click="saveModel()">
+          {{ t('designer.toolbar.save') }}
+        </el-button>
+        <el-dropdown :disabled="!ready || saving" trigger="click">
+          <el-button
+            type="primary"
+            :icon="ChevronDown"
+            :disabled="!ready || saving"
+            data-testid="save-model-menu"
+            :aria-label="t('designer.toolbar.saveOptions')"
+            :title="t('designer.toolbar.saveOptions')"
+          />
+          <template #dropdown>
+            <el-dropdown-menu>
+              <el-dropdown-item data-testid="save-new-version" :icon="GitBranch" @click="saveNewVersion">
+                {{ t('designer.toolbar.saveNewVersion') }}
+              </el-dropdown-item>
+            </el-dropdown-menu>
+          </template>
+        </el-dropdown>
+      </el-button-group>
       <span class="toolbar-divider" />
       <el-button :icon="Undo2" :disabled="!canUndo || saving" :title="t('designer.toolbar.undo')" @click="undo" />
       <el-button :icon="Redo2" :disabled="!canRedo || saving" :title="t('designer.toolbar.redo')" @click="redo" />

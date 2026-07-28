@@ -1,6 +1,9 @@
 declare module 'diagram-js-minimap'
 declare module 'bpmn-js-token-simulation'
 declare module 'diagram-js-grid'
+declare module 'bpmn-auto-layout' {
+  export function layoutProcess(xml: string): Promise<string>
+}
 declare module 'cmmn-js/lib/Modeler' {
   const Modeler: new (options?: Record<string, unknown>) => any
   export default Modeler

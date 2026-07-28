@@ -3,6 +3,7 @@ import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   Aim,
+  ArrowDown,
   Back,
   CircleCheck,
   FullScreen,
@@ -21,6 +22,7 @@ import {
   AlignVerticalJustifyCenter,
   AlignVerticalJustifyEnd,
   AlignVerticalJustifyStart,
+  GitBranch,
 } from 'lucide-vue-next'
 
 type Alignment = 'left' | 'center' | 'right' | 'top' | 'middle' | 'bottom'
@@ -40,6 +42,7 @@ defineProps<{
 const emit = defineEmits<{
   back: []
   save: []
+  saveNewVersion: []
   preview: []
   validate: []
   simulate: []
@@ -77,15 +80,34 @@ const alignments = computed<Array<{
     >
       {{ t('designer.toolbar.back') }}
     </el-button>
-    <el-button
-      type="primary"
-      :disabled="!ready || saving"
-      :loading="saving"
-      data-testid="save-model"
-      @click="emit('save')"
-    >
-      {{ t('designer.toolbar.save') }}
-    </el-button>
+    <el-button-group>
+      <el-button
+        type="primary"
+        :disabled="!ready || saving"
+        :loading="saving"
+        data-testid="save-model"
+        @click="emit('save')"
+      >
+        {{ t('designer.toolbar.save') }}
+      </el-button>
+      <el-dropdown :disabled="!ready || saving" trigger="click">
+        <el-button
+          type="primary"
+          :disabled="!ready || saving"
+          data-testid="save-model-menu"
+          :aria-label="t('designer.toolbar.saveOptions')"
+          :title="t('designer.toolbar.saveOptions')"
+          :icon="ArrowDown"
+        />
+        <template #dropdown>
+          <el-dropdown-menu>
+            <el-dropdown-item data-testid="save-new-version" :icon="GitBranch" @click="emit('saveNewVersion')">
+              {{ t('designer.toolbar.saveNewVersion') }}
+            </el-dropdown-item>
+          </el-dropdown-menu>
+        </template>
+      </el-dropdown>
+    </el-button-group>
 
     <span class="toolbar-divider" />
 

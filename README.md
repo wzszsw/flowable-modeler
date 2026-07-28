@@ -4,6 +4,9 @@
 当前支持 Flowable UI Modeler 中的 `Processes`、`Case models` 和 `Decisions`，其中决策分为
 `Decision tables` 和 `Decision services`。
 
+与 Flowable 6.8.1 的逐项范围、跨模型引用和后端限制见
+[对齐矩阵](docs/flowable-6.8.1-modeler-parity.md)。
+
 ## 架构
 
 应用默认不依赖后端，模型元数据和 Oryx 编辑文档保存在浏览器 IndexedDB 中：
@@ -14,10 +17,11 @@ bpmn-js/cmmn-js/dmn-js XML         -> 浏览器适配 -> 编辑 JSON -> IndexedD
 ```
 
 - 本地模式自动进入流程列表，不显示登录和登出入口，也不发起 Flowable REST 请求。
-- 模型列表、新建、读取、保存、搜索和排序由 IndexedDB 客户端提供；BPMN、CMMN 和决策服务镜像
-  Flowable 的 `lastUpdated` 乐观锁，决策表镜像专用的非锁定保存契约；BPMN 额外支持前端导入。
+- 模型列表、新建、读取、保存、搜索、排序、导入、复制、下载、删除和版本历史由 IndexedDB 客户端
+  提供；BPMN、CMMN 和决策服务镜像 Flowable 的 `lastUpdated` 乐观锁，决策表镜像专用的非锁定
+  保存契约。
 - 不使用 localStorage 或 sessionStorage；数据库名为 `flowable-modeler`，对象仓库为
-  `process-models`。
+  `process-models` 和 `model-history`。
 - 可用 `VITE_FLOWABLE_BACKEND_ENABLED=true` 切换到 Flowable 6.8.1 Modeler 后端。
 - 后端模式登录使用官方 `POST /app/authentication`，模型请求使用 `/modeler-app/rest`；请求仍统一
   使用 Axios 管理 Cookie、公共请求头、全局 Loading 和错误转换。
@@ -28,7 +32,8 @@ bpmn-js/cmmn-js/dmn-js XML         -> 浏览器适配 -> 编辑 JSON -> IndexedD
 - Oryx/决策表 JSON 与 BPMN、CMMN、DMN XML 的转换完全在浏览器中完成，不调用后端导入或导出转换接口。
 - 后端模式保存 Flowable 官方编辑 JSON；决策表使用专用 REST 资源，其他三类模型使用 `/editor/json`。
 - 页面由 Vue Router 管理，编辑器路由使用 Flowable 模型 UUID，刷新后会重新载入同一模型。
-- 不提供发布、部署、应用打包、模型删除或 XML/SVG/PNG 导出，不因这些能力要求后端增加关系接口。
+- 不提供发布、部署、应用打包、关系依赖保护或历史版本 XML 导出，不因这些能力要求后端增加关系或
+  历史编辑 JSON 接口。
 
 打开官方 Oryx 模型时，转换器会生成对应 XML 语义和 DI；保存时再生成 Flowable
 可读取的 shape、properties、bounds、dockers 与 outgoing。建模面板只暴露当前能完整往返保存的
@@ -39,7 +44,10 @@ CMMN/DMN 能力；Flowable UI 不支持或无法闭环的能力不在界面中�
 - 无后端模式和可选的 Flowable 登录模式
 - 使用 Flowable UI 术语的三类模型首页，默认打开 `Processes`
 - 简体中文/英语界面及运行时语言切换
-- 四类模型的新建、搜索、排序、打开、保存与刷新重开；BPMN 支持前端导入
+- 四类模型的新建、搜索、排序、打开、保存、刷新重开和浏览器端 XML 导入
+- Decision Table 可导入 DMN 1.1/1.2/1.3；Decision Service 可导入带 DI 的 DMN 1.2/1.3，
+  旧版输入会在浏览器内升级为 DMN 1.3 后交给 `dmn-js`
+- 四类模型的复制、当前 XML 下载、删除、另存为新版本、历史列表和恢复为新版本
 - BPMN 原生工具栏、上下文菜单、拖拽、框选与连线
 - CMMN 案例建模、DMN 决策表和决策服务建模
 - Flowable 属性面板和扩展 namespace `http://flowable.org/bpmn`
@@ -93,15 +101,19 @@ GET    /modeler-app/rest/account
 GET    /modeler-app/rest/models?modelType={0|4|5|6}&sort=modifiedDesc
 POST   /modeler-app/rest/models
 GET    /modeler-app/rest/models/{id}
+DELETE /modeler-app/rest/models/{id}
 GET    /modeler-app/rest/models/{id}/editor/json                 # BPMN/CMMN/决策服务
 POST   /modeler-app/rest/models/{id}/editor/json                 # BPMN/CMMN/决策服务
 GET    /modeler-app/rest/decision-table-models/{id}              # 决策表
 PUT    /modeler-app/rest/decision-table-models/{id}              # 决策表
+GET    /modeler-app/rest/models/{id}/history
+POST   /modeler-app/rest/models/{id}/history/{historyId}
 ```
 
 BPMN、CMMN 和决策服务的保存请求为 `application/x-www-form-urlencoded`，包含 `name`、`key`、
-`description`、`json_xml`、毫秒时间戳 `lastUpdated` 和 `newversion=false`。只有用户确认覆盖冲突时才
-发送 `conflictResolveAction=overwrite`。决策表按 Flowable UI 的专用 JSON 契约发送 `newVersion`、
+`description`、`json_xml`、毫秒时间戳 `lastUpdated` 和 `newversion`。普通保存发送 `false`，另存为
+新版本发送 `true` 和用户输入的 `comment`；只有用户确认覆盖冲突时才发送
+`conflictResolveAction=overwrite`。决策表按 Flowable UI 的专用 JSON 契约发送 `newVersion`、
 `decisionTableImageBase64` 和包含 `decisionTableDefinition` 的 `decisionTableRepresentation`；该专用
 接口本身不接收 `lastUpdated` 或冲突覆盖参数，本地模式遵循相同边界。
 
@@ -253,9 +265,10 @@ npm run verify
 `verify` 不启动、不调用 Flowable Java 后台，依次执行以下纯前端验证：
 
 - `check`：TypeScript/Vue 类型检查、国际化目录一致性检查和 BPMN moddle 往返测试。
-- `test:browser`：自动启动临时 Vite 服务，在隔离的 Chrome/Edge 中验证四类模型的创建、保存、
-  刷新重开、CMMN/DMN 能力边界、跨模型引用和专用决策表报文。套件分别使用 IndexedDB 和浏览器
-  拦截的 Flowable API mock，并禁止发布、部署、导出与关系查询端点。
+- `test:browser`：自动启动临时 Vite 服务，在隔离的 Chrome/Edge 中验证四类模型的创建、导入、
+  复制、保存、下载、删除、版本历史、刷新重开、CMMN/DMN 能力边界、跨模型引用和模型专用报文。
+  套件分别使用 IndexedDB 和浏览器拦截的 Flowable API mock，并禁止后端 XML 转换、发布、部署、
+  导出与关系查询端点。
 - `build`：生产构建检查。
 
 浏览器不在常见安装位置时，可通过 `FLOWABLE_BROWSER_PATH` 指定 Chrome/Edge 可执行文件。
@@ -263,7 +276,7 @@ npm run verify
 ## 转换边界
 
 - BPMN 转换器只接受 Oryx canvas 和已支持的 Flowable stencil。
-- BPMN XML 导入必须包含 BPMN DI，否则无法可靠生成 Oryx 图形坐标并会明确报错。
+- BPMN XML 没有 BPMN DI 时会先在浏览器自动布局；已有 DI 会原样用于 Oryx 图形坐标。
 - 本前端保存的 Oryx JSON 会携带原始 XML 和指纹，用于未经其他编辑器修改时精确恢复 XML。
 - 一旦 Oryx 内容被其他客户端修改，指纹不匹配，前端会重新从 Oryx 生成 BPMN XML。
 - Flowable 扩展统一使用 `flowable` 前缀和 `http://flowable.org/bpmn` namespace。
