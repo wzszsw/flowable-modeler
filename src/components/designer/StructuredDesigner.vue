@@ -1,13 +1,25 @@
 <script setup lang="ts">
-import { computed, markRaw, nextTick, onBeforeUnmount, onMounted, ref, shallowRef } from 'vue'
+import {
+  computed,
+  markRaw,
+  nextTick,
+  onBeforeUnmount,
+  onMounted,
+  reactive,
+  ref,
+  shallowRef,
+} from 'vue'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowLeft,
   Check,
+  Pencil,
+  Plus,
   Maximize2,
   Redo2,
   RefreshCw,
   Save,
+  Trash2,
   Undo2,
   ZoomIn,
   ZoomOut,
@@ -39,6 +51,19 @@ interface ViewerService {
   on?: (event: string, callback: (event: any) => void) => void
   get?: (name: string) => any
 }
+
+type CmmnMappingKind = 'in' | 'out'
+type CmmnMappingSourceType = 'source' | 'sourceExpression'
+type CmmnMappingTargetType = 'target' | 'targetExpression'
+
+interface CmmnMapping {
+  sourceType: CmmnMappingSourceType
+  source: string
+  targetType: CmmnMappingTargetType
+  target: string
+}
+
+const FLOWABLE_CMMN_NAMESPACE = 'http://flowable.org/cmmn'
 
 const props = defineProps<{
   modelType: ModelType
@@ -75,6 +100,26 @@ const key = ref(props.initialKey)
 const description = ref(props.initialDescription)
 const selectedName = ref('')
 const selectedReferenceId = ref('')
+const selectedIsBlocking = ref(true)
+const selectedBlockingExpression = ref('')
+const selectedFallbackToDefaultTenant = ref(false)
+const selectedSameDeployment = ref(false)
+const selectedIdVariableName = ref('')
+const selectedBusinessKey = ref('')
+const selectedInheritBusinessKey = ref(false)
+const selectedThrowErrorOnNoHits = ref(false)
+const selectedDecisionFallbackToDefaultTenant = ref(false)
+const inputMappings = ref<CmmnMapping[]>([])
+const outputMappings = ref<CmmnMapping[]>([])
+const mappingDialogVisible = ref(false)
+const mappingKind = ref<CmmnMappingKind>('in')
+const editingMappingIndex = ref<number | null>(null)
+const mappingForm = reactive({
+  sourceType: 'source' as CmmnMappingSourceType,
+  source: '',
+  targetType: 'target' as CmmnMappingTargetType,
+  target: '',
+})
 const lastSavedAt = ref(props.initialSavedAt || 0)
 
 let disposed = false
@@ -141,6 +186,56 @@ function customAttribute(object: Record<string, any> | null, name: string) {
   return object?.$attrs?.[`flowablemodeler:${name}`] || ''
 }
 
+function flowableAttribute(object: Record<string, any> | null, name: string) {
+  return object?.$attrs?.[`flowable:${name}`] ?? object?.[`flowable:${name}`] ?? ''
+}
+
+function booleanValue(value: unknown, fallback = false) {
+  if (value === undefined || value === null || value === '') return fallback
+  return value === true || value === 'true'
+}
+
+function extensionValues(object: Record<string, any> | null) {
+  return Array.isArray(object?.extensionElements?.values)
+    ? (object.extensionElements.values as Record<string, any>[])
+    : []
+}
+
+function extensionLocalName(value: Record<string, any>) {
+  return String(
+    value.$descriptor?.ns?.localName || value.$type || value.$name || '',
+  ).replace(/^.*:/, '')
+}
+
+function extensionProperty(value: Record<string, any>, name: string) {
+  return value[name] ?? value.$attrs?.[name] ?? ''
+}
+
+function cmmnMappings(object: Record<string, any> | null, kind: CmmnMappingKind) {
+  return extensionValues(object)
+    .filter((value) => extensionLocalName(value) === kind)
+    .map((value): CmmnMapping => {
+      const sourceExpression = String(extensionProperty(value, 'sourceExpression'))
+      const targetExpression = String(extensionProperty(value, 'targetExpression'))
+      return {
+        sourceType: sourceExpression ? 'sourceExpression' : 'source',
+        source: sourceExpression || String(extensionProperty(value, 'source')),
+        targetType: targetExpression ? 'targetExpression' : 'target',
+        target: targetExpression || String(extensionProperty(value, 'target')),
+      }
+    })
+}
+
+function decisionFieldValue(object: Record<string, any> | null, name: string) {
+  const field = extensionValues(object).find(
+    (value) =>
+      extensionLocalName(value) === 'field' &&
+      String(extensionProperty(value, 'name')) === name,
+  )
+  const child = Array.isArray(field?.$children) ? field.$children[0] : undefined
+  return booleanValue(child?.$body ?? extensionProperty(field || {}, 'stringValue'))
+}
+
 function selectedReferenceKey() {
   const object = isCmmn.value
     ? cmmnDefinition(selectedElement.value)
@@ -162,6 +257,31 @@ function hydrateSelection(element: DiagramElement | null) {
     props.referenceModels.find((model) => model.id === storedId)?.id ||
     props.referenceModels.find((model) => model.key === referenceKey)?.id ||
     ''
+  selectedIsBlocking.value = booleanValue(object?.isBlocking, true)
+  selectedBlockingExpression.value = String(
+    flowableAttribute(object, 'isBlockingExpression'),
+  )
+  selectedFallbackToDefaultTenant.value = booleanValue(
+    flowableAttribute(object, 'fallbackToDefaultTenant'),
+  )
+  selectedSameDeployment.value = booleanValue(
+    flowableAttribute(object, 'sameDeployment'),
+  )
+  selectedIdVariableName.value = String(flowableAttribute(object, 'idVariableName'))
+  selectedBusinessKey.value = String(flowableAttribute(object, 'businessKey'))
+  selectedInheritBusinessKey.value = booleanValue(
+    flowableAttribute(object, 'inheritBusinessKey'),
+  )
+  selectedThrowErrorOnNoHits.value = decisionFieldValue(
+    object,
+    'decisionTaskThrowErrorOnNoHits',
+  )
+  selectedDecisionFallbackToDefaultTenant.value = decisionFieldValue(
+    object,
+    'fallbackToDefaultTenant',
+  )
+  inputMappings.value = cmmnMappings(object, 'in')
+  outputMappings.value = cmmnMappings(object, 'out')
 }
 
 const selectedObjectType = computed(() => {
@@ -190,6 +310,23 @@ const selectedSupportsReference = computed(() =>
     'dmn:Decision',
   ].includes(selectedObjectType.value),
 )
+const selectedIsCmmnTask = computed(() =>
+  ['cmmn:ProcessTask', 'cmmn:CaseTask', 'cmmn:DecisionTask'].includes(
+    selectedObjectType.value,
+  ),
+)
+const selectedIsChildTask = computed(() =>
+  ['cmmn:ProcessTask', 'cmmn:CaseTask'].includes(selectedObjectType.value),
+)
+const selectedIsCaseTask = computed(() => selectedObjectType.value === 'cmmn:CaseTask')
+const selectedIsDecisionTask = computed(
+  () => selectedObjectType.value === 'cmmn:DecisionTask',
+)
+const mappingDialogTitle = computed(() =>
+  mappingKind.value === 'in'
+    ? t('designer.structured.inputMapping')
+    : t('designer.structured.outputMapping'),
+)
 const referenceOptions = computed(() => {
   const type = selectedObjectType.value
   if (type === 'cmmn:ProcessTask') {
@@ -214,7 +351,10 @@ function bindViewer(viewer: ViewerService) {
   viewer.on?.('selection.changed', (event) => {
     hydrateSelection(event?.newSelection?.[0] || null)
   })
-  viewer.on?.('commandStack.changed', markDirty)
+  viewer.on?.('commandStack.changed', () => {
+    markDirty()
+    if (selectedElement.value) hydrateSelection(selectedElement.value)
+  })
 }
 
 function bindCmmn(instance: any) {
@@ -316,6 +456,195 @@ function updateSelectedReference() {
   }
   if (isCmmn.value) modeling.updateProperties(object, properties, element)
   else modeling.updateProperties(element, properties)
+}
+
+function updateCmmnProperties(properties: Record<string, unknown>) {
+  const element = selectedElement.value
+  const object = cmmnDefinition(element)
+  const modeling = service('modeling')
+  if (!element || !object || !modeling?.updateProperties) return
+  modeling.updateProperties(object, properties, element)
+}
+
+function updateBlockingProperties() {
+  updateCmmnProperties({
+    isBlocking: selectedIsBlocking.value,
+    'flowable:isBlockingExpression': selectedBlockingExpression.value.trim() || undefined,
+  })
+}
+
+function updateChildTaskProperties() {
+  const properties: Record<string, unknown> = {
+    'flowable:fallbackToDefaultTenant':
+      selectedFallbackToDefaultTenant.value || undefined,
+    'flowable:sameDeployment': selectedSameDeployment.value || undefined,
+    'flowable:idVariableName': selectedIdVariableName.value.trim() || undefined,
+  }
+  if (selectedIsCaseTask.value) {
+    properties['flowable:businessKey'] = selectedBusinessKey.value.trim() || undefined
+    properties['flowable:inheritBusinessKey'] =
+      selectedInheritBusinessKey.value || undefined
+  }
+  updateCmmnProperties(properties)
+}
+
+function createGenericElement(
+  name: string,
+  properties: Record<string, unknown>,
+  children: Record<string, any>[] = [],
+) {
+  const moddle = service('moddle')
+  if (!moddle?.createAny) return null
+  const serializableProperties = Object.fromEntries(
+    Object.entries(properties).filter(
+      ([, value]) => value !== undefined && value !== null && value !== '',
+    ),
+  )
+  const value = moddle.createAny(
+    `flowable:${name}`,
+    FLOWABLE_CMMN_NAMESPACE,
+    serializableProperties,
+  )
+  if (children.length) {
+    value.$children = children
+    for (const child of children) child.$parent = value
+  }
+  return value as Record<string, any>
+}
+
+function replaceExtensionValues(
+  isManaged: (value: Record<string, any>) => boolean,
+  replacements: Record<string, any>[],
+) {
+  const element = selectedElement.value
+  const object = cmmnDefinition(element)
+  const modeling = service('modeling')
+  const moddle = service('moddle')
+  if (!element || !object || !modeling?.updateProperties || !moddle?.create) return
+  const existing = object.extensionElements as Record<string, any> | undefined
+  const values = [...extensionValues(object).filter((value) => !isManaged(value)), ...replacements]
+  if (existing) {
+    for (const value of replacements) value.$parent = existing
+    modeling.updateProperties(existing, { values }, element)
+    return
+  }
+  if (!values.length) return
+  const extensionElements = moddle.create('cmmn:ExtensionElements', { values })
+  extensionElements.$parent = object
+  for (const value of values) value.$parent = extensionElements
+  modeling.updateProperties(object, { extensionElements }, element)
+}
+
+function createDecisionField(name: string, value: boolean) {
+  const stringValue = createGenericElement('string', { $body: String(value) })
+  return stringValue
+    ? createGenericElement('field', { name }, [stringValue])
+    : null
+}
+
+function updateDecisionTaskProperties() {
+  const fieldNames = new Set([
+    'decisionTaskThrowErrorOnNoHits',
+    'fallbackToDefaultTenant',
+  ])
+  const fields = [
+    createDecisionField(
+      'decisionTaskThrowErrorOnNoHits',
+      selectedThrowErrorOnNoHits.value,
+    ),
+    createDecisionField(
+      'fallbackToDefaultTenant',
+      selectedDecisionFallbackToDefaultTenant.value,
+    ),
+  ].filter((value): value is Record<string, any> => Boolean(value))
+  replaceExtensionValues(
+    (value) =>
+      extensionLocalName(value) === 'field' &&
+      fieldNames.has(String(extensionProperty(value, 'name'))),
+    fields,
+  )
+}
+
+function createMappingElement(kind: CmmnMappingKind, mapping: CmmnMapping) {
+  return createGenericElement(kind, {
+    source: mapping.sourceType === 'source' ? mapping.source : undefined,
+    sourceExpression:
+      mapping.sourceType === 'sourceExpression' ? mapping.source : undefined,
+    target: mapping.targetType === 'target' ? mapping.target : undefined,
+    targetExpression:
+      mapping.targetType === 'targetExpression' ? mapping.target : undefined,
+  })
+}
+
+function persistMappings(input: CmmnMapping[], output: CmmnMapping[]) {
+  const values = [
+    ...input.map((mapping) => createMappingElement('in', mapping)),
+    ...output.map((mapping) => createMappingElement('out', mapping)),
+  ].filter((value): value is Record<string, any> => Boolean(value))
+  replaceExtensionValues(
+    (value) => ['in', 'out'].includes(extensionLocalName(value)),
+    values,
+  )
+}
+
+function openMappingDialog(kind: CmmnMappingKind, index?: number) {
+  const mappings = kind === 'in' ? inputMappings.value : outputMappings.value
+  const mapping = index === undefined ? undefined : mappings[index]
+  mappingKind.value = kind
+  editingMappingIndex.value = index ?? null
+  mappingForm.sourceType = mapping?.sourceType || 'source'
+  mappingForm.source = mapping?.source || ''
+  mappingForm.targetType = mapping?.targetType || 'target'
+  mappingForm.target = mapping?.target || ''
+  mappingDialogVisible.value = true
+}
+
+function saveMapping() {
+  if (!mappingForm.source.trim()) {
+    ElMessage.warning(t('designer.structured.mappingSourceRequired'))
+    return
+  }
+  if (!mappingForm.target.trim()) {
+    ElMessage.warning(t('designer.structured.mappingTargetRequired'))
+    return
+  }
+  const mapping: CmmnMapping = {
+    sourceType: mappingForm.sourceType,
+    source: mappingForm.source.trim(),
+    targetType: mappingForm.targetType,
+    target: mappingForm.target.trim(),
+  }
+  const input = [...inputMappings.value]
+  const output = [...outputMappings.value]
+  const mappings = mappingKind.value === 'in' ? input : output
+  if (editingMappingIndex.value === null) mappings.push(mapping)
+  else mappings[editingMappingIndex.value] = mapping
+  persistMappings(input, output)
+  mappingDialogVisible.value = false
+}
+
+async function removeMapping(kind: CmmnMappingKind, index: number) {
+  try {
+    await ElMessageBox.confirm(
+      t('designer.structured.confirmDeleteMapping'),
+      t('designer.structured.deleteMapping'),
+      {
+        confirmButtonText: t('designer.structured.confirm'),
+        cancelButtonText: t('designer.structured.cancel'),
+        type: 'warning',
+      },
+    )
+  } catch {
+    return
+  }
+  const input = [...inputMappings.value]
+  const output = [...outputMappings.value]
+  ;(kind === 'in' ? input : output).splice(index, 1)
+  persistMappings(input, output)
+}
+
+function mappingLabel(mapping: CmmnMapping) {
+  return `${mapping.source} -> ${mapping.target}`
 }
 
 function undo() {
@@ -555,11 +884,235 @@ defineExpose({ confirmClose })
                 </el-button>
               </div>
             </el-form-item>
+            <template v-if="selectedIsCmmnTask">
+              <div class="task-options">
+                <div class="switch-row">
+                  <span>{{ t('designer.structured.blocking') }}</span>
+                  <el-switch
+                    v-model="selectedIsBlocking"
+                    data-testid="cmmn-is-blocking"
+                    @change="updateBlockingProperties"
+                  />
+                </div>
+                <el-form-item :label="t('designer.structured.blockingExpression')">
+                  <el-input
+                    v-model="selectedBlockingExpression"
+                    data-testid="cmmn-blocking-expression"
+                    placeholder="${isBlocking}"
+                    @change="updateBlockingProperties"
+                  />
+                </el-form-item>
+              </div>
+
+              <template v-if="selectedIsChildTask">
+                <div class="switch-row">
+                  <span>{{ t('designer.structured.fallbackTenant') }}</span>
+                  <el-switch
+                    v-model="selectedFallbackToDefaultTenant"
+                    data-testid="cmmn-fallback-default-tenant"
+                    @change="updateChildTaskProperties"
+                  />
+                </div>
+                <div class="switch-row">
+                  <span>{{ t('designer.structured.sameDeployment') }}</span>
+                  <el-switch
+                    v-model="selectedSameDeployment"
+                    data-testid="cmmn-same-deployment"
+                    @change="updateChildTaskProperties"
+                  />
+                </div>
+                <el-form-item :label="t('designer.structured.idVariable')">
+                  <el-input
+                    v-model="selectedIdVariableName"
+                    data-testid="cmmn-id-variable-name"
+                    placeholder="instanceId"
+                    @change="updateChildTaskProperties"
+                  />
+                </el-form-item>
+                <template v-if="selectedIsCaseTask">
+                  <el-form-item :label="t('designer.structured.businessKey')">
+                    <el-input
+                      v-model="selectedBusinessKey"
+                      data-testid="cmmn-business-key"
+                      placeholder="${businessKey}"
+                      @change="updateChildTaskProperties"
+                    />
+                  </el-form-item>
+                  <div class="switch-row">
+                    <span>{{ t('designer.structured.inheritBusinessKey') }}</span>
+                    <el-switch
+                      v-model="selectedInheritBusinessKey"
+                      data-testid="cmmn-inherit-business-key"
+                      @change="updateChildTaskProperties"
+                    />
+                  </div>
+                </template>
+
+                <div class="mapping-header">
+                  <span>{{ t('designer.structured.inputParameters') }}</span>
+                  <el-button
+                    link
+                    type="primary"
+                    :icon="Plus"
+                    data-testid="add-cmmn-input-mapping"
+                    @click="openMappingDialog('in')"
+                  >
+                    {{ t('designer.structured.add') }}
+                  </el-button>
+                </div>
+                <div v-if="inputMappings.length" class="mapping-list">
+                  <div
+                    v-for="(mapping, index) in inputMappings"
+                    :key="`${mapping.sourceType}:${mapping.source}:${mapping.targetType}:${mapping.target}:${index}`"
+                    class="mapping-item"
+                    data-testid="cmmn-input-mapping-row"
+                  >
+                    <div class="mapping-value">
+                      <span>{{ mappingLabel(mapping) }}</span>
+                      <small>flowable:in</small>
+                    </div>
+                    <el-button
+                      link
+                      :icon="Pencil"
+                      :title="t('designer.structured.edit')"
+                      :aria-label="t('designer.structured.edit')"
+                      @click="openMappingDialog('in', index)"
+                    />
+                    <el-button
+                      link
+                      type="danger"
+                      :icon="Trash2"
+                      :title="t('designer.structured.deleteMapping')"
+                      :aria-label="t('designer.structured.deleteMapping')"
+                      @click="removeMapping('in', index)"
+                    />
+                  </div>
+                </div>
+                <div v-else class="empty-inline">
+                  {{ t('designer.structured.noInputParameters') }}
+                </div>
+
+                <div class="mapping-header">
+                  <span>{{ t('designer.structured.outputParameters') }}</span>
+                  <el-button
+                    link
+                    type="primary"
+                    :icon="Plus"
+                    data-testid="add-cmmn-output-mapping"
+                    @click="openMappingDialog('out')"
+                  >
+                    {{ t('designer.structured.add') }}
+                  </el-button>
+                </div>
+                <div v-if="outputMappings.length" class="mapping-list">
+                  <div
+                    v-for="(mapping, index) in outputMappings"
+                    :key="`${mapping.sourceType}:${mapping.source}:${mapping.targetType}:${mapping.target}:${index}`"
+                    class="mapping-item"
+                    data-testid="cmmn-output-mapping-row"
+                  >
+                    <div class="mapping-value">
+                      <span>{{ mappingLabel(mapping) }}</span>
+                      <small>flowable:out</small>
+                    </div>
+                    <el-button
+                      link
+                      :icon="Pencil"
+                      :title="t('designer.structured.edit')"
+                      :aria-label="t('designer.structured.edit')"
+                      @click="openMappingDialog('out', index)"
+                    />
+                    <el-button
+                      link
+                      type="danger"
+                      :icon="Trash2"
+                      :title="t('designer.structured.deleteMapping')"
+                      :aria-label="t('designer.structured.deleteMapping')"
+                      @click="removeMapping('out', index)"
+                    />
+                  </div>
+                </div>
+                <div v-else class="empty-inline">
+                  {{ t('designer.structured.noOutputParameters') }}
+                </div>
+              </template>
+
+              <template v-if="selectedIsDecisionTask">
+                <div class="switch-row">
+                  <span>{{ t('designer.structured.throwErrorOnNoHits') }}</span>
+                  <el-switch
+                    v-model="selectedThrowErrorOnNoHits"
+                    data-testid="cmmn-decision-throw-error-on-no-hits"
+                    @change="updateDecisionTaskProperties"
+                  />
+                </div>
+                <div class="switch-row">
+                  <span>{{ t('designer.structured.fallbackTenant') }}</span>
+                  <el-switch
+                    v-model="selectedDecisionFallbackToDefaultTenant"
+                    data-testid="cmmn-decision-fallback-default-tenant"
+                    @change="updateDecisionTaskProperties"
+                  />
+                </div>
+              </template>
+            </template>
           </el-form>
         </div>
         <el-empty v-else-if="!isDecisionTable" :description="t('designer.structured.selectElement')" :image-size="64" />
       </aside>
     </main>
+
+    <el-dialog
+      v-model="mappingDialogVisible"
+      :title="mappingDialogTitle"
+      width="min(520px, calc(100vw - 32px))"
+      append-to-body
+    >
+      <el-form label-position="top">
+        <el-form-item :label="t('designer.structured.sourceType')">
+          <el-radio-group v-model="mappingForm.sourceType">
+            <el-radio-button value="source">
+              {{ t('designer.structured.variable') }}
+            </el-radio-button>
+            <el-radio-button value="sourceExpression">
+              {{ t('designer.structured.expression') }}
+            </el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item :label="t('designer.structured.source')" required>
+          <el-input
+            v-model="mappingForm.source"
+            data-testid="cmmn-mapping-source"
+            :placeholder="mappingForm.sourceType === 'sourceExpression' ? '${source}' : 'sourceVariable'"
+          />
+        </el-form-item>
+        <el-form-item :label="t('designer.structured.targetType')">
+          <el-radio-group v-model="mappingForm.targetType">
+            <el-radio-button value="target">
+              {{ t('designer.structured.variable') }}
+            </el-radio-button>
+            <el-radio-button value="targetExpression">
+              {{ t('designer.structured.expression') }}
+            </el-radio-button>
+          </el-radio-group>
+        </el-form-item>
+        <el-form-item :label="t('designer.structured.target')" required>
+          <el-input
+            v-model="mappingForm.target"
+            data-testid="cmmn-mapping-target"
+            :placeholder="mappingForm.targetType === 'targetExpression' ? '${target}' : 'targetVariable'"
+          />
+        </el-form-item>
+      </el-form>
+      <template #footer>
+        <el-button @click="mappingDialogVisible = false">
+          {{ t('designer.structured.cancel') }}
+        </el-button>
+        <el-button type="primary" data-testid="save-cmmn-mapping" @click="saveMapping">
+          {{ t('designer.structured.confirm') }}
+        </el-button>
+      </template>
+    </el-dialog>
   </div>
 </template>
 
@@ -592,6 +1145,16 @@ defineExpose({ confirmClose })
 .panel-section h2 { margin: 0 0 14px; color: #344054; font-size: 13px; font-weight: 650; letter-spacing: 0; }
 .panel-section :deep(.el-form-item:last-child) { margin-bottom: 0; }
 .selected-section { background: #fcfcfd; }
+.task-options { margin-top: 4px; padding-top: 14px; border-top: 1px solid #eaecf0; }
+.switch-row { display: flex; min-height: 34px; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 12px; color: #475467; font-size: 12px; }
+.mapping-header { display: flex; min-height: 36px; align-items: center; justify-content: space-between; margin-top: 10px; color: #344054; font-size: 12px; font-weight: 600; }
+.mapping-header :deep(.el-button) { margin-left: 8px; }
+.mapping-list { border-top: 1px solid #eaecf0; }
+.mapping-item { display: flex; min-width: 0; min-height: 50px; align-items: center; border-bottom: 1px solid #eaecf0; gap: 2px; }
+.mapping-value { display: flex; min-width: 0; flex: 1; flex-direction: column; gap: 3px; }
+.mapping-value span { overflow: hidden; color: #344054; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
+.mapping-value small { color: #98a2b3; font-size: 10px; }
+.empty-inline { padding: 8px 0 12px; color: #98a2b3; font-size: 12px; }
 .cmmn-designer :deep(.djs-shape .djs-hit) { pointer-events: all; }
 .cmmn-designer :deep(.djs-connection .djs-hit),
 .cmmn-designer :deep(.djs-frame .djs-hit) { pointer-events: stroke; }

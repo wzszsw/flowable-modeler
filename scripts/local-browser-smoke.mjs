@@ -355,22 +355,49 @@ function caseEditorWithReferences(record) {
       overrideid: 'ProcessTask_definition',
       name: 'Start process',
       isblocking: true,
+      isblockingexpression: '${blockProcessTask}',
+      fallbacktodefaulttenant: true,
+      samedeployment: true,
+      idVariableName: 'startedProcessInstanceId',
+      processtaskinparameters: {
+        inParameters: [{ sourceExpression: '${order}', target: 'processOrder' }],
+      },
+      processtaskoutparameters: {
+        outParameters: [{ source: 'status', targetExpression: '${processResult}' }],
+      },
     })
   const caseTask =
     shape('case-case-task', 'CaseTask', bounds(270, 100, 120, 80), {
       overrideid: 'CaseTask_definition',
       name: 'Start case',
       isblocking: true,
+      isblockingexpression: '${blockCaseTask}',
+      fallbacktodefaulttenant: true,
+      samedeployment: true,
+      idvariablename: 'startedCaseInstanceId',
+      casetaskbusinesskey: '${caseBusinessKey}',
+      casetaskinheritbusinesskey: true,
+      casetaskinparameters: {
+        inParameters: [{ source: 'customerId', targetExpression: '${caseCustomer}' }],
+      },
+      casetaskoutparameters: {
+        outParameters: [{ sourceExpression: '${caseStatus}', target: 'resultStatus' }],
+      },
     })
   const tableTask = shape('case-table-task', 'DecisionTask', bounds(90, 260, 120, 80), {
       overrideid: 'DecisionTableTask_definition',
       name: 'Evaluate table',
       isblocking: true,
+      isblockingexpression: '${blockDecisionTable}',
+      decisiontaskthrowerroronnohits: true,
+      decisiontaskfallbacktodefaulttenant: false,
     })
   const serviceTask = shape('case-service-task', 'DecisionTask', bounds(270, 260, 120, 80), {
       overrideid: 'DecisionServiceTask_definition',
       name: 'Evaluate service',
       isblocking: true,
+      decisiontaskthrowerroronnohits: false,
+      decisiontaskfallbacktodefaulttenant: true,
     })
   const criterion = shape('case-entry-criterion', 'EntryCriterion', bounds(82, 286, 16, 22), {
     overrideid: 'CaseEntryCriterion',
@@ -794,6 +821,93 @@ async function assertSelectedReference(page, selector, label) {
   assert.match(text || '', new RegExp(label), `reference was not restored: ${label}`)
 }
 
+async function assertSwitchValue(page, selector, expected) {
+  assert.equal(
+    await page.locator(selector).locator('input[role="switch"]').getAttribute('aria-checked'),
+    String(expected),
+    selector,
+  )
+}
+
+async function assertCmmnChildTaskPanel(page, expected) {
+  await assertSwitchValue(page, '[data-testid="cmmn-is-blocking"]', true)
+  await assertSwitchValue(page, '[data-testid="cmmn-fallback-default-tenant"]', true)
+  await assertSwitchValue(page, '[data-testid="cmmn-same-deployment"]', true)
+  assert.equal(
+    await page.locator('[data-testid="cmmn-blocking-expression"]').inputValue(),
+    expected.blockingExpression,
+  )
+  assert.equal(
+    await page.locator('[data-testid="cmmn-id-variable-name"]').inputValue(),
+    expected.idVariableName,
+  )
+  if (expected.businessKey) {
+    assert.equal(
+      await page.locator('[data-testid="cmmn-business-key"]').inputValue(),
+      expected.businessKey,
+    )
+    await assertSwitchValue(page, '[data-testid="cmmn-inherit-business-key"]', true)
+  } else {
+    assert.equal(await page.locator('[data-testid="cmmn-business-key"]').count(), 0)
+  }
+  assert.equal(await page.locator('[data-testid="cmmn-input-mapping-row"]').count(), 1)
+  assert.equal(await page.locator('[data-testid="cmmn-output-mapping-row"]').count(), 1)
+  assert.match(
+    (await page.locator('[data-testid="cmmn-input-mapping-row"]').textContent()) || '',
+    expected.inputMapping,
+  )
+  assert.match(
+    (await page.locator('[data-testid="cmmn-output-mapping-row"]').textContent()) || '',
+    expected.outputMapping,
+  )
+}
+
+async function assertCmmnDecisionTaskPanel(page, expected) {
+  await assertSwitchValue(page, '[data-testid="cmmn-is-blocking"]', true)
+  await assertSwitchValue(
+    page,
+    '[data-testid="cmmn-decision-throw-error-on-no-hits"]',
+    expected.throwErrorOnNoHits,
+  )
+  await assertSwitchValue(
+    page,
+    '[data-testid="cmmn-decision-fallback-default-tenant"]',
+    expected.fallbackToDefaultTenant,
+  )
+  assert.equal(
+    await page.locator('[data-testid="cmmn-blocking-expression"]').inputValue(),
+    expected.blockingExpression,
+  )
+}
+
+async function editProcessTaskInvocation(page) {
+  const blockingExpression = page.locator('[data-testid="cmmn-blocking-expression"]')
+  await blockingExpression.fill('${updatedBlockProcessTask}')
+  await blockingExpression.press('Tab')
+
+  const idVariable = page.locator('[data-testid="cmmn-id-variable-name"]')
+  await idVariable.fill('updatedProcessInstanceId')
+  await idVariable.press('Tab')
+  await page.getByTitle('Undo').click()
+  assert.equal(await idVariable.inputValue(), 'startedProcessInstanceId')
+  await page.getByTitle('Redo').click()
+  assert.equal(await idVariable.inputValue(), 'updatedProcessInstanceId')
+
+  await page
+    .locator('[data-testid="cmmn-output-mapping-row"]')
+    .getByRole('button', { name: 'Edit' })
+    .click()
+  const dialog = page.locator('.el-dialog:visible')
+  await dialog
+    .locator('.el-radio-group')
+    .first()
+    .locator('.el-radio-button')
+    .filter({ hasText: 'Expression' })
+    .click()
+  await dialog.locator('[data-testid="cmmn-mapping-source"]').fill('${updatedStatus}')
+  await dialog.locator('[data-testid="save-cmmn-mapping"]').click()
+}
+
 async function assertCaseServiceTaskPanel(page, targetCase) {
   await assertSelectedReference(page, '[data-testid="case-model-reference"]', targetCase.name)
   assert.equal(await page.locator('[data-testid="case-definition-key"]').inputValue(), targetCase.key)
@@ -954,6 +1068,70 @@ function assertDecisionTableRoundTrip(editorModel) {
   assert.equal(editorModel.outputExpressions[0].newVariable, true)
 }
 
+function assertCmmnInvocationRoundTrip(editorModel) {
+  const processTask = findShape(editorModel, 'case-process-task')
+  const caseTask = findShape(editorModel, 'case-case-task')
+  const tableTask = findShape(editorModel, 'case-table-task')
+  const serviceTask = findShape(editorModel, 'case-service-task')
+  for (const task of [processTask, caseTask, tableTask, serviceTask]) {
+    assert.ok(task, 'a CMMN invocation task is missing')
+  }
+
+  assert.equal(processTask.properties.isblocking, true)
+  assert.equal(processTask.properties.isblockingexpression, '${updatedBlockProcessTask}')
+  assert.equal(processTask.properties.fallbacktodefaulttenant, true)
+  assert.equal(processTask.properties.samedeployment, true)
+  assert.equal(processTask.properties.idvariablename, 'updatedProcessInstanceId')
+  assert.equal('idVariableName' in processTask.properties, false)
+  assert.deepEqual(processTask.properties.processtaskinparameters, {
+    inParameters: [{ sourceExpression: '${order}', target: 'processOrder' }],
+  })
+  assert.deepEqual(processTask.properties.processtaskoutparameters, {
+    outParameters: [
+      { sourceExpression: '${updatedStatus}', targetExpression: '${processResult}' },
+    ],
+  })
+
+  assert.equal(caseTask.properties.isblockingexpression, '${blockCaseTask}')
+  assert.equal(caseTask.properties.fallbacktodefaulttenant, true)
+  assert.equal(caseTask.properties.samedeployment, true)
+  assert.equal(caseTask.properties.idvariablename, 'startedCaseInstanceId')
+  assert.equal(caseTask.properties.casetaskbusinesskey, '${caseBusinessKey}')
+  assert.equal(caseTask.properties.casetaskinheritbusinesskey, true)
+  assert.deepEqual(caseTask.properties.casetaskinparameters, {
+    inParameters: [{ source: 'customerId', targetExpression: '${caseCustomer}' }],
+  })
+  assert.deepEqual(caseTask.properties.casetaskoutparameters, {
+    outParameters: [{ sourceExpression: '${caseStatus}', target: 'resultStatus' }],
+  })
+
+  assert.equal(tableTask.properties.decisiontaskthrowerroronnohits, true)
+  assert.equal(tableTask.properties.decisiontaskfallbacktodefaulttenant, false)
+  assert.equal(serviceTask.properties.decisiontaskthrowerroronnohits, false)
+  assert.equal(serviceTask.properties.decisiontaskfallbacktodefaulttenant, true)
+
+  const xml = String(editorModel.flowableModelerCmmn11Xml || '')
+  assert.match(xml, /xmlns:flowable="http:\/\/flowable\.org\/cmmn"/)
+  assert.match(xml, /flowable:isBlockingExpression="\$\{updatedBlockProcessTask\}"/)
+  assert.match(xml, /flowable:fallbackToDefaultTenant="true"/)
+  assert.match(xml, /flowable:sameDeployment="true"/)
+  assert.match(xml, /flowable:idVariableName="updatedProcessInstanceId"/)
+  assert.match(xml, /flowable:businessKey="\$\{caseBusinessKey\}"/)
+  assert.match(xml, /flowable:inheritBusinessKey="true"/)
+  assert.match(
+    xml,
+    /<flowable:in sourceExpression="\$\{order\}" target="processOrder"\s*\/>/,
+  )
+  assert.match(
+    xml,
+    /<flowable:out sourceExpression="\$\{updatedStatus\}" targetExpression="\$\{processResult\}"\s*\/>/,
+  )
+  assert.match(
+    xml,
+    /<flowable:field name="decisionTaskThrowErrorOnNoHits">[\s\S]*?<flowable:string>true<\/flowable:string>/,
+  )
+}
+
 function assertCrossModelReferences(records) {
   const processModel = records.find((record) => record.key === 'cross_process')
   const caseModel = records.find((record) => record.key === 'cross_case')
@@ -1036,6 +1214,7 @@ function assertCrossModelReferences(records) {
     'service-decision',
     'decision-service information requirement',
   )
+  assertCmmnInvocationRoundTrip(caseModel.editorModel)
   assertDecisionTableRoundTrip(table.editorModel)
 }
 
@@ -1127,25 +1306,112 @@ async function runLocalModeSuite(browser) {
     await openStoredEditor(page, server.baseUrl, caseModel)
     await selectStructuredElement(page, 'case-process-task_planItem')
     await assertCmmnCapabilityBoundary(page)
+    await assertCmmnChildTaskPanel(page, {
+      blockingExpression: '${blockProcessTask}',
+      idVariableName: 'startedProcessInstanceId',
+      inputMapping: /\$\{order\}.*processOrder/,
+      outputMapping: /status.*\$\{processResult\}/,
+    })
     await selectReference(page, '[data-testid="structured-model-reference"]', processTarget.name)
+    await editProcessTaskInvocation(page)
     await selectStructuredElement(page, 'case-case-task_planItem')
+    await assertCmmnChildTaskPanel(page, {
+      blockingExpression: '${blockCaseTask}',
+      idVariableName: 'startedCaseInstanceId',
+      businessKey: '${caseBusinessKey}',
+      inputMapping: /customerId.*\$\{caseCustomer\}/,
+      outputMapping: /\$\{caseStatus\}.*resultStatus/,
+    })
     await selectReference(page, '[data-testid="structured-model-reference"]', caseTarget.name)
     await selectStructuredElement(page, 'case-table-task_planItem')
+    await assertCmmnDecisionTaskPanel(page, {
+      blockingExpression: '${blockDecisionTable}',
+      throwErrorOnNoHits: true,
+      fallbackToDefaultTenant: false,
+    })
     await selectReference(page, '[data-testid="structured-model-reference"]', table.name)
     await selectStructuredElement(page, 'case-service-task_planItem')
+    await assertCmmnDecisionTaskPanel(page, {
+      blockingExpression: '',
+      throwErrorOnNoHits: false,
+      fallbackToDefaultTenant: true,
+    })
     await selectReference(page, '[data-testid="structured-model-reference"]', service.name)
     await saveModel(page)
     await page.reload({ waitUntil: 'domcontentloaded' })
     await waitForEditor(page, MODEL_TYPES.case)
     await selectStructuredElement(page, 'case-process-task_planItem')
     await assertSelectedReference(page, '[data-testid="structured-model-reference"]', processTarget.name)
+    await assertCmmnChildTaskPanel(page, {
+      blockingExpression: '${updatedBlockProcessTask}',
+      idVariableName: 'updatedProcessInstanceId',
+      inputMapping: /\$\{order\}.*processOrder/,
+      outputMapping: /\$\{updatedStatus\}.*\$\{processResult\}/,
+    })
     await selectStructuredElement(page, 'case-case-task_planItem')
     await assertSelectedReference(page, '[data-testid="structured-model-reference"]', caseTarget.name)
+    await assertCmmnChildTaskPanel(page, {
+      blockingExpression: '${blockCaseTask}',
+      idVariableName: 'startedCaseInstanceId',
+      businessKey: '${caseBusinessKey}',
+      inputMapping: /customerId.*\$\{caseCustomer\}/,
+      outputMapping: /\$\{caseStatus\}.*resultStatus/,
+    })
     await selectStructuredElement(page, 'case-table-task_planItem')
     await assertSelectedReference(page, '[data-testid="structured-model-reference"]', table.name)
+    await assertCmmnDecisionTaskPanel(page, {
+      blockingExpression: '${blockDecisionTable}',
+      throwErrorOnNoHits: true,
+      fallbackToDefaultTenant: false,
+    })
     await selectStructuredElement(page, 'case-service-task_planItem')
     await assertSelectedReference(page, '[data-testid="structured-model-reference"]', service.name)
+    await assertCmmnDecisionTaskPanel(page, {
+      blockingExpression: '',
+      throwErrorOnNoHits: false,
+      fallbackToDefaultTenant: true,
+    })
     caseModel = (await readStoredModels(page)).find((record) => record.id === caseModel.id)
+    assertCmmnInvocationRoundTrip(caseModel.editorModel)
+
+    const reconstructedCaseEditor = structuredClone(caseModel.editorModel)
+    delete reconstructedCaseEditor.flowableModelerCmmn11Xml
+    await replaceStoredEditorModel(page, caseModel.id, reconstructedCaseEditor)
+    caseModel.editorModel = reconstructedCaseEditor
+    await openStoredEditor(page, server.baseUrl, caseModel)
+    await selectStructuredElement(page, 'case-process-task_planItem')
+    await assertSelectedReference(page, '[data-testid="structured-model-reference"]', processTarget.name)
+    await assertCmmnChildTaskPanel(page, {
+      blockingExpression: '${updatedBlockProcessTask}',
+      idVariableName: 'updatedProcessInstanceId',
+      inputMapping: /\$\{order\}.*processOrder/,
+      outputMapping: /\$\{updatedStatus\}.*\$\{processResult\}/,
+    })
+    await selectStructuredElement(page, 'case-case-task_planItem')
+    await assertCmmnChildTaskPanel(page, {
+      blockingExpression: '${blockCaseTask}',
+      idVariableName: 'startedCaseInstanceId',
+      businessKey: '${caseBusinessKey}',
+      inputMapping: /customerId.*\$\{caseCustomer\}/,
+      outputMapping: /\$\{caseStatus\}.*resultStatus/,
+    })
+    await selectStructuredElement(page, 'case-table-task_planItem')
+    await assertCmmnDecisionTaskPanel(page, {
+      blockingExpression: '${blockDecisionTable}',
+      throwErrorOnNoHits: true,
+      fallbackToDefaultTenant: false,
+    })
+    await selectStructuredElement(page, 'case-service-task_planItem')
+    await assertCmmnDecisionTaskPanel(page, {
+      blockingExpression: '',
+      throwErrorOnNoHits: false,
+      fallbackToDefaultTenant: true,
+    })
+    await saveModel(page)
+    caseModel = (await readStoredModels(page)).find((record) => record.id === caseModel.id)
+    assertCmmnInvocationRoundTrip(caseModel.editorModel)
+    console.log('[pass] CMMN invocation settings survive Oryx-only reconstruction')
+
     caseModel = await openLocalReferenceAndAssertSaved(
       page,
       caseModel,

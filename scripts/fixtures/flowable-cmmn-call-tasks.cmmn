@@ -1,0 +1,78 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<cmmn:definitions
+  xmlns:cmmn="http://www.omg.org/spec/CMMN/20151109/MODEL"
+  xmlns:flowable="http://flowable.org/cmmn"
+  id="cross_case_definitions"
+  targetNamespace="http://flowable.org/cmmn">
+  <cmmn:case id="cross_case" name="Cross-model case">
+    <cmmn:casePlanModel id="CasePlanModel_1" name="Cross-model plan">
+      <cmmn:planItem id="ProcessTask_planItem" definitionRef="ProcessTask_definition" />
+      <cmmn:planItem id="CaseTask_planItem" definitionRef="CaseTask_definition" />
+      <cmmn:planItem id="DecisionTableTask_planItem" definitionRef="DecisionTableTask_definition" />
+      <cmmn:planItem id="DecisionServiceTask_planItem" definitionRef="DecisionServiceTask_definition" />
+
+      <cmmn:processTask
+        id="ProcessTask_definition"
+        name="Start process"
+        isBlocking="true"
+        processRef="target_process"
+        flowable:isBlockingExpression="${blockProcessTask}"
+        flowable:fallbackToDefaultTenant="true"
+        flowable:sameDeployment="true"
+        flowable:idVariableName="startedProcessInstanceId">
+        <cmmn:extensionElements>
+          <flowable:in sourceExpression="${order}" target="processOrder" />
+          <flowable:out source="status" targetExpression="${processResult}" />
+        </cmmn:extensionElements>
+      </cmmn:processTask>
+
+      <cmmn:caseTask
+        id="CaseTask_definition"
+        name="Start case"
+        isBlocking="true"
+        caseRef="target_case"
+        flowable:isBlockingExpression="${blockCaseTask}"
+        flowable:fallbackToDefaultTenant="true"
+        flowable:sameDeployment="true"
+        flowable:idVariableName="startedCaseInstanceId"
+        flowable:businessKey="${caseBusinessKey}"
+        flowable:inheritBusinessKey="true">
+        <cmmn:extensionElements>
+          <flowable:in source="customerId" targetExpression="${caseCustomer}" />
+          <flowable:out sourceExpression="${caseStatus}" target="resultStatus" />
+        </cmmn:extensionElements>
+      </cmmn:caseTask>
+
+      <cmmn:decisionTask
+        id="DecisionTableTask_definition"
+        name="Evaluate table"
+        isBlocking="true"
+        decisionRef="risk_table"
+        flowable:isBlockingExpression="${blockDecisionTable}">
+        <cmmn:extensionElements>
+          <flowable:field name="decisionTaskThrowErrorOnNoHits">
+            <flowable:string>true</flowable:string>
+          </flowable:field>
+          <flowable:field name="fallbackToDefaultTenant">
+            <flowable:string>false</flowable:string>
+          </flowable:field>
+        </cmmn:extensionElements>
+      </cmmn:decisionTask>
+
+      <cmmn:decisionTask
+        id="DecisionServiceTask_definition"
+        name="Evaluate service"
+        isBlocking="true"
+        decisionRef="risk_service">
+        <cmmn:extensionElements>
+          <flowable:field name="decisionTaskThrowErrorOnNoHits">
+            <flowable:string>false</flowable:string>
+          </flowable:field>
+          <flowable:field name="fallbackToDefaultTenant">
+            <flowable:string>true</flowable:string>
+          </flowable:field>
+        </cmmn:extensionElements>
+      </cmmn:decisionTask>
+    </cmmn:casePlanModel>
+  </cmmn:case>
+</cmmn:definitions>

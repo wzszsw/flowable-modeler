@@ -36,6 +36,7 @@ const CMMN_NAMESPACE = 'http://www.omg.org/spec/CMMN/20151109/MODEL'
 const CMMNDI_NAMESPACE = 'http://www.omg.org/spec/CMMN/20151109/CMMNDI'
 const DC_NAMESPACE = 'http://www.omg.org/spec/CMMN/20151109/DC'
 const DI_NAMESPACE = 'http://www.omg.org/spec/CMMN/20151109/DI'
+const FLOWABLE_NAMESPACE = 'http://flowable.org/cmmn'
 const MODELER_NAMESPACE = 'http://flowable.org/modeler/frontend'
 const RAW_XML_PROPERTY = 'flowableModelerCmmn11Xml'
 
@@ -82,9 +83,21 @@ const KNOWN_PROPERTIES = new Set([
   'isblocking',
   'isblockingexpression',
   'processtaskprocessreference',
+  'processtaskinparameters',
+  'processtaskoutparameters',
   'casetaskcasereference',
+  'casetaskinparameters',
+  'casetaskoutparameters',
+  'casetaskbusinesskey',
+  'casetaskinheritbusinesskey',
   'decisiontaskdecisiontablereference',
   'decisiontaskdecisionservicereference',
+  'decisiontaskthrowerroronnohits',
+  'decisiontaskfallbacktodefaulttenant',
+  'fallbacktodefaulttenant',
+  'samedeployment',
+  'idvariablename',
+  'idVariableName',
   'condition',
   'ifpartcondition',
   'triggerMode',
@@ -376,6 +389,76 @@ function documentationXml(properties: JsonObject) {
     : ''
 }
 
+function flowableBooleanAttribute(name: string, value: unknown) {
+  return booleanValue(value) ? xmlAttribute(`flowable:${name}`, 'true') : ''
+}
+
+function ioParameters(
+  properties: JsonObject,
+  propertyName: string,
+  collectionName: string,
+) {
+  const container = objectValue(properties[propertyName])
+  return arrayValue<JsonObject>(container[collectionName])
+}
+
+function ioParameterXml(elementName: 'in' | 'out', parameter: JsonObject) {
+  const attributes = [
+    xmlAttribute('source', parameter.source),
+    xmlAttribute('sourceExpression', parameter.sourceExpression),
+    xmlAttribute('target', parameter.target),
+    xmlAttribute('targetExpression', parameter.targetExpression),
+  ].join('')
+  return attributes ? `<flowable:${elementName}${attributes} />` : ''
+}
+
+function taskExtensionElementsXml(stencil: string, properties: JsonObject) {
+  const values: string[] = []
+  if (stencil === 'ProcessTask' || stencil === 'CaseTask') {
+    const prefix = stencil === 'ProcessTask' ? 'processtask' : 'casetask'
+    for (const parameter of ioParameters(properties, `${prefix}inparameters`, 'inParameters')) {
+      values.push(ioParameterXml('in', parameter))
+    }
+    for (const parameter of ioParameters(properties, `${prefix}outparameters`, 'outParameters')) {
+      values.push(ioParameterXml('out', parameter))
+    }
+  } else if (stencil === 'DecisionTask') {
+    for (const [name, propertyName] of [
+      ['decisionTaskThrowErrorOnNoHits', 'decisiontaskthrowerroronnohits'],
+      ['fallbackToDefaultTenant', 'decisiontaskfallbacktodefaulttenant'],
+    ] as const) {
+      values.push(
+        `<flowable:field name="${name}"><flowable:string>${booleanValue(properties[propertyName])}</flowable:string></flowable:field>`,
+      )
+    }
+  }
+  const xml = values.filter(Boolean).join('')
+  return xml ? `<cmmn:extensionElements>${xml}</cmmn:extensionElements>` : ''
+}
+
+function taskFlowableAttributes(stencil: string, properties: JsonObject) {
+  const attributes = [
+    xmlAttribute('flowable:isBlockingExpression', properties.isblockingexpression),
+  ]
+  if (stencil === 'ProcessTask' || stencil === 'CaseTask') {
+    attributes.push(
+      flowableBooleanAttribute('fallbackToDefaultTenant', properties.fallbacktodefaulttenant),
+      flowableBooleanAttribute('sameDeployment', properties.samedeployment),
+      xmlAttribute(
+        'flowable:idVariableName',
+        properties.idvariablename ?? properties.idVariableName,
+      ),
+    )
+  }
+  if (stencil === 'CaseTask') {
+    attributes.push(
+      xmlAttribute('flowable:businessKey', properties.casetaskbusinesskey),
+      flowableBooleanAttribute('inheritBusinessKey', properties.casetaskinheritbusinesskey),
+    )
+  }
+  return attributes.join('')
+}
+
 interface XmlBuildContext {
   shapeById: Map<string, OryxShape>
   absoluteBoundsByResourceId: Map<string, Bounds>
@@ -504,14 +587,15 @@ function buildContainerXml(
     const referenceXml = reference
       ? `${xmlAttribute(reference.attribute, reference.reference.key)}${referenceAttributes(reference.reference, reference.modelType)}`
       : ''
+    const blockingExpression = stringValue(childProperties.isblockingexpression)
     const blocking = ['Task', 'HumanTask', 'DecisionTask', 'ProcessTask', 'CaseTask'].includes(stencil)
-      ? ` isBlocking="${booleanValue(childProperties.isblocking, true)}"`
+      ? ` isBlocking="${blockingExpression ? true : booleanValue(childProperties.isblocking, true)}"`
       : ''
     if (localName === 'stage') {
       definitionTags.push(buildContainerXml(context, shape, childOrigin, false).xml)
     } else {
       definitionTags.push(
-        `<cmmn:${localName} id="${xmlEscape(childDefinitionId)}"${xmlAttribute('name', childProperties.name)}${blocking}${referenceXml} flowablemodeler:oryxId="${xmlEscape(shape.resourceId)}">${documentationXml(childProperties)}</cmmn:${localName}>`,
+        `<cmmn:${localName} id="${xmlEscape(childDefinitionId)}"${xmlAttribute('name', childProperties.name)}${blocking}${referenceXml}${taskFlowableAttributes(stencil, childProperties)} flowablemodeler:oryxId="${xmlEscape(shape.resourceId)}">${documentationXml(childProperties)}${taskExtensionElementsXml(stencil, childProperties)}</cmmn:${localName}>`,
       )
     }
     context.diShapes.push(
@@ -586,7 +670,7 @@ export function cmmnOryxToXml(model: JsonObject, options: CmmnConverterOptions) 
   const description = stringValue(properties.documentation) || options.description
   const definitionsId = `${key}_definitions`
   return `<?xml version="1.0" encoding="UTF-8"?>
-<cmmn:definitions xmlns:cmmn="${CMMN_NAMESPACE}" xmlns:cmmndi="${CMMNDI_NAMESPACE}" xmlns:dc="${DC_NAMESPACE}" xmlns:di="${DI_NAMESPACE}" xmlns:flowablemodeler="${MODELER_NAMESPACE}" id="${xmlEscape(definitionsId)}" targetNamespace="http://flowable.org/cmmn">
+<cmmn:definitions xmlns:cmmn="${CMMN_NAMESPACE}" xmlns:cmmndi="${CMMNDI_NAMESPACE}" xmlns:dc="${DC_NAMESPACE}" xmlns:di="${DI_NAMESPACE}" xmlns:flowable="${FLOWABLE_NAMESPACE}" xmlns:flowablemodeler="${MODELER_NAMESPACE}" id="${xmlEscape(definitionsId)}" targetNamespace="http://flowable.org/cmmn">
   <cmmn:case id="${xmlEscape(key)}" name="${xmlEscape(name)}">
     ${description ? `<cmmn:documentation><cmmn:text>${xmlEscape(description)}</cmmn:text></cmmn:documentation>` : ''}
     ${casePlan.xml}
@@ -626,6 +710,51 @@ function modelerAttribute(element: Element, name: string) {
     element.getAttributeNS(MODELER_NAMESPACE, name) ||
     element.getAttribute(`flowablemodeler:${name}`) ||
     ''
+  )
+}
+
+function flowableAttribute(element: Element, name: string) {
+  return (
+    element.getAttributeNS(FLOWABLE_NAMESPACE, name) ||
+    element.getAttribute(`flowable:${name}`) ||
+    ''
+  )
+}
+
+function flowableExtensionChildren(element: Element, localName: string) {
+  const extensionElements = firstDirectChild(element, 'extensionElements')
+  return extensionElements
+    ? directChildren(extensionElements).filter(
+        (child) =>
+          child.localName === localName && child.namespaceURI === FLOWABLE_NAMESPACE,
+      )
+    : []
+}
+
+function parsedIoParameters(element: Element, localName: 'in' | 'out') {
+  return flowableExtensionChildren(element, localName)
+    .map((parameter) =>
+      Object.fromEntries(
+        [
+          ['source', parameter.getAttribute('source')],
+          ['sourceExpression', parameter.getAttribute('sourceExpression')],
+          ['target', parameter.getAttribute('target')],
+          ['targetExpression', parameter.getAttribute('targetExpression')],
+        ].filter((entry) => Boolean(entry[1])),
+      ),
+    )
+    .filter((parameter) => Object.values(parameter).some(Boolean))
+}
+
+function decisionFieldValue(element: Element, name: string) {
+  const field = flowableExtensionChildren(element, 'field').find(
+    (candidate) => candidate.getAttribute('name') === name,
+  )
+  if (!field) return false
+  return booleanValue(
+    directText(field, 'string') ||
+      field.getAttribute('stringValue') ||
+      directText(field, 'expression'),
   )
 }
 
@@ -683,17 +812,42 @@ function generatedProperties(
   }
   if (['task', 'humanTask', 'decisionTask', 'processTask', 'caseTask'].includes(definition.localName)) {
     properties.isblocking = booleanValue(definition.getAttribute('isBlocking'), true)
+    properties.isblockingexpression = flowableAttribute(definition, 'isBlockingExpression')
   }
   if (definition.localName === 'processTask') {
-    const key = definition.getAttribute('processRef') || ''
+    const key =
+      definition.getAttribute('processRef') || directText(definition, 'processRefExpression')
     const reference = referenceFromElement(definition, key, [MODEL_TYPES.process], references)
     if (reference) properties.processtaskprocessreference = reference
+    properties.fallbacktodefaulttenant = booleanValue(
+      flowableAttribute(definition, 'fallbackToDefaultTenant'),
+    )
+    properties.samedeployment = booleanValue(flowableAttribute(definition, 'sameDeployment'))
+    properties.idvariablename = flowableAttribute(definition, 'idVariableName')
+    const inParameters = parsedIoParameters(definition, 'in')
+    const outParameters = parsedIoParameters(definition, 'out')
+    if (inParameters.length) properties.processtaskinparameters = { inParameters }
+    if (outParameters.length) properties.processtaskoutparameters = { outParameters }
   } else if (definition.localName === 'caseTask') {
-    const key = definition.getAttribute('caseRef') || ''
+    const key = definition.getAttribute('caseRef') || directText(definition, 'caseRefExpression')
     const reference = referenceFromElement(definition, key, [MODEL_TYPES.case], references)
     if (reference) properties.casetaskcasereference = reference
+    properties.fallbacktodefaulttenant = booleanValue(
+      flowableAttribute(definition, 'fallbackToDefaultTenant'),
+    )
+    properties.samedeployment = booleanValue(flowableAttribute(definition, 'sameDeployment'))
+    properties.idvariablename = flowableAttribute(definition, 'idVariableName')
+    properties.casetaskbusinesskey = flowableAttribute(definition, 'businessKey')
+    properties.casetaskinheritbusinesskey = booleanValue(
+      flowableAttribute(definition, 'inheritBusinessKey'),
+    )
+    const inParameters = parsedIoParameters(definition, 'in')
+    const outParameters = parsedIoParameters(definition, 'out')
+    if (inParameters.length) properties.casetaskinparameters = { inParameters }
+    if (outParameters.length) properties.casetaskoutparameters = { outParameters }
   } else if (definition.localName === 'decisionTask') {
-    const key = definition.getAttribute('decisionRef') || ''
+    const key =
+      definition.getAttribute('decisionRef') || directText(definition, 'decisionRefExpression')
     const reference = referenceFromElement(
       definition,
       key,
@@ -701,15 +855,26 @@ function generatedProperties(
       references,
     )
     if (reference) {
-      const type =
-        references.find((model) => model.id === reference.id)?.modelType ??
-        numberValue((reference as JsonObject).modelType, MODEL_TYPES.decisionTable)
+      const storedModelType = Number(modelerAttribute(definition, 'modelType'))
+      const type = references.find((model) => model.id === reference.id)?.modelType ??
+        (storedModelType === MODEL_TYPES.decisionTable ||
+        storedModelType === MODEL_TYPES.decisionService
+          ? storedModelType
+          : MODEL_TYPES.decisionTable)
       properties[
         type === MODEL_TYPES.decisionService
           ? 'decisiontaskdecisionservicereference'
           : 'decisiontaskdecisiontablereference'
       ] = reference
     }
+    properties.decisiontaskthrowerroronnohits = decisionFieldValue(
+      definition,
+      'decisionTaskThrowErrorOnNoHits',
+    )
+    properties.decisiontaskfallbacktodefaulttenant = decisionFieldValue(
+      definition,
+      'fallbackToDefaultTenant',
+    )
   }
   return {
     ...(existing ? stripKnownProperties(shapeProperties(existing)) : {}),
