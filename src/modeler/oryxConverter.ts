@@ -12,6 +12,7 @@ interface ModdleElement extends JsonObject {
   $type: string
   $parent?: ModdleElement
   get?: (name: string) => unknown
+  set?: (name: string, value: unknown) => void
 }
 
 export interface OryxPoint {
@@ -181,6 +182,22 @@ const FLOWABLE_ATTRIBUTE_TO_ORYX: Record<string, string> = {
   processInstanceName: 'callactivityprocessinstancename',
 }
 
+const CASE_TASK_ATTRIBUTE_TO_ORYX: Record<string, string> = {
+  caseDefinitionKey: 'casetaskcasedefinitionkey',
+  caseInstanceName: 'casetaskcaseinstancename',
+  businessKey: 'casetaskbusinesskey',
+  inheritBusinessKey: 'casetaskinheritbusinesskey',
+  sameDeployment: 'casetasksamedeployment',
+  fallbackToDefaultTenant: 'casetaskfallbacktodefaulttenant',
+  idVariableName: 'casetaskidvariablename',
+}
+
+const CASE_TASK_BOOLEAN_ATTRIBUTES = new Set([
+  'inheritBusinessKey',
+  'sameDeployment',
+  'fallbackToDefaultTenant',
+])
+
 const SERVICE_FIELD_PROPERTIES: Record<string, Record<string, string>> = {
   mail: {
     headers: 'mailtaskheaders',
@@ -285,6 +302,7 @@ const KNOWN_ORYX_PROPERTIES = new Set([
   'servicetaskuselocalscopeforresultvariable',
   'servicetaskfailedjobretrytimecycle',
   'servicetaskstoreresultvariabletransient',
+  'servicetasktype',
   'scriptformat',
   'scripttext',
   'scriptautostorevariables',
@@ -301,6 +319,16 @@ const KNOWN_ORYX_PROPERTIES = new Set([
   'callactivityinheritbusinesskey',
   'callactivityuselocalscopeforoutparameters',
   'callactivitycompleteasync',
+  'casetaskcasereference',
+  'casetaskcasedefinitionkey',
+  'casetaskcaseinstancename',
+  'casetaskbusinesskey',
+  'casetaskinheritbusinesskey',
+  'casetasksamedeployment',
+  'casetaskfallbacktodefaulttenant',
+  'casetaskidvariablename',
+  'casetaskinparameters',
+  'casetaskoutparameters',
   'conditionsequenceflow',
   'defaultflow',
   'timerdurationdefinition',
@@ -525,14 +553,20 @@ function setIfText(target: JsonObject, name: string, value: unknown) {
   if (text) target[name] = text
 }
 
+function setModdleValue(target: JsonObject, name: string, value: unknown) {
+  const setter = (target as ModdleElement).set
+  if (typeof setter === 'function') setter.call(target, name, value)
+  else target[name] = value
+}
+
 function setFlowableIfText(target: JsonObject, name: string, value: unknown) {
   const text = stringValue(value)
-  if (text) target[`flowable:${name}`] = text
+  if (text) setModdleValue(target, `flowable:${name}`, text)
 }
 
 function setFlowableBoolean(target: JsonObject, name: string, value: unknown, fallback = false) {
   if (value === undefined || value === null || value === '') return
-  target[`flowable:${name}`] = booleanValue(value, fallback)
+  setModdleValue(target, `flowable:${name}`, booleanValue(value, fallback))
 }
 
 function stripKnownProperties(properties: JsonObject): JsonObject {
@@ -757,28 +791,55 @@ function createServiceExtensions(
   }
 }
 
-function createCallActivityMappings(
+function createInvocationMappings(
   state: OryxImportState,
   shape: OryxShape,
   semantic: ModdleElement,
+  specs: Array<[string, string, string]>,
 ) {
-  const specs: Array<[string, string, string]> = [
-    ['callactivityinparameters', 'inParameters', 'flowable:In'],
-    ['callactivityoutparameters', 'outParameters', 'flowable:Out'],
-  ]
   for (const [property, key, type] of specs) {
     for (const item of nestedArray(shape, property, [key, 'items'])) {
       const source = stringValue(item.source)
       const sourceExpression = stringValue(item.sourceExpression)
       const target = stringValue(item.target)
-      if (!source && !sourceExpression) continue
+      const targetExpression = stringValue(item.targetExpression)
+      const variables = stringValue(item.variables)
+      const businessKey = stringValue(item.businessKey)
+      if (!source && !sourceExpression && !variables && !businessKey) continue
       addExtension(state.moddle, semantic, type, {
         source: source || undefined,
         sourceExpression: sourceExpression || undefined,
         target: target || undefined,
+        targetExpression: targetExpression || undefined,
+        variables: variables || undefined,
+        businessKey: businessKey || undefined,
+        local: booleanValue(item.local) || undefined,
+        transient: booleanValue(item.transient) || undefined,
       })
     }
   }
+}
+
+function createCallActivityMappings(
+  state: OryxImportState,
+  shape: OryxShape,
+  semantic: ModdleElement,
+) {
+  createInvocationMappings(state, shape, semantic, [
+    ['callactivityinparameters', 'inParameters', 'flowable:In'],
+    ['callactivityoutparameters', 'outParameters', 'flowable:Out'],
+  ])
+}
+
+function createCaseTaskMappings(
+  state: OryxImportState,
+  shape: OryxShape,
+  semantic: ModdleElement,
+) {
+  createInvocationMappings(state, shape, semantic, [
+    ['casetaskinparameters', 'inParameters', 'flowable:In'],
+    ['casetaskoutparameters', 'outParameters', 'flowable:Out'],
+  ])
 }
 
 function createMultiInstance(
@@ -964,8 +1025,10 @@ function applyOryxProperties(
     setFlowableBoolean(semantic, 'formFieldValidation', properties.formfieldvalidation, true)
     createFormPropertyExtensions(state, shape, semantic)
   } else if (semantic.$type === 'bpmn:ServiceTask') {
-    const serviceType = SERVICE_STENCIL_TYPES[stencilId(shape)] || ''
-    if (serviceType) semantic['flowable:type'] = serviceType
+    const serviceType = (
+      SERVICE_STENCIL_TYPES[stencilId(shape)] || stringValue(properties.servicetasktype)
+    ).toLowerCase()
+    if (serviceType) setModdleValue(semantic, 'flowable:type', serviceType)
     setFlowableIfText(semantic, 'class', properties.servicetaskclass)
     setFlowableIfText(semantic, 'expression', properties.servicetaskexpression)
     setFlowableIfText(semantic, 'delegateExpression', properties.servicetaskdelegateexpression)
@@ -982,6 +1045,22 @@ function applyOryxProperties(
       properties.servicetaskstoreresultvariabletransient,
     )
     if (serviceType === 'external-worker') setFlowableIfText(semantic, 'topic', properties.topic)
+    if (serviceType === 'case') {
+      const reference = objectValue(properties.casetaskcasereference)
+      const referenceKey =
+        stringValue(reference.key) || stringValue(properties.casetaskcasedefinitionkey)
+      for (const [flowableName, oryxName] of Object.entries(CASE_TASK_ATTRIBUTE_TO_ORYX)) {
+        const value = flowableName === 'caseDefinitionKey'
+          ? referenceKey
+          : properties[oryxName]
+        if (CASE_TASK_BOOLEAN_ATTRIBUTES.has(flowableName)) {
+          setFlowableBoolean(semantic, flowableName, value)
+        } else {
+          setFlowableIfText(semantic, flowableName, value)
+        }
+      }
+      createCaseTaskMappings(state, shape, semantic)
+    }
     createServiceExtensions(state, shape, semantic, serviceType)
   } else if (semantic.$type === 'bpmn:ScriptTask') {
     semantic.scriptFormat = stringValue(properties.scriptformat) || undefined
@@ -992,7 +1071,9 @@ function applyOryxProperties(
     for (const [flowableName, oryxName] of Object.entries(FLOWABLE_ATTRIBUTE_TO_ORYX)) {
       if (!oryxName.startsWith('callactivity')) continue
       const value = properties[oryxName]
-      if (typeof value === 'boolean') semantic[`flowable:${flowableName}`] = value
+      if (typeof value === 'boolean') {
+        setModdleValue(semantic, `flowable:${flowableName}`, value)
+      }
       else setFlowableIfText(semantic, flowableName, value)
     }
     createCallActivityMappings(state, shape, semantic)
@@ -1556,6 +1637,11 @@ function mappingsToOryx(element: ModdleElement, type: 'flowable:In' | 'flowable:
     source: stringValue(mapping.source) || null,
     sourceExpression: stringValue(mapping.sourceExpression) || null,
     target: stringValue(mapping.target) || null,
+    targetExpression: stringValue(mapping.targetExpression) || null,
+    variables: stringValue(mapping.variables) || null,
+    businessKey: stringValue(mapping.businessKey) || null,
+    local: booleanValue(mapping.local),
+    transient: booleanValue(mapping.transient),
   }))
 }
 
@@ -1722,6 +1808,9 @@ function semanticProperties(
     const fields = flowableFields(semantic)
     if (fields.length) properties.servicetaskfields = { fields: fieldsToOryx(fields) }
     const serviceType = stringValue(flowableValue(semantic, 'type')).toLowerCase()
+    if (serviceType && !SERVICE_TYPE_STENCILS[serviceType]) {
+      properties.servicetasktype = serviceType
+    }
     for (const [fieldName, propertyName] of Object.entries(SERVICE_FIELD_PROPERTIES[serviceType] || {})) {
       const field = fields.find((candidate) => stringValue(candidate.name) === fieldName)
       if (field) properties[propertyName] = fieldValue(field)
@@ -1755,6 +1844,28 @@ function semanticProperties(
             : 'decisiontaskdecisiontablereference'
         ] = { id: reference.id, name: reference.name, key: reference.key }
       }
+    }
+    if (serviceType === 'case') {
+      for (const [flowableName, oryxName] of Object.entries(CASE_TASK_ATTRIBUTE_TO_ORYX)) {
+        const value = flowableValue(semantic, flowableName)
+        if (value !== undefined && value !== null && value !== '') properties[oryxName] = value
+      }
+      const referenceKey = stringValue(flowableValue(semantic, 'caseDefinitionKey'))
+      const reference = references.find(
+        (candidate) =>
+          candidate.key === referenceKey && candidate.modelType === MODEL_TYPES.case,
+      )
+      if (reference) {
+        properties.casetaskcasereference = {
+          id: reference.id,
+          name: reference.name,
+          key: reference.key,
+        }
+      }
+      const inParameters = mappingsToOryx(semantic, 'flowable:In')
+      const outParameters = mappingsToOryx(semantic, 'flowable:Out')
+      if (inParameters.length) properties.casetaskinparameters = { inParameters }
+      if (outParameters.length) properties.casetaskoutparameters = { outParameters }
     }
     const exceptions = extensionsOfType(semantic, 'flowable:MapException').map((exception) => ({
       class: stringValue(exception.class ?? exception.body),

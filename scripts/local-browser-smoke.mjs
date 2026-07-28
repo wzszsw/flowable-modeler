@@ -44,12 +44,30 @@ const crossModelProcessXml = `<?xml version="1.0" encoding="UTF-8"?>
       <bpmn:incoming>Flow_2</bpmn:incoming>
       <bpmn:outgoing>Flow_3</bpmn:outgoing>
     </bpmn:serviceTask>
-    <bpmn:endEvent id="EndEvent_1">
+    <bpmn:serviceTask id="Task_case"
+      name="Start case"
+      flowable:type="case"
+      flowable:caseDefinitionKey="target_case"
+      flowable:caseInstanceName="\${caseInstanceName}"
+      flowable:businessKey="\${businessKey}"
+      flowable:inheritBusinessKey="true"
+      flowable:sameDeployment="true"
+      flowable:fallbackToDefaultTenant="true"
+      flowable:idVariableName="startedCaseInstanceId">
+      <bpmn:extensionElements>
+        <flowable:in sourceExpression="\${order}" target="caseOrder" />
+        <flowable:out source="caseStatus" target="processCaseStatus" />
+      </bpmn:extensionElements>
       <bpmn:incoming>Flow_3</bpmn:incoming>
+      <bpmn:outgoing>Flow_4</bpmn:outgoing>
+    </bpmn:serviceTask>
+    <bpmn:endEvent id="EndEvent_1">
+      <bpmn:incoming>Flow_4</bpmn:incoming>
     </bpmn:endEvent>
     <bpmn:sequenceFlow id="Flow_1" sourceRef="StartEvent_1" targetRef="Task_table" />
     <bpmn:sequenceFlow id="Flow_2" sourceRef="Task_table" targetRef="Task_service" />
-    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_service" targetRef="EndEvent_1" />
+    <bpmn:sequenceFlow id="Flow_3" sourceRef="Task_service" targetRef="Task_case" />
+    <bpmn:sequenceFlow id="Flow_4" sourceRef="Task_case" targetRef="EndEvent_1" />
   </bpmn:process>
   <bpmndi:BPMNDiagram id="BPMNDiagram_1">
     <bpmndi:BPMNPlane id="BPMNPlane_1" bpmnElement="cross_process">
@@ -62,8 +80,11 @@ const crossModelProcessXml = `<?xml version="1.0" encoding="UTF-8"?>
       <bpmndi:BPMNShape id="Task_service_di" bpmnElement="Task_service">
         <dc:Bounds x="375" y="120" width="100" height="80" />
       </bpmndi:BPMNShape>
+      <bpmndi:BPMNShape id="Task_case_di" bpmnElement="Task_case">
+        <dc:Bounds x="535" y="120" width="100" height="80" />
+      </bpmndi:BPMNShape>
       <bpmndi:BPMNShape id="EndEvent_1_di" bpmnElement="EndEvent_1">
-        <dc:Bounds x="535" y="142" width="36" height="36" />
+        <dc:Bounds x="695" y="142" width="36" height="36" />
       </bpmndi:BPMNShape>
       <bpmndi:BPMNEdge id="Flow_1_di" bpmnElement="Flow_1">
         <di:waypoint x="156" y="160" />
@@ -76,6 +97,10 @@ const crossModelProcessXml = `<?xml version="1.0" encoding="UTF-8"?>
       <bpmndi:BPMNEdge id="Flow_3_di" bpmnElement="Flow_3">
         <di:waypoint x="475" y="160" />
         <di:waypoint x="535" y="160" />
+      </bpmndi:BPMNEdge>
+      <bpmndi:BPMNEdge id="Flow_4_di" bpmnElement="Flow_4">
+        <di:waypoint x="635" y="160" />
+        <di:waypoint x="695" y="160" />
       </bpmndi:BPMNEdge>
     </bpmndi:BPMNPlane>
   </bpmndi:BPMNDiagram>
@@ -532,25 +557,18 @@ async function waitForEditor(page, modelType) {
 }
 
 async function saveModel(page) {
-  const successMessages = page.locator('.el-message--success')
-  const errorMessages = page.locator('.el-message--error')
-  const previousCount = await successMessages.count()
-  const previousErrorCount = await errorMessages.count()
+  await page.waitForFunction(
+    () => !document.querySelector('.el-message--success, .el-message--error'),
+    undefined,
+    { timeout: 10_000 },
+  )
   await page.locator('[data-testid="save-model"]').click()
   await Promise.race([
-    page.waitForFunction(
-      (count) => document.querySelectorAll('.el-message--success').length > count,
-      previousCount,
-    ),
-    page
-      .waitForFunction(
-        (count) => document.querySelectorAll('.el-message--error').length > count,
-        previousErrorCount,
-      )
-      .then(async () => {
-        const message = await errorMessages.last().textContent()
-        throw new Error(message || 'Model save failed')
-      }),
+    page.locator('.el-message--success').last().waitFor({ state: 'visible' }),
+    page.locator('.el-message--error').last().waitFor({ state: 'visible' }).then(async () => {
+      const message = await page.locator('.el-message--error').last().textContent()
+      throw new Error(message || 'Model save failed')
+    }),
   ])
 }
 
@@ -776,6 +794,91 @@ async function assertSelectedReference(page, selector, label) {
   assert.match(text || '', new RegExp(label), `reference was not restored: ${label}`)
 }
 
+async function assertCaseServiceTaskPanel(page, targetCase) {
+  await assertSelectedReference(page, '[data-testid="case-model-reference"]', targetCase.name)
+  assert.equal(await page.locator('[data-testid="case-definition-key"]').inputValue(), targetCase.key)
+  assert.equal(
+    await page.locator('[data-testid="case-instance-name"]').inputValue(),
+    '${caseInstanceName}',
+  )
+  assert.equal(
+    await page.locator('[data-testid="case-business-key"]').inputValue(),
+    '${businessKey}',
+  )
+  assert.equal(
+    await page.locator('[data-testid="case-id-variable-name"]').inputValue(),
+    'startedCaseInstanceId',
+  )
+  for (const selector of [
+    '[data-testid="case-inherit-business-key"]',
+    '[data-testid="case-same-deployment"]',
+    '[data-testid="case-fallback-default-tenant"]',
+  ]) {
+    assert.equal(
+      await page.locator(selector).locator('input[role="switch"]').getAttribute('aria-checked'),
+      'true',
+      selector,
+    )
+  }
+  assert.equal(await page.locator('[data-testid="input-mapping-row"]').count(), 1)
+  assert.equal(await page.locator('[data-testid="output-mapping-row"]').count(), 1)
+  assert.match(
+    (await page.locator('[data-testid="input-mapping-row"]').textContent()) || '',
+    /\$\{order\}.*caseOrder/,
+  )
+  assert.match(
+    (await page.locator('[data-testid="output-mapping-row"]').textContent()) || '',
+    /caseStatus.*processCaseStatus/,
+  )
+}
+
+async function assertCaseServiceTaskValidationAndCleanup(page, processModel, targetCase) {
+  const originalEditorModel = structuredClone(processModel.editorModel)
+  const caseDefinitionKey = page.locator('[data-testid="case-definition-key"]')
+
+  await caseDefinitionKey.fill('')
+  await caseDefinitionKey.press('Tab')
+  await page.getByRole('button', { name: 'Validate', exact: true }).click()
+  const problemList = page.locator('.problem-list')
+  await problemList.waitFor({ state: 'visible' })
+  assert.match(
+    (await problemList.textContent()) || '',
+    /The case task has no case definition key\./,
+  )
+
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await waitForEditor(page, MODEL_TYPES.process)
+  await page.locator('[data-element-id="Task_case"]').click()
+  await assertCaseServiceTaskPanel(page, targetCase)
+
+  await selectReference(page, '[data-testid="service-built-in-type"]', 'HTTP task')
+  await page.locator('[data-testid="case-definition-key"]').waitFor({ state: 'hidden' })
+  await saveModel(page)
+
+  const changedRecord = (await readStoredModels(page)).find(
+    (record) => record.id === processModel.id,
+  )
+  assert.ok(changedRecord, 'the service-type cleanup record is missing')
+  const changedTask = findShape(changedRecord.editorModel, 'Task_case')
+  assert.equal(changedTask.stencil.id, 'HttpTask')
+  assert.equal(
+    Object.keys(changedTask.properties).some((name) => name.startsWith('casetask')),
+    false,
+    'switching away from case left Case Service Task Oryx properties behind',
+  )
+  assert.doesNotMatch(
+    changedRecord.editorModel.flowableModelerBpmn20Xml || '',
+    /caseDefinitionKey|caseInstanceName|inheritBusinessKey|idVariableName|<flowable:(?:in|out)\b/,
+    'switching away from case left Case Service Task BPMN extensions behind',
+  )
+
+  await replaceStoredEditorModel(page, processModel.id, originalEditorModel)
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await waitForEditor(page, MODEL_TYPES.process)
+  await page.locator('[data-element-id="Task_case"]').click()
+  await assertCaseServiceTaskPanel(page, targetCase)
+}
+
 async function openLocalReferenceAndAssertSaved(page, source, target, buttonSelector) {
   const before = (await readStoredModels(page)).find((record) => record.id === source.id)
   assert.ok(before, `reference source is missing before navigation: ${source.key}`)
@@ -872,6 +975,28 @@ function assertCrossModelReferences(records) {
     service,
     'BPMN decision-service reference',
   )
+  const caseTask = findShape(processModel.editorModel, 'Task_case')
+  assert.ok(caseTask, 'BPMN case ServiceTask is missing')
+  assert.equal(caseTask.stencil.id, 'ServiceTask', 'BPMN case task must use the generic Oryx stencil')
+  assert.equal(caseTask.properties.servicetasktype, 'case')
+  assertReference(
+    caseTask.properties.casetaskcasereference,
+    caseTarget,
+    'BPMN case-model reference',
+  )
+  assert.equal(caseTask.properties.casetaskcasedefinitionkey, caseTarget.key)
+  assert.equal(caseTask.properties.casetaskcaseinstancename, '${caseInstanceName}')
+  assert.equal(caseTask.properties.casetaskbusinesskey, '${businessKey}')
+  assert.equal(caseTask.properties.casetaskinheritbusinesskey, true)
+  assert.equal(caseTask.properties.casetasksamedeployment, true)
+  assert.equal(caseTask.properties.casetaskfallbacktodefaulttenant, true)
+  assert.equal(caseTask.properties.casetaskidvariablename, 'startedCaseInstanceId')
+  const caseInput = caseTask.properties.casetaskinparameters?.inParameters?.[0]
+  const caseOutput = caseTask.properties.casetaskoutparameters?.outParameters?.[0]
+  assert.equal(caseInput?.sourceExpression, '${order}')
+  assert.equal(caseInput?.target, 'caseOrder')
+  assert.equal(caseOutput?.source, 'caseStatus')
+  assert.equal(caseOutput?.target, 'processCaseStatus')
   assertReference(
     findShape(caseModel.editorModel, 'case-process-task').properties.processtaskprocessreference,
     processTarget,
@@ -1041,6 +1166,8 @@ async function runLocalModeSuite(browser) {
     await selectReference(page, '[data-testid="decision-model-reference"]', table.name)
     await page.locator('[data-element-id="Task_service"]').click()
     await selectReference(page, '[data-testid="decision-model-reference"]', service.name)
+    await page.locator('[data-element-id="Task_case"]').click()
+    await selectReference(page, '[data-testid="case-model-reference"]', caseTarget.name)
     await saveModel(page)
     await page.reload({ waitUntil: 'domcontentloaded' })
     await waitForEditor(page, MODEL_TYPES.process)
@@ -1048,10 +1175,37 @@ async function runLocalModeSuite(browser) {
     await assertSelectedReference(page, '[data-testid="decision-model-reference"]', table.name)
     await page.locator('[data-element-id="Task_service"]').click()
     await assertSelectedReference(page, '[data-testid="decision-model-reference"]', service.name)
+    await page.locator('[data-element-id="Task_case"]').click()
+    await assertCaseServiceTaskPanel(page, caseTarget)
     let processModel = (await readStoredModels(page)).find(
       (record) => record.key === 'cross_process',
     )
     assert.ok(processModel, 'the cross-model BPMN process is missing')
+    processModel = await openLocalReferenceAndAssertSaved(
+      page,
+      processModel,
+      caseTarget,
+      '[data-testid="open-case-model-reference"]',
+    )
+    console.log('[pass] BPMN case ServiceTask saves and opens the CMMN model')
+
+    const reconstructedEditorModel = structuredClone(processModel.editorModel)
+    delete reconstructedEditorModel.flowableModelerBpmn20Xml
+    delete reconstructedEditorModel.flowableModelerOryxFingerprint
+    await replaceStoredEditorModel(page, processModel.id, reconstructedEditorModel)
+    processModel.editorModel = reconstructedEditorModel
+    await openStoredEditor(page, server.baseUrl, processModel)
+    await page.locator('[data-element-id="Task_case"]').click()
+    await assertCaseServiceTaskPanel(page, caseTarget)
+    await saveModel(page)
+    processModel = (await readStoredModels(page)).find(
+      (record) => record.id === processModel.id,
+    )
+    assert.ok(processModel, 'the reconstructed cross-model BPMN process is missing')
+    console.log('[pass] BPMN case ServiceTask survives Oryx-only reconstruction')
+    await assertCaseServiceTaskValidationAndCleanup(page, processModel, caseTarget)
+    console.log('[pass] BPMN case ServiceTask validation and type-switch cleanup')
+    await page.locator('[data-element-id="Task_service"]').click()
     processModel = await openLocalReferenceAndAssertSaved(
       page,
       processModel,
@@ -1060,7 +1214,7 @@ async function runLocalModeSuite(browser) {
     )
     console.log('[pass] BPMN reference saves and opens the decision service')
     await assertNoUnsupportedActions(page)
-    console.log('[pass] BPMN -> decision table and decision service references')
+    console.log('[pass] BPMN -> CMMN, decision table, and decision service references')
 
     await createAndDeleteLocalModel(page, server.baseUrl)
     const records = await readStoredModels(page)
@@ -1411,7 +1565,17 @@ async function runBackendMockSuite(browser, localRecords) {
     for (const record of modelsToSave) {
       assert.ok(record, 'backend mock model is missing')
       const previousTimestamp = record.lastUpdated
+      const referenceRequestStart = listRequests.length
       await openStoredEditor(page, server.baseUrl, record)
+      if (record.modelType === MODEL_TYPES.process) {
+        assert.equal(
+          listRequests
+            .slice(referenceRequestStart)
+            .some((request) => request.modelType === MODEL_TYPES.case),
+          true,
+          'opening a BPMN process did not request CMMN reference models',
+        )
+      }
       await assertNoUnsupportedActions(page)
       await saveModel(page)
       const request = saveRequests.findLast((candidate) => candidate.id === record.id)

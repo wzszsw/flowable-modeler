@@ -34,6 +34,22 @@
       </extensionElements>
     </serviceTask>
 
+    <serviceTask id="Task_case"
+                 name="Case service"
+                 flowable:type="case"
+                 flowable:caseDefinitionKey="order-case"
+                 flowable:caseInstanceName="${orderCaseName}"
+                 flowable:businessKey="${businessKey}"
+                 flowable:inheritBusinessKey="true"
+                 flowable:sameDeployment="true"
+                 flowable:fallbackToDefaultTenant="true"
+                 flowable:idVariableName="orderCaseInstanceId">
+      <extensionElements>
+        <flowable:in sourceExpression="${order}" target="caseOrder" />
+        <flowable:out source="caseStatus" target="orderCaseStatus" transient="true" />
+      </extensionElements>
+    </serviceTask>
+
     <serviceTask id="Task_http" name="HTTP service" flowable:type="http">
       <extensionElements>
         <flowable:field name="requestMethod"><flowable:string>GET</flowable:string></flowable:field>
@@ -120,7 +136,8 @@
     <sequenceFlow id="Flow_p2_02" sourceRef="Task_expression" targetRef="Task_mail" />
     <sequenceFlow id="Flow_p2_03" sourceRef="Task_mail" targetRef="Task_shell" />
     <sequenceFlow id="Flow_p2_04" sourceRef="Task_shell" targetRef="Task_dmn" />
-    <sequenceFlow id="Flow_p2_05" sourceRef="Task_dmn" targetRef="Task_http" />
+    <sequenceFlow id="Flow_p2_05" sourceRef="Task_dmn" targetRef="Task_case" />
+    <sequenceFlow id="Flow_p2_05_case" sourceRef="Task_case" targetRef="Task_http" />
     <sequenceFlow id="Flow_p2_06" sourceRef="Task_http" targetRef="Task_send_channel" />
     <sequenceFlow id="Flow_p2_07" sourceRef="Task_send_channel" targetRef="Task_send_system" />
     <sequenceFlow id="Flow_p2_08" sourceRef="Task_send_system" targetRef="Task_external_worker" />

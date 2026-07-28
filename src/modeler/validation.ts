@@ -230,6 +230,10 @@ export function validateElements(
         ) {
           add(element, 'error', 'dmnReferenceRequired')
         }
+      } else if (normalizedType === 'case') {
+        if (!hasText(valueOf(businessObject, 'flowable:caseDefinitionKey'))) {
+          add(element, 'error', 'caseDefinitionKeyRequired')
+        }
       } else if (normalizedType === 'http') {
         if (!hasText(serviceField('requestMethod'))) {
           add(element, 'error', 'httpMethodRequired')

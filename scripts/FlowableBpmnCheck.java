@@ -13,6 +13,7 @@ import org.flowable.bpmn.model.BaseElement;
 import org.flowable.bpmn.model.BoundaryEvent;
 import org.flowable.bpmn.model.BpmnModel;
 import org.flowable.bpmn.model.CallActivity;
+import org.flowable.bpmn.model.CaseServiceTask;
 import org.flowable.bpmn.model.ErrorEventDefinition;
 import org.flowable.bpmn.model.EventListener;
 import org.flowable.bpmn.model.ExtensionElement;
@@ -405,6 +406,31 @@ public final class FlowableBpmnCheck {
         assertFieldValue(process, "Task_shell", "wait", "true", null, phase);
         assertServiceTaskType(process, "Task_dmn", ServiceTask.DMN_TASK, phase);
         assertFieldValue(process, "Task_dmn", "decisionTableReferenceKey", "order-decision", null, phase);
+        FlowElement caseElement = process.getFlowElement("Task_case", true);
+        if (!(caseElement instanceof CaseServiceTask caseTask)
+                || !ServiceTask.CASE_TASK.equals(caseTask.getType())
+                || !"order-case".equals(caseTask.getCaseDefinitionKey())
+                || !"${orderCaseName}".equals(caseTask.getCaseInstanceName())
+                || !"${businessKey}".equals(caseTask.getBusinessKey())
+                || !caseTask.isInheritBusinessKey()
+                || !caseTask.isSameDeployment()
+                || !caseTask.isFallbackToDefaultTenant()
+                || !"orderCaseInstanceId".equals(caseTask.getCaseInstanceIdVariableName())
+                || caseTask.getInParameters().size() != 1
+                || caseTask.getOutParameters().size() != 1) {
+            throw new IllegalStateException(phase + ": CaseServiceTask attributes or mapping counts changed");
+        }
+        IOParameter caseInput = caseTask.getInParameters().get(0);
+        if (!"${order}".equals(caseInput.getSourceExpression())
+                || !"caseOrder".equals(caseInput.getTarget())) {
+            throw new IllegalStateException(phase + ": CaseServiceTask input mapping changed");
+        }
+        IOParameter caseOutput = caseTask.getOutParameters().get(0);
+        if (!"caseStatus".equals(caseOutput.getSource())
+                || !"orderCaseStatus".equals(caseOutput.getTarget())
+                || !caseOutput.isTransient()) {
+            throw new IllegalStateException(phase + ": CaseServiceTask output mapping changed");
+        }
         assertServiceTaskType(process, "Task_http", ServiceTask.HTTP_TASK, phase);
         assertFieldValue(process, "Task_http", "requestMethod", "GET", null, phase);
         assertFieldValue(process, "Task_http", "requestUrl", null, "${orderEndpoint}", phase);

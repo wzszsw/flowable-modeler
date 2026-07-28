@@ -39,7 +39,7 @@ export function modelTypesForCategory(
 
 export function referenceModelTypes(modelType: ModelType): ModelType[] {
   if (modelType === MODEL_TYPES.process) {
-    return [MODEL_TYPES.decisionTable, MODEL_TYPES.decisionService]
+    return [MODEL_TYPES.case, MODEL_TYPES.decisionTable, MODEL_TYPES.decisionService]
   }
   if (modelType === MODEL_TYPES.case) {
     return [

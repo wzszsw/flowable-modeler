@@ -106,6 +106,13 @@ const form = reactive({
   serviceChannelKey: '',
   serviceSystemChannel: false,
   serviceSendSynchronously: false,
+  caseDefinitionKey: '',
+  caseInstanceName: '',
+  caseBusinessKey: '',
+  caseInheritBusinessKey: false,
+  caseSameDeployment: false,
+  caseFallbackToDefaultTenant: false,
+  caseIdVariableName: '',
   scriptFormat: '',
   script: '',
   scriptResultVariable: '',
@@ -346,6 +353,7 @@ const serviceFieldPresets = computed<Record<string, ServiceFieldSpec[]>>(() => (
 
 const serviceFieldForm = reactive<Record<string, string>>({})
 const selectedDecisionReferenceId = ref('')
+const selectedCaseReferenceId = ref('')
 
 const businessObject = computed(() => props.element?.businessObject || null)
 const type = computed(() => props.element?.type || '')
@@ -554,6 +562,9 @@ const isExternalWorker = computed(() =>
 const isSendEventServiceTask = computed(
   () => isServiceTask.value && selectedServiceType.value === 'send-event',
 )
+const isCaseServiceTask = computed(
+  () => isServiceTask.value && selectedServiceType.value === 'case',
+)
 const activeServiceFields = computed(() => serviceFieldPresets.value[selectedServiceType.value] || [])
 const decisionReferences = computed(() =>
   props.referenceModels.filter(
@@ -561,6 +572,9 @@ const decisionReferences = computed(() =>
       model.modelType === MODEL_TYPES.decisionTable ||
       model.modelType === MODEL_TYPES.decisionService,
   ),
+)
+const caseReferences = computed(() =>
+  props.referenceModels.filter((model) => model.modelType === MODEL_TYPES.case),
 )
 const mappingSupportsTransient = computed(() =>
   ['eventIn', 'eventOut'].includes(mappingForm.kind),
@@ -660,6 +674,17 @@ function hydrate() {
   form.serviceSendSynchronously = booleanValue(
     props.element ? getExtensionBody(props.element, 'flowable:SendSynchronously') : '',
   )
+  form.caseDefinitionKey = text(property('flowable:caseDefinitionKey'))
+  form.caseInstanceName = text(property('flowable:caseInstanceName'))
+  form.caseBusinessKey = text(property('flowable:businessKey'))
+  form.caseInheritBusinessKey = booleanValue(property('flowable:inheritBusinessKey'))
+  form.caseSameDeployment = booleanValue(property('flowable:sameDeployment'))
+  form.caseFallbackToDefaultTenant = booleanValue(
+    property('flowable:fallbackToDefaultTenant'),
+  )
+  form.caseIdVariableName = text(property('flowable:idVariableName'))
+  selectedCaseReferenceId.value =
+    caseReferences.value.find((model) => model.key === form.caseDefinitionKey)?.id || ''
 
   for (const specs of Object.values(serviceFieldPresets.value)) {
     for (const spec of specs) {
@@ -964,11 +989,15 @@ function changeImplementationType() {
     }
   }
   updateImplementation()
+  if (form.implementationType !== 'type' || form.implementation !== 'case') {
+    clearCaseTaskConfiguration()
+  }
 }
 
 function changeServiceType() {
   if (form.implementation === 'external') form.implementation = 'external-worker'
   updateImplementation()
+  if (form.implementation !== 'case') clearCaseTaskConfiguration()
   if (form.implementation === 'mail' && !serviceFieldForm.charset) {
     serviceFieldForm.charset = 'utf-8'
     upsertServiceField({ name: 'charset', label: t('properties.serviceFields.charset'), valueType: 'string' })
@@ -1020,6 +1049,75 @@ function updateDecisionReference() {
     removeExtensionValue(props.modeler, props.element, legacyServiceField)
     emit('changed')
   }
+}
+
+function updateCaseTaskProperties() {
+  form.caseDefinitionKey = form.caseDefinitionKey.trim()
+  form.caseInstanceName = form.caseInstanceName.trim()
+  form.caseBusinessKey = form.caseBusinessKey.trim()
+  form.caseIdVariableName = form.caseIdVariableName.trim()
+  selectedCaseReferenceId.value =
+    caseReferences.value.find((model) => model.key === form.caseDefinitionKey)?.id || ''
+  update({
+    'flowable:caseDefinitionKey': form.caseDefinitionKey || undefined,
+    'flowable:caseInstanceName': form.caseInstanceName || undefined,
+    'flowable:businessKey': form.caseBusinessKey || undefined,
+    'flowable:inheritBusinessKey': form.caseInheritBusinessKey || undefined,
+    'flowable:sameDeployment': form.caseSameDeployment || undefined,
+    'flowable:fallbackToDefaultTenant':
+      form.caseFallbackToDefaultTenant || undefined,
+    'flowable:idVariableName': form.caseIdVariableName || undefined,
+  })
+}
+
+function updateCaseReference() {
+  const reference = caseReferences.value.find(
+    (model) => model.id === selectedCaseReferenceId.value,
+  )
+  form.caseDefinitionKey = reference?.key || ''
+  updateCaseTaskProperties()
+}
+
+function clearCaseTaskConfiguration() {
+  const hasScalarConfiguration = [
+    'flowable:caseDefinitionKey',
+    'flowable:caseInstanceName',
+    'flowable:businessKey',
+    'flowable:inheritBusinessKey',
+    'flowable:sameDeployment',
+    'flowable:fallbackToDefaultTenant',
+    'flowable:idVariableName',
+  ].some((name) => {
+    const value = property(name)
+    return value !== undefined && value !== null && value !== '' && value !== false
+  })
+  const mappings = [...inputMappings.value, ...outputMappings.value]
+
+  selectedCaseReferenceId.value = ''
+  form.caseDefinitionKey = ''
+  form.caseInstanceName = ''
+  form.caseBusinessKey = ''
+  form.caseInheritBusinessKey = false
+  form.caseSameDeployment = false
+  form.caseFallbackToDefaultTenant = false
+  form.caseIdVariableName = ''
+
+  if (hasScalarConfiguration) {
+    update({
+      'flowable:caseDefinitionKey': undefined,
+      'flowable:caseInstanceName': undefined,
+      'flowable:businessKey': undefined,
+      'flowable:inheritBusinessKey': undefined,
+      'flowable:sameDeployment': undefined,
+      'flowable:fallbackToDefaultTenant': undefined,
+      'flowable:idVariableName': undefined,
+    })
+  }
+  if (!props.modeler || !props.element || !mappings.length) return
+  for (const mapping of mappings) {
+    removeExtensionValue(props.modeler, props.element, mapping)
+  }
+  emit('changed')
 }
 
 function updateAsync() {
@@ -2681,7 +2779,8 @@ function listenerKey(listener: BpmnExtensionElement) {
             </el-form-item>
           </el-form>
 
-          <el-form v-if="isCallActivity" label-position="top" size="small">
+          <el-form v-if="isCallActivity || isCaseServiceTask" label-position="top" size="small">
+            <template v-if="isCallActivity">
             <el-form-item :label="t('properties.callActivity.calledType')" :error="calledElementTypeError">
               <el-segmented
                 v-model="form.calledElementType"
@@ -2770,6 +2869,96 @@ function listenerKey(listener: BpmnExtensionElement) {
                 @change="update({ 'flowable:fallbackToDefaultTenant': form.fallbackToDefaultTenant || undefined })"
               />
             </div>
+            </template>
+
+            <template v-else>
+              <div class="preset-divider">
+                <span>{{ t('properties.caseTask.caseReference') }}</span>
+                <span>{{ t('properties.implementation.nativeExtension') }}</span>
+              </div>
+              <el-form-item :label="t('properties.caseTask.caseReference')">
+                <div class="flex w-full items-center gap-2">
+                  <el-select
+                    v-model="selectedCaseReferenceId"
+                    class="min-w-0 flex-1"
+                    clearable
+                    filterable
+                    data-testid="case-model-reference"
+                    @change="updateCaseReference"
+                  >
+                    <el-option
+                      v-for="reference in caseReferences"
+                      :key="reference.id"
+                      :label="`${reference.name} (${reference.key})`"
+                      :value="reference.id"
+                    />
+                  </el-select>
+                  <el-button
+                    :disabled="!selectedCaseReferenceId"
+                    data-testid="open-case-model-reference"
+                    @click="emit('openReference', selectedCaseReferenceId)"
+                  >
+                    {{ t('shell.models.open') }}
+                  </el-button>
+                </div>
+              </el-form-item>
+              <el-form-item :label="t('properties.caseTask.caseDefinitionKey')" required>
+                <el-input
+                  v-model="form.caseDefinitionKey"
+                  data-testid="case-definition-key"
+                  :placeholder="t('properties.caseTask.keyPlaceholder', { value: '${caseDefinitionKey}' })"
+                  @change="updateCaseTaskProperties"
+                />
+              </el-form-item>
+              <el-form-item :label="t('properties.caseTask.instanceName')">
+                <el-input
+                  v-model="form.caseInstanceName"
+                  data-testid="case-instance-name"
+                  placeholder="${caseInstanceName}"
+                  @change="updateCaseTaskProperties"
+                />
+              </el-form-item>
+              <el-form-item :label="t('properties.caseTask.idVariable')">
+                <el-input
+                  v-model="form.caseIdVariableName"
+                  data-testid="case-id-variable-name"
+                  :placeholder="t('properties.caseTask.idVariablePlaceholder', { value: '${caseInstanceId}' })"
+                  @change="updateCaseTaskProperties"
+                />
+              </el-form-item>
+              <el-form-item :label="t('properties.caseTask.businessKey')">
+                <el-input
+                  v-model="form.caseBusinessKey"
+                  data-testid="case-business-key"
+                  placeholder="${businessKey}"
+                  @change="updateCaseTaskProperties"
+                />
+              </el-form-item>
+              <div class="switch-row">
+                <span>{{ t('properties.caseTask.inheritBusinessKey') }}</span>
+                <el-switch
+                  v-model="form.caseInheritBusinessKey"
+                  data-testid="case-inherit-business-key"
+                  @change="updateCaseTaskProperties"
+                />
+              </div>
+              <div class="switch-row">
+                <span>{{ t('properties.caseTask.sameDeployment') }}</span>
+                <el-switch
+                  v-model="form.caseSameDeployment"
+                  data-testid="case-same-deployment"
+                  @change="updateCaseTaskProperties"
+                />
+              </div>
+              <div class="switch-row">
+                <span>{{ t('properties.caseTask.fallbackTenant') }}</span>
+                <el-switch
+                  v-model="form.caseFallbackToDefaultTenant"
+                  data-testid="case-fallback-default-tenant"
+                  @change="updateCaseTaskProperties"
+                />
+              </div>
+            </template>
 
             <div class="section-list-header mt-3!">
               <span>{{ t('properties.implementation.inputParameters') }}</span>
