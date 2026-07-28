@@ -5,8 +5,6 @@ import {
   Aim,
   Back,
   CircleCheck,
-  Document,
-  Download,
   FullScreen,
   RefreshLeft,
   RefreshRight,
@@ -42,12 +40,8 @@ defineProps<{
 const emit = defineEmits<{
   back: []
   save: []
-  exportXml: []
-  exportSvg: []
   preview: []
-  showXml: []
   validate: []
-  exportPng: []
   simulate: []
   undo: []
   redo: []
@@ -95,26 +89,9 @@ const alignments = computed<Array<{
 
     <span class="toolbar-divider" />
 
-    <el-dropdown :disabled="!ready" trigger="click">
-      <el-button text :icon="Download">{{ t('designer.toolbar.export') }}</el-button>
-      <template #dropdown>
-        <el-dropdown-menu>
-          <el-dropdown-item :icon="Download" @click="emit('exportXml')">
-            BPMN 2.0 XML
-          </el-dropdown-item>
-          <el-dropdown-item :icon="View" @click="emit('exportSvg')">
-            {{ t('designer.toolbar.exportSvg') }}
-          </el-dropdown-item>
-          <el-dropdown-item :icon="View" @click="emit('exportPng')">
-            {{ t('designer.toolbar.exportPng') }}
-          </el-dropdown-item>
-        </el-dropdown-menu>
-      </template>
-    </el-dropdown>
     <el-button text :icon="View" :disabled="!ready" @click="emit('preview')">
       {{ t('designer.toolbar.preview') }}
     </el-button>
-    <el-button text :icon="Document" :disabled="!ready" @click="emit('showXml')">XML</el-button>
 
     <span class="toolbar-divider" />
 

@@ -2,10 +2,11 @@ import { inject, type InjectionKey, type Ref } from 'vue'
 
 import { translate } from '@/i18n'
 import type {
+  ModelerModel,
   ModelerCredentials,
-  ProcessModel,
-  ProcessModelQuery,
+  ModelQuery,
 } from '@/modeler/modelerApi'
+import type { ModelType } from '@/modeler/modelTypes'
 
 export interface ModelSnapshot {
   xml: string
@@ -19,6 +20,7 @@ export interface CreateModelInput {
   name: string
   key: string
   description: string
+  modelType: ModelType
 }
 
 export interface ImportModelInput extends CreateModelInput {
@@ -32,18 +34,18 @@ export interface ModelerApplication {
   modelMutationPending: Ref<boolean>
   loginError: Ref<string>
   username: Ref<string>
-  models: Ref<ProcessModel[]>
+  models: Ref<ModelerModel[]>
   totalModels: Ref<number>
-  activeModel: Ref<ProcessModel | null>
+  activeModel: Ref<ModelerModel | null>
   activeXml: Ref<string>
+  referenceModels: Ref<ModelerModel[]>
   login: (credentials: ModelerCredentials) => Promise<void>
   logout: () => Promise<void>
-  loadModels: (query?: ProcessModelQuery) => Promise<void>
+  loadModels: (query?: ModelQuery) => Promise<void>
   loadModelForRoute: (id: string) => Promise<boolean>
   createModel: (input: CreateModelInput) => Promise<void>
   importModel: (input: ImportModelInput) => Promise<void>
   saveActiveModel: (snapshot: ModelSnapshot) => Promise<{ savedAt: number }>
-  deleteModel: (id: string) => Promise<void>
   clearActiveModel: () => void
 }
 

@@ -1,6 +1,8 @@
 import { BpmnModdle } from 'bpmn-moddle'
 
 import { translate } from '@/i18n'
+import type { ModelerModel } from '@/modeler/modelerApi'
+import { MODEL_TYPES } from '@/modeler/modelTypes'
 
 import flowableDescriptor from './flowableDescriptor'
 
@@ -326,6 +328,8 @@ const KNOWN_ORYX_PROPERTIES = new Set([
   'messagedefinitions',
   'signaldefinitions',
   'escalationdefinitions',
+  'decisiontaskdecisiontablereference',
+  'decisiontaskdecisionservicereference',
   ...Object.values(SERVICE_FIELD_PROPERTIES).flatMap((fields) => Object.values(fields)),
 ])
 
@@ -704,13 +708,28 @@ function createServiceExtensions(
   serviceType: string,
 ) {
   const properties = propertiesOf(shape)
+  const fieldNames = new Set<string>()
   for (const item of nestedArray(shape, 'servicetaskfields', ['fields', 'items'])) {
     const name = stringValue(item.name)
     if (!name) continue
+    fieldNames.add(name)
     const values: JsonObject = { name }
     setIfText(values, 'stringValue', item.stringValue ?? item.string)
     setIfText(values, 'expression', item.expression)
     addExtension(state.moddle, semantic, 'flowable:Field', values)
+  }
+  if (serviceType === 'dmn' && !fieldNames.has('decisionTableReferenceKey')) {
+    const reference = objectValue(
+      properties.decisiontaskdecisionservicereference ||
+        properties.decisiontaskdecisiontablereference,
+    )
+    const key = stringValue(reference.key)
+    if (key) {
+      addExtension(state.moddle, semantic, 'flowable:Field', {
+        name: 'decisionTableReferenceKey',
+        stringValue: key,
+      })
+    }
   }
   for (const [fieldName, propertyName] of Object.entries(SERVICE_FIELD_PROPERTIES[serviceType] || {})) {
     const value = properties[propertyName]
@@ -1409,6 +1428,7 @@ interface XmlExportState {
   diShapeByElementId: Map<string, ModdleElement>
   diEdgeByElementId: Map<string, ModdleElement>
   fallbackPosition: number
+  references: readonly ModelerModel[]
 }
 
 function elementId(element: ModdleElement | undefined): string {
@@ -1625,7 +1645,10 @@ function applyXmlEventProperties(properties: JsonObject, semantic: ModdleElement
   }
 }
 
-function semanticProperties(semantic: ModdleElement): JsonObject {
+function semanticProperties(
+  semantic: ModdleElement,
+  references: readonly ModelerModel[] = [],
+): JsonObject {
   const properties: JsonObject = { overrideid: elementId(semantic) }
   setIfText(properties, 'name', semantic.name)
   setIfText(properties, 'documentation', documentationText(semantic))
@@ -1704,6 +1727,35 @@ function semanticProperties(semantic: ModdleElement): JsonObject {
       if (field) properties[propertyName] = fieldValue(field)
     }
     if (serviceType === 'external-worker') setIfText(properties, 'topic', flowableValue(semantic, 'topic'))
+    if (serviceType === 'dmn') {
+      const serviceField = fields.find(
+        (candidate) => stringValue(candidate.name) === 'decisionServiceReferenceKey',
+      )
+      const sharedField = fields.find(
+        (candidate) => stringValue(candidate.name) === 'decisionTableReferenceKey',
+      )
+      const serviceKey = serviceField ? fieldValue(serviceField) : ''
+      const sharedKey = sharedField ? fieldValue(sharedField) : ''
+      const referenceKey = serviceKey || sharedKey
+      const reference =
+        references.find(
+          (candidate) =>
+            candidate.key === referenceKey &&
+            candidate.modelType === MODEL_TYPES.decisionService,
+        ) ||
+        references.find(
+          (candidate) =>
+            candidate.key === referenceKey &&
+            candidate.modelType === MODEL_TYPES.decisionTable,
+        )
+      if (reference) {
+        properties[
+          reference.modelType === MODEL_TYPES.decisionService
+            ? 'decisiontaskdecisionservicereference'
+            : 'decisiontaskdecisiontablereference'
+        ] = { id: reference.id, name: reference.name, key: reference.key }
+      }
+    }
     const exceptions = extensionsOfType(semantic, 'flowable:MapException').map((exception) => ({
       class: stringValue(exception.class ?? exception.body),
       code: stringValue(exception.errorCode),
@@ -1830,7 +1882,7 @@ function baseOryxShape(
   const existing = state.existingShapes.get(id)
   const generated: OryxShape = {
     resourceId: existing?.resourceId || id,
-    properties: semanticProperties(semantic),
+    properties: semanticProperties(semantic, state.references),
     stencil: { id: stencil },
     childShapes: [],
     outgoing: [],
@@ -2173,7 +2225,10 @@ function canvasBounds(state: XmlExportState): OryxBounds {
 
 export async function bpmnXmlToOryxJson(
   xml: string,
-  options: { preserveOryxSnapshot?: boolean } = {},
+  options: {
+    preserveOryxSnapshot?: boolean
+    references?: readonly ModelerModel[]
+  } = {},
 ): Promise<OryxModel> {
   if (!xml.trim()) throw new Error(translate('modeler.errors.bpmnXmlEmpty'))
   const moddle = createModdle()
@@ -2208,6 +2263,7 @@ export async function bpmnXmlToOryxJson(
     diShapeByElementId: indexes.shapeMap,
     diEdgeByElementId: indexes.edgeMap,
     fallbackPosition: 0,
+    references: options.references || [],
   }
 
   const childShapes: OryxShape[] = []

@@ -34,6 +34,8 @@ import type {
   BpmnExtensionElement,
   DiagramElement,
 } from '@/modeler/types'
+import type { ModelerModel } from '@/modeler/modelerApi'
+import { MODEL_TYPES } from '@/modeler/modelTypes'
 
 const props = defineProps({
   modeler: {
@@ -48,10 +50,15 @@ const props = defineProps({
     type: Number,
     default: 0,
   },
+  referenceModels: {
+    type: Array as PropType<readonly ModelerModel[]>,
+    default: () => [],
+  },
 })
 
 const emit = defineEmits<{
   changed: []
+  openReference: [id: string]
 }>()
 
 const { t } = useI18n()
@@ -322,8 +329,6 @@ const serviceFieldPresets = computed<Record<string, ServiceFieldSpec[]>>(() => (
     { name: 'charset', label: t('properties.serviceFields.charset'), valueType: 'string', placeholder: 'utf-8' },
   ],
   dmn: [
-    { name: 'decisionTableReferenceKey', label: t('properties.serviceFields.decisionTableKey'), valueType: 'string' },
-    { name: 'decisionServiceReferenceKey', label: t('properties.serviceFields.decisionServiceKey'), valueType: 'string' },
     {
       name: 'fallbackToDefaultTenant',
       label: t('properties.serviceFields.fallbackDefaultTenant'),
@@ -340,6 +345,7 @@ const serviceFieldPresets = computed<Record<string, ServiceFieldSpec[]>>(() => (
 }))
 
 const serviceFieldForm = reactive<Record<string, string>>({})
+const selectedDecisionReferenceId = ref('')
 
 const businessObject = computed(() => props.element?.businessObject || null)
 const type = computed(() => props.element?.type || '')
@@ -549,6 +555,13 @@ const isSendEventServiceTask = computed(
   () => isServiceTask.value && selectedServiceType.value === 'send-event',
 )
 const activeServiceFields = computed(() => serviceFieldPresets.value[selectedServiceType.value] || [])
+const decisionReferences = computed(() =>
+  props.referenceModels.filter(
+    (model) =>
+      model.modelType === MODEL_TYPES.decisionTable ||
+      model.modelType === MODEL_TYPES.decisionService,
+  ),
+)
 const mappingSupportsTransient = computed(() =>
   ['eventIn', 'eventOut'].includes(mappingForm.kind),
 )
@@ -702,6 +715,39 @@ function hydrate() {
     form.elementIndexVariable = ''
     form.completionCondition = ''
   }
+  const decisionServiceField = injectedFields.value.find(
+    (field) => field.name === 'decisionServiceReferenceKey',
+  )
+  const decisionTableField = injectedFields.value.find(
+    (field) => field.name === 'decisionTableReferenceKey',
+  )
+  const decisionServiceKey = text(
+    decisionServiceField?.expression ||
+      decisionServiceField?.string ||
+      decisionServiceField?.stringValue,
+  )
+  const sharedDecisionKey = text(
+    decisionTableField?.expression ||
+      decisionTableField?.string ||
+      decisionTableField?.stringValue,
+  )
+  const decisionReference = decisionServiceKey
+    ? decisionReferences.value.find(
+        (model) =>
+          model.key === decisionServiceKey &&
+          model.modelType === MODEL_TYPES.decisionService,
+      )
+    : decisionReferences.value.find(
+        (model) =>
+          model.key === sharedDecisionKey &&
+          model.modelType === MODEL_TYPES.decisionService,
+      ) ||
+      decisionReferences.value.find(
+        (model) =>
+          model.key === sharedDecisionKey &&
+          model.modelType === MODEL_TYPES.decisionTable,
+      )
+  selectedDecisionReferenceId.value = decisionReference?.id || ''
 
   const definition = bo.eventDefinitions?.[0]
   form.cancelActivity = booleanValue(bo.cancelActivity, true)
@@ -955,6 +1001,25 @@ function upsertServiceField(spec: ServiceFieldSpec) {
     addExtensionValue(props.modeler, props.element, field)
   }
   emit('changed')
+}
+
+function updateDecisionReference() {
+  const reference = decisionReferences.value.find(
+    (model) => model.id === selectedDecisionReferenceId.value,
+  )
+  serviceFieldForm.decisionTableReferenceKey = reference?.key || ''
+  upsertServiceField({
+    name: 'decisionTableReferenceKey',
+    label: t('properties.serviceFields.decisionReference'),
+    valueType: 'string',
+  })
+  const legacyServiceField = injectedFields.value.find(
+    (field) => field.name === 'decisionServiceReferenceKey',
+  )
+  if (legacyServiceField && props.modeler && props.element) {
+    removeExtensionValue(props.modeler, props.element, legacyServiceField)
+    emit('changed')
+  }
 }
 
 function updateAsync() {
@@ -2367,6 +2432,48 @@ function listenerKey(listener: BpmnExtensionElement) {
                 @change="updateExternalWorkerTopic"
               />
             </el-form-item>
+            <template v-if="form.implementationType === 'type' && selectedServiceType === 'dmn'">
+              <div class="preset-divider">
+                <span>{{ t('properties.serviceFields.decisionReference') }}</span>
+                <span>{{ t('properties.serviceFields.storedAsReference') }}</span>
+              </div>
+              <el-form-item :label="t('properties.serviceFields.decisionReference')" required>
+                <div class="flex w-full items-center gap-2">
+                  <el-select
+                    v-model="selectedDecisionReferenceId"
+                    class="min-w-0 flex-1"
+                    clearable
+                    filterable
+                    data-testid="decision-model-reference"
+                    @change="updateDecisionReference"
+                  >
+                    <el-option-group :label="t('shell.modelTypes.decisionTable.plural')">
+                      <el-option
+                        v-for="reference in decisionReferences.filter((model) => model.modelType === MODEL_TYPES.decisionTable)"
+                        :key="reference.id"
+                        :label="`${reference.name} (${reference.key})`"
+                        :value="reference.id"
+                      />
+                    </el-option-group>
+                    <el-option-group :label="t('shell.modelTypes.decisionService.plural')">
+                      <el-option
+                        v-for="reference in decisionReferences.filter((model) => model.modelType === MODEL_TYPES.decisionService)"
+                        :key="reference.id"
+                        :label="`${reference.name} (${reference.key})`"
+                        :value="reference.id"
+                      />
+                    </el-option-group>
+                  </el-select>
+                  <el-button
+                    :disabled="!selectedDecisionReferenceId"
+                    data-testid="open-decision-model-reference"
+                    @click="emit('openReference', selectedDecisionReferenceId)"
+                  >
+                    {{ t('shell.models.open') }}
+                  </el-button>
+                </div>
+              </el-form-item>
+            </template>
             <template v-if="form.implementationType === 'type' && activeServiceFields.length">
               <div class="preset-divider">
                 <span>{{ t('properties.implementation.parameters', { type: form.implementation.toUpperCase() }) }}</span>

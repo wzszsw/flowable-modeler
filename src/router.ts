@@ -38,11 +38,31 @@ export const router = createRouter({
     {
       path: '/processes',
       name: ROUTE_NAMES.processes,
-      component: () => import('@/views/ProcessesPage.vue'),
+      component: () => import('@/views/ModelsPage.vue'),
+    },
+    {
+      path: '/cases',
+      name: ROUTE_NAMES.cases,
+      component: () => import('@/views/ModelsPage.vue'),
+    },
+    {
+      path: '/decisions',
+      name: ROUTE_NAMES.decisions,
+      component: () => import('@/views/ModelsPage.vue'),
     },
     {
       path: '/processes/:modelId',
       name: ROUTE_NAMES.processEditor,
+      component: () => import('@/views/ProcessEditorPage.vue'),
+    },
+    {
+      path: '/cases/:modelId',
+      name: ROUTE_NAMES.caseEditor,
+      component: () => import('@/views/ProcessEditorPage.vue'),
+    },
+    {
+      path: '/decisions/:modelId',
+      name: ROUTE_NAMES.decisionEditor,
       component: () => import('@/views/ProcessEditorPage.vue'),
     },
     {

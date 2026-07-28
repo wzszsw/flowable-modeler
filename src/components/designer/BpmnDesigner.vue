@@ -11,8 +11,6 @@ import {
   ArrowRight,
   CircleCheck,
   Clock,
-  CopyDocument,
-  Download,
   WarningFilled,
 } from '@element-plus/icons-vue'
 
@@ -29,6 +27,7 @@ import { FLOWABLE_FORMS_ENABLED } from '@/config/features'
 import type { BpmnBusinessObject, DiagramElement, ValidationProblem } from '@/modeler/types'
 import { validateElements } from '@/modeler/validation'
 import { normalizeLegacyActivitiNamespace } from '@/modeler/xmlCompatibility'
+import type { ModelerModel } from '@/modeler/modelerApi'
 
 type CanvasService = {
   zoom: (value?: number | string, center?: string) => number
@@ -146,12 +145,14 @@ const props = defineProps<{
   initialXml: string
   initialFileName?: string
   initialSavedAt?: number
+  referenceModels: readonly ModelerModel[]
   persistModel: (snapshot: ModelSnapshot) => Promise<ModelPersistenceResult>
 }>()
 
 const emit = defineEmits<{
   close: []
   saved: []
+  openReference: [id: string]
 }>()
 
 type BpmnDiagramDefinition = {
@@ -190,7 +191,6 @@ interface ImportSnapshot {
 const shellRef = ref<HTMLElement | null>(null)
 const canvasHostRef = ref<HTMLElement | null>(null)
 const canvasRef = ref<HTMLElement | null>(null)
-const fileInputRef = ref<HTMLInputElement | null>(null)
 const modeler = shallowRef<Modeler | null>(null)
 const rootElement = shallowRef<DiagramElement | null>(null)
 const selectedElement = shallowRef<DiagramElement | null>(null)
@@ -212,8 +212,6 @@ const propertyPanelVisible = ref(true)
 const fullscreenActive = ref(false)
 const importWarnings = ref<DiagnosticMessage[]>([])
 
-const xmlDialogVisible = ref(false)
-const xmlContent = ref('')
 const previewDialogVisible = ref(false)
 const previewSvg = ref('')
 const leaveDialogVisible = ref(false)
@@ -1213,60 +1211,9 @@ async function requestClose() {
   if (await confirmClose()) emit('close')
 }
 
-async function confirmDiscard() {
-  if (!dirty.value) return true
-  try {
-    await ElMessageBox.confirm(
-      t('designer.import.confirmMessage'),
-      t('designer.import.confirmTitle'),
-      {
-        confirmButtonText: t('designer.import.continue'),
-        cancelButtonText: t('shell.common.cancel'),
-        type: 'warning',
-      },
-    )
-    return true
-  } catch {
-    return false
-  }
-}
-
-function chooseImportFile() {
-  if (!isInteractionReady()) return
-  fileInputRef.value?.click()
-}
-
-async function handleFileChange(event: Event) {
-  const input = event.target as HTMLInputElement
-  const file = input.files?.[0]
-  input.value = ''
-  if (!isInteractionReady()) return
-  if (!file || !(await confirmDiscard())) return
-
-  let xml: string
-  try {
-    xml = await file.text()
-  } catch (error) {
-    ElMessage.error(errorText(error, 'designer.errors.fileReadFailed'))
-    return
-  }
-  if (!isInteractionReady()) return
-  try {
-    await importDiagram(xml, { importedFileName: file.name, markClean: false })
-    lastSavedAt.value = null
-    ElMessage.success(t('designer.import.success', { fileName: file.name }))
-  } catch {
-    // importDiagram already displayed the error.
-  }
-}
-
-async function getXml() {
-  if (!modeler.value) return ''
-  await waitForQueuedImports()
-  assertImportStateCoherent()
-  await commitActiveEditor()
-  const { xml } = await modeler.value.saveXML({ format: true, preamble: true })
-  return xml || ''
+async function requestOpenReference(referenceId: string) {
+  if (!referenceId) return
+  if (await persistCurrentModel(false)) emit('openReference', referenceId)
 }
 
 async function commitActiveEditor() {
@@ -1277,90 +1224,6 @@ async function commitActiveEditor() {
   ) {
     activeElement.blur()
     await nextTick()
-  }
-}
-
-async function exportXml() {
-  if (!isInteractionReady()) return
-  try {
-    const xml = await getXml()
-    if (!xml) return
-    downloadBlob(xml, normalizedExportName('bpmn20.xml'), 'application/xml;charset=utf-8')
-    ElMessage.success(t('designer.export.xmlSuccess'))
-  } catch (error) {
-    ElMessage.error(errorText(error, 'designer.errors.exportFailed'))
-  }
-}
-
-async function exportSvg() {
-  if (!modeler.value || !isInteractionReady()) return
-  try {
-    const { svg } = await modeler.value.saveSVG()
-    if (!svg) return
-    downloadBlob(svg, normalizedExportName('svg'), 'image/svg+xml;charset=utf-8')
-    ElMessage.success(t('designer.export.svgSuccess'))
-  } catch (error) {
-    ElMessage.error(errorText(error, 'designer.errors.exportFailed'))
-  }
-}
-
-async function exportPng() {
-  if (!modeler.value || !isInteractionReady()) return
-  try {
-    const { svg } = await modeler.value.saveSVG()
-    if (!svg) return
-    const svgBlob = new Blob([svg], { type: 'image/svg+xml;charset=utf-8' })
-    const svgUrl = URL.createObjectURL(svgBlob)
-    try {
-      const image = new Image()
-      image.decoding = 'async'
-      image.src = svgUrl
-      await image.decode()
-      const scale = 2
-      const canvas = document.createElement('canvas')
-      canvas.width = Math.max(1, image.naturalWidth || image.width) * scale
-      canvas.height = Math.max(1, image.naturalHeight || image.height) * scale
-      const context = canvas.getContext('2d')
-      if (!context) throw designerError('designer.errors.canvasExportUnsupported')
-      context.fillStyle = '#ffffff'
-      context.fillRect(0, 0, canvas.width, canvas.height)
-      context.drawImage(image, 0, 0, canvas.width, canvas.height)
-      const png = await new Promise<Blob | null>((resolve) => canvas.toBlob(resolve, 'image/png'))
-      if (!png) throw designerError('designer.errors.pngGenerationFailed')
-      const url = URL.createObjectURL(png)
-      try {
-        const anchor = document.createElement('a')
-        anchor.href = url
-        anchor.download = normalizedExportName('png')
-        anchor.click()
-      } finally {
-        URL.revokeObjectURL(url)
-      }
-      ElMessage.success(t('designer.export.pngSuccess'))
-    } finally {
-      URL.revokeObjectURL(svgUrl)
-    }
-  } catch (error) {
-    ElMessage.error(errorText(error, 'designer.errors.exportFailed'))
-  }
-}
-
-async function showXml() {
-  if (!isInteractionReady()) return
-  try {
-    xmlContent.value = await getXml()
-    xmlDialogVisible.value = true
-  } catch (error) {
-    ElMessage.error(errorText(error, 'designer.errors.xmlReadFailed'))
-  }
-}
-
-async function copyXml() {
-  try {
-    await navigator.clipboard.writeText(xmlContent.value)
-    ElMessage.success(t('designer.clipboard.copied'))
-  } catch {
-    ElMessage.warning(t('designer.clipboard.denied'))
   }
 }
 
@@ -1494,10 +1357,6 @@ function handleGlobalKeydown(event: KeyboardEvent) {
     event.preventDefault()
     if (isInteractionReady()) void saveModel()
   }
-  if (event.key.toLowerCase() === 'o') {
-    event.preventDefault()
-    chooseImportFile()
-  }
 }
 
 function handleBeforeUnload(event: BeforeUnloadEvent) {
@@ -1508,28 +1367,6 @@ function handleBeforeUnload(event: BeforeUnloadEvent) {
 function normalizeFileName(name: string) {
   const base = name.replace(/\.(bpmn20\.xml|bpmn|xml)$/i, '') || 'process'
   return `${base}.bpmn20.xml`
-}
-
-function normalizedExportName(extension: string) {
-  const base = fileName.value.replace(/\.(bpmn20\.xml|bpmn|xml)$/i, '') || sanitizeFileName(processName.value)
-  return `${base}.${extension}`
-}
-
-function sanitizeFileName(name: string) {
-  return name.trim().replace(/[\\/:*?"<>|]+/g, '-').replace(/\s+/g, '-') || 'process'
-}
-
-function downloadBlob(content: string, name: string, mimeType: string) {
-  const blob = new Blob([content], { type: mimeType })
-  const url = URL.createObjectURL(blob)
-  try {
-    const anchor = document.createElement('a')
-    anchor.href = url
-    anchor.download = name
-    anchor.click()
-  } finally {
-    URL.revokeObjectURL(url)
-  }
 }
 
 function formatTime(value: number) {
@@ -1657,11 +1494,7 @@ defineExpose({
       :problem-count="problems.length"
       @back="requestClose"
       @save="saveModel"
-      @export-xml="exportXml"
-      @export-svg="exportSvg"
-      @export-png="exportPng"
       @preview="showPreview"
-      @show-xml="showXml"
       @validate="runValidation"
       @simulate="toggleSimulation"
       @undo="undo"
@@ -1758,47 +1591,13 @@ defineExpose({
             :modeler="ready ? modeler : null"
             :element="ready ? selectedElement : null"
             :revision="commandRevision"
+            :reference-models="referenceModels"
             @changed="commandRevision += 1"
+            @open-reference="requestOpenReference"
           />
         </section>
       </transition>
     </main>
-
-    <input
-      ref="fileInputRef"
-      class="hidden"
-      type="file"
-      accept=".bpmn,.xml,.bpmn20.xml,application/xml,text/xml"
-      @change="handleFileChange"
-    />
-
-    <el-dialog v-model="xmlDialogVisible" title="BPMN 2.0 XML" width="78%" top="6vh">
-      <div class="xml-toolbar">
-        <div>
-          <div class="text-sm font-600">Flowable XML</div>
-          <div class="mt-1 text-xs text-gray-400">namespace: http://flowable.org/bpmn</div>
-        </div>
-        <div>
-          <el-button :icon="CopyDocument" @click="copyXml">
-            {{ t('designer.xml.copy') }}
-          </el-button>
-          <el-button :icon="Download" :disabled="!ready" @click="exportXml">
-            {{ t('designer.xml.download') }}
-          </el-button>
-        </div>
-      </div>
-      <el-input
-        v-model="xmlContent"
-        class="xml-editor"
-        type="textarea"
-        :rows="26"
-        resize="none"
-        spellcheck="false"
-      />
-      <template #footer>
-        <el-button @click="xmlDialogVisible = false">{{ t('designer.xml.close') }}</el-button>
-      </template>
-    </el-dialog>
 
     <el-dialog
       v-model="previewDialogVisible"
@@ -1808,10 +1607,7 @@ defineExpose({
     >
       <div class="preview-surface" v-html="previewSvg" />
       <template #footer>
-        <el-button @click="previewDialogVisible = false">{{ t('designer.xml.close') }}</el-button>
-        <el-button type="primary" :icon="Download" :disabled="!ready" @click="exportSvg">
-          {{ t('designer.preview.download') }}
-        </el-button>
+        <el-button @click="previewDialogVisible = false">{{ t('shell.common.close') }}</el-button>
       </template>
     </el-dialog>
 
@@ -2221,22 +2017,6 @@ defineExpose({
   font-size: 12px;
   line-height: 1.55;
   white-space: pre-wrap;
-}
-
-.xml-toolbar {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  margin-bottom: 12px;
-}
-
-.xml-editor :deep(textarea) {
-  color: #d0d5dd;
-  border: 0;
-  background: #101828;
-  font-family: "JetBrains Mono", Consolas, monospace;
-  font-size: 12px;
-  line-height: 1.65;
 }
 
 .preview-surface {

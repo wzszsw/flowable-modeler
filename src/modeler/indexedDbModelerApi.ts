@@ -1,25 +1,24 @@
-import { createNewProcessDiagram } from './defaultDiagram'
+import { createDefaultEditorModel } from './defaultEditorModel'
 import {
-  BPMN_MODEL_TYPE,
   ModelerApiError,
-  type CreateProcessModelInput,
+  type CreateModelInput,
   type EditorModelDocument,
+  type ModelerModel,
   type ModelerAccount,
   type ModelerCredentials,
   type ModelerRequestOptions,
-  type ProcessModel,
-  type ProcessModelListResult,
-  type ProcessModelQuery,
+  type ModelListResult,
+  type ModelQuery,
   type SaveEditorModelInput,
 } from './modelerApi'
-import { bpmnXmlToOryxJson } from './oryxConverter'
+import { MODEL_TYPES, type ModelType } from './modelTypes'
 
 const DATABASE_NAME = 'flowable-modeler'
 const DATABASE_VERSION = 1
 const MODEL_STORE = 'process-models'
 const LOCAL_ACCOUNT_ID = 'local'
 
-interface StoredProcessModel extends ProcessModel {
+interface StoredModel extends ModelerModel {
   editorModel: Record<string, unknown>
 }
 
@@ -134,14 +133,14 @@ function cloneEditorModel(model: Record<string, unknown>) {
 }
 
 async function readRecord(id: string) {
-  const record = await runTransaction<StoredProcessModel | undefined>('readonly', (store) =>
+  const record = await runTransaction<StoredModel | undefined>('readonly', (store) =>
     store.get(id),
   )
   if (!record) throw modelNotFound(id)
   return record
 }
 
-function toProcessModel(record: StoredProcessModel): ProcessModel {
+function toModel(record: StoredModel): ModelerModel {
   return {
     id: record.id,
     name: record.name,
@@ -163,7 +162,7 @@ function nextUpdatedAt(previous = 0) {
   return Math.max(now, previous + 1)
 }
 
-function compareModels(left: ProcessModel, right: ProcessModel, sort = 'modifiedDesc') {
+function compareModels(left: ModelerModel, right: ModelerModel, sort = 'modifiedDesc') {
   if (sort === 'modifiedAsc') {
     return left.lastUpdated - right.lastUpdated
   }
@@ -183,15 +182,17 @@ export class IndexedDbModelerApi {
   async logout() {}
 
   async listModels(
-    query: ProcessModelQuery = {},
+    query: ModelQuery = {},
     _options: ModelerRequestOptions = {},
-  ): Promise<ProcessModelListResult> {
-    const records = await runTransaction<StoredProcessModel[]>('readonly', (store) =>
+  ): Promise<ModelListResult> {
+    const records = await runTransaction<StoredModel[]>('readonly', (store) =>
       store.getAll(),
     )
     const filterText = query.filterText?.trim().toLocaleLowerCase()
+    const modelTypes = new Set(query.modelTypes || [])
     const data = records
-      .map(toProcessModel)
+      .map(toModel)
+      .filter((model) => !modelTypes.size || modelTypes.has(model.modelType))
       .filter((model) =>
         filterText
           ? [model.name, model.description].some((value) =>
@@ -204,13 +205,16 @@ export class IndexedDbModelerApi {
     return { size: data.length, total: data.length, start: 0, data }
   }
 
-  async createModel(input: CreateProcessModelInput) {
+  async createModel(input: CreateModelInput) {
     const id = crypto.randomUUID()
     const lastUpdated = nextUpdatedAt()
-    const editorModel = await bpmnXmlToOryxJson(
-      createNewProcessDiagram(input.key, input.name, input.description),
+    const editorModel = await createDefaultEditorModel(
+      input.modelType,
+      input.key,
+      input.name,
+      input.description,
     )
-    const record: StoredProcessModel = {
+    const record: StoredModel = {
       id,
       name: input.name,
       key: input.key,
@@ -221,19 +225,19 @@ export class IndexedDbModelerApi {
       latestVersion: true,
       version: 1,
       comment: '',
-      modelType: BPMN_MODEL_TYPE,
+      modelType: input.modelType,
       tenantId: '',
       editorModel,
     }
     await runTransaction<IDBValidKey>('readwrite', (store) => store.add(record))
-    return toProcessModel(record)
+    return toModel(record)
   }
 
   async getModel(id: string) {
-    return toProcessModel(await readRecord(id))
+    return toModel(await readRecord(id))
   }
 
-  async getEditorModel(id: string): Promise<EditorModelDocument> {
+  async getEditorModel(id: string, _modelType: ModelType): Promise<EditorModelDocument> {
     const record = await readRecord(id)
     return {
       modelId: record.id,
@@ -246,15 +250,19 @@ export class IndexedDbModelerApi {
     }
   }
 
-  async saveEditorModel(id: string, input: SaveEditorModelInput) {
+  async saveEditorModel(
+    id: string,
+    modelType: ModelType,
+    input: SaveEditorModelInput,
+  ) {
     const editorModel = cloneEditorModel(input.model)
     const database = await openDatabase()
     try {
-      return await new Promise<ProcessModel>((resolve, reject) => {
+      return await new Promise<ModelerModel>((resolve, reject) => {
         const transaction = database.transaction(MODEL_STORE, 'readwrite')
         const store = transaction.objectStore(MODEL_STORE)
-        const request = store.get(id) as IDBRequest<StoredProcessModel | undefined>
-        let saved: StoredProcessModel | undefined
+        const request = store.get(id) as IDBRequest<StoredModel | undefined>
+        let saved: StoredModel | undefined
         let expectedError: ModelerApiError | undefined
 
         request.onsuccess = () => {
@@ -266,6 +274,7 @@ export class IndexedDbModelerApi {
               return
             }
             if (
+              modelType !== MODEL_TYPES.decisionTable &&
               record.lastUpdated !== input.lastUpdated &&
               input.conflictResolveAction !== 'overwrite'
             ) {
@@ -298,44 +307,9 @@ export class IndexedDbModelerApi {
           }
         }
         transaction.oncomplete = () => {
-          if (saved) resolve(toProcessModel(saved))
+          if (saved) resolve(toModel(saved))
           else reject(storageError())
         }
-        transaction.onerror = () => reject(expectedError || storageError(transaction.error))
-        transaction.onabort = () => reject(expectedError || storageError(transaction.error))
-      })
-    } catch (error) {
-      rethrowStorageError(database, error)
-    }
-  }
-
-  async deleteModel(id: string) {
-    const database = await openDatabase()
-    try {
-      await new Promise<void>((resolve, reject) => {
-        const transaction = database.transaction(MODEL_STORE, 'readwrite')
-        const store = transaction.objectStore(MODEL_STORE)
-        const request = store.getKey(id)
-        let expectedError: ModelerApiError | undefined
-
-        request.onsuccess = () => {
-          try {
-            if (request.result === undefined) {
-              expectedError = modelNotFound(id)
-              transaction.abort()
-              return
-            }
-            store.delete(id)
-          } catch (error) {
-            expectedError = storageError(error)
-            try {
-              transaction.abort()
-            } catch {
-              reject(expectedError)
-            }
-          }
-        }
-        transaction.oncomplete = () => resolve()
         transaction.onerror = () => reject(expectedError || storageError(transaction.error))
         transaction.onabort = () => reject(expectedError || storageError(transaction.error))
       })

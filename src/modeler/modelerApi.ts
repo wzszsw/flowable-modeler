@@ -1,8 +1,7 @@
 import { createModelerHttpClient, ModelerApiError } from './modelerHttpClient'
+import { MODEL_TYPES, isModelType, type ModelType } from './modelTypes'
 
 export { ModelerApiError }
-
-export const BPMN_MODEL_TYPE = 0
 
 export type ModelSort = 'modifiedDesc' | 'modifiedAsc' | 'nameAsc' | 'nameDesc'
 
@@ -16,7 +15,7 @@ export interface ModelerAccount {
   fullName: string
 }
 
-export interface ProcessModel {
+export interface ModelerModel {
   id: string
   name: string
   key: string
@@ -27,30 +26,32 @@ export interface ProcessModel {
   latestVersion: boolean
   version: number
   comment: string
-  modelType: number
+  modelType: ModelType
   tenantId: string
 }
 
-export interface ProcessModelListResult {
+export interface ModelListResult {
   size: number
   total: number
   start: number
-  data: ProcessModel[]
+  data: ModelerModel[]
 }
 
-export interface ProcessModelQuery {
+export interface ModelQuery {
   filterText?: string
   sort?: ModelSort
+  modelTypes?: readonly ModelType[]
 }
 
 export interface ModelerRequestOptions {
   showGlobalLoading?: boolean
 }
 
-export interface CreateProcessModelInput {
+export interface CreateModelInput {
   name: string
   key: string
   description?: string
+  modelType: ModelType
 }
 
 export interface EditorModelDocument {
@@ -75,6 +76,15 @@ export interface SaveEditorModelInput {
 const AUTHENTICATION_URL = '/app/authentication'
 const LOGOUT_URL = '/app/logout'
 const REPEATABLE_REQUEST_TIMEOUT_MS = 30_000
+const TRANSPARENT_PNG_DATA_URL =
+  'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNk+A8AAQUBAScY42YAAAAASUVORK5CYII='
+
+function modelFilter(modelType: ModelType) {
+  if (modelType === MODEL_TYPES.case) return 'cases'
+  if (modelType === MODEL_TYPES.decisionTable) return 'decisionTables'
+  if (modelType === MODEL_TYPES.decisionService) return 'decisionServices'
+  return 'processes'
+}
 
 function asRecord(value: unknown): Record<string, unknown> {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
@@ -103,8 +113,14 @@ function requiredTimestamp(value: unknown, field: string) {
   })
 }
 
-function parseProcessModel(value: unknown): ProcessModel {
+function parseModel(value: unknown): ModelerModel {
   const model = asRecord(value)
+  const modelType = typeof model.modelType === 'number' ? model.modelType : MODEL_TYPES.process
+  if (!isModelType(modelType)) {
+    throw ModelerApiError.fromMessageKey('shell.api.unsupportedModelType', {
+      messageParams: { modelType },
+    })
+  }
   return {
     id: requiredString(model.id, 'id'),
     name: requiredString(model.name, 'name'),
@@ -116,7 +132,7 @@ function parseProcessModel(value: unknown): ProcessModel {
     latestVersion: model.latestVersion !== false,
     version: typeof model.version === 'number' ? model.version : 1,
     comment: optionalString(model.comment),
-    modelType: typeof model.modelType === 'number' ? model.modelType : BPMN_MODEL_TYPE,
+    modelType,
     tenantId: optionalString(model.tenantId),
   }
 }
@@ -177,57 +193,91 @@ export class ModelerApi {
   }
 
   async listModels(
-    query: ProcessModelQuery = {},
+    query: ModelQuery = {},
     options: ModelerRequestOptions = {},
-  ): Promise<ProcessModelListResult> {
-    const parameters = new URLSearchParams({
-      filter: 'processes',
-      sort: query.sort || 'modifiedDesc',
-      modelType: String(BPMN_MODEL_TYPE),
-    })
+  ): Promise<ModelListResult> {
+    const modelTypes = query.modelTypes?.length
+      ? [...new Set(query.modelTypes)]
+      : [MODEL_TYPES.process]
     const filterText = query.filterText?.trim()
-    if (filterText) parameters.set('filterText', filterText)
-
-    const response = await this.http.get('/models', {
-      params: parameters,
-      showGlobalLoading: options.showGlobalLoading,
-      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
+    const responses = await Promise.all(
+      modelTypes.map(async (modelType, index) => {
+        const parameters = new URLSearchParams({
+          filter: modelFilter(modelType),
+          sort: query.sort || 'modifiedDesc',
+          modelType: String(modelType),
+        })
+        if (filterText) parameters.set('filterText', filterText)
+        const response = await this.http.get('/models', {
+          params: parameters,
+          showGlobalLoading: index === 0 ? options.showGlobalLoading : false,
+          timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
+        })
+        const result = asRecord(response.data)
+        return Array.isArray(result.data) ? result.data.map(parseModel) : []
+      }),
+    )
+    const data = responses.flat().sort((left, right) => {
+      if (query.sort === 'modifiedAsc') return left.lastUpdated - right.lastUpdated
+      if (query.sort === 'nameAsc') return left.name.localeCompare(right.name)
+      if (query.sort === 'nameDesc') return right.name.localeCompare(left.name)
+      return right.lastUpdated - left.lastUpdated
     })
-    const result = asRecord(response.data)
-    const data = Array.isArray(result.data) ? result.data.map(parseProcessModel) : []
-    return {
-      size: typeof result.size === 'number' ? result.size : data.length,
-      total: typeof result.total === 'number' ? result.total : data.length,
-      start: typeof result.start === 'number' ? result.start : 0,
-      data,
-    }
+    return { size: data.length, total: data.length, start: 0, data }
   }
 
-  async createModel(input: CreateProcessModelInput) {
+  async createModel(input: CreateModelInput) {
     const response = await this.http.post('/models', {
       name: input.name,
       key: input.key,
       description: input.description || '',
-      modelType: BPMN_MODEL_TYPE,
+      modelType: input.modelType,
     })
-    return parseProcessModel(response.data)
+    return parseModel(response.data)
   }
 
   async getModel(id: string) {
     const response = await this.http.get(`/models/${encodeURIComponent(id)}`, {
       timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
     })
-    return parseProcessModel(response.data)
+    return parseModel(response.data)
   }
 
-  async getEditorModel(id: string) {
+  async getEditorModel(id: string, modelType: ModelType) {
+    if (modelType === MODEL_TYPES.decisionTable) {
+      const response = await this.http.get(
+        `/decision-table-models/${encodeURIComponent(id)}`,
+        { timeout: REPEATABLE_REQUEST_TIMEOUT_MS },
+      )
+      return parseDecisionTableDocument(response.data)
+    }
     const response = await this.http.get(`/models/${encodeURIComponent(id)}/editor/json`, {
       timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
     })
     return parseEditorDocument(response.data)
   }
 
-  async saveEditorModel(id: string, input: SaveEditorModelInput) {
+  async saveEditorModel(
+    id: string,
+    modelType: ModelType,
+    input: SaveEditorModelInput,
+  ) {
+    if (modelType === MODEL_TYPES.decisionTable) {
+      const response = await this.http.put(
+        `/decision-table-models/${encodeURIComponent(id)}`,
+        {
+          newVersion: input.conflictResolveAction === 'newVersion',
+          decisionTableImageBase64: TRANSPARENT_PNG_DATA_URL,
+          decisionTableRepresentation: {
+            name: input.name,
+            key: input.key,
+            description: input.description,
+            decisionTableDefinition: input.model,
+          },
+        },
+      )
+      return parseSavedDecisionTable(response.data)
+    }
     const body = new URLSearchParams({
       name: input.name,
       key: input.key,
@@ -243,12 +293,28 @@ export class ModelerApi {
     const response = await this.http.post(`/models/${encodeURIComponent(id)}/editor/json`, body, {
       headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
     })
-    return parseProcessModel(response.data)
+    return parseModel(response.data)
   }
 
-  async deleteModel(id: string) {
-    await this.http.delete(`/models/${encodeURIComponent(id)}`, {
-      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
-    })
+}
+
+function parseDecisionTableDocument(value: unknown): EditorModelDocument {
+  const document = asRecord(value)
+  return {
+    modelId: requiredString(document.id, 'id'),
+    name: requiredString(document.name, 'name'),
+    key: requiredString(document.key, 'key'),
+    description: optionalString(document.description),
+    lastUpdated: requiredTimestamp(document.lastUpdated, 'lastUpdated'),
+    lastUpdatedBy: optionalString(document.lastUpdatedBy),
+    model: asRecord(document.decisionTableDefinition),
   }
+}
+
+function parseSavedDecisionTable(value: unknown) {
+  const decisionTable = asRecord(value)
+  return parseModel({
+    ...decisionTable,
+    modelType: MODEL_TYPES.decisionTable,
+  })
 }

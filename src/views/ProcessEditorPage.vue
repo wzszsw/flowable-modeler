@@ -1,26 +1,16 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, shallowRef, watch } from 'vue'
-import { ElMessage } from 'element-plus'
-import {
-  onBeforeRouteLeave,
-  useRoute,
-  useRouter,
-  type RouteLocationNormalized,
-} from 'vue-router'
+import { computed, onBeforeUnmount, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 
 import BpmnDesigner from '@/components/designer/BpmnDesigner.vue'
-import { translate } from '@/i18n'
+import StructuredDesigner from '@/components/designer/StructuredDesigner.vue'
 import { useModelerApplication } from '@/modeler/modelerApplication'
-import { ROUTE_NAMES } from '@/routes'
-
-interface DesignerInstance {
-  confirmClose: () => Promise<boolean>
-}
+import { MODEL_TYPES } from '@/modeler/modelTypes'
+import { editorRouteName, listRouteName, ROUTE_NAMES } from '@/routes'
 
 const application = useModelerApplication()
 const route = useRoute()
 const router = useRouter()
-const designerRef = shallowRef<DesignerInstance | null>(null)
 const modelId = computed(() => {
   const value = route.params.modelId
   return typeof value === 'string' ? value : ''
@@ -31,7 +21,6 @@ const routeModel = computed(() => {
 })
 
 let loadGeneration = 0
-let bypassLeaveConfirmation = false
 
 async function loadRouteModel() {
   const generation = ++loadGeneration
@@ -49,59 +38,36 @@ async function loadRouteModel() {
     !loaded &&
     generation === loadGeneration &&
     application.authenticated.value &&
-    modelId.value === id
+    modelId.value === id &&
+    application.activeModel.value?.id !== id
   ) {
     await router.replace({ name: ROUTE_NAMES.processes })
   }
 }
 
-async function closeEditor() {
-  bypassLeaveConfirmation = true
-  try {
-    await router.push({ name: ROUTE_NAMES.processes, query: route.query })
-  } finally {
-    bypassLeaveConfirmation = false
-  }
+function closeEditor() {
+  const model = routeModel.value
+  const query: Record<string, string> = {}
+  if (typeof route.query.lang === 'string') query.lang = route.query.lang
+  if (model?.modelType === MODEL_TYPES.decisionService) query.type = 'service'
+  else if (model?.modelType === MODEL_TYPES.decisionTable) query.type = 'table'
+  void router.push({
+    name: model ? listRouteName(model.modelType) : ROUTE_NAMES.processes,
+    query,
+  })
 }
 
-function restoreRejectedRoute(from: RouteLocationNormalized) {
-  const restoreIfNeeded = () => {
-    if (router.currentRoute.value.fullPath !== from.fullPath) return
-    if ((window.location.hash.slice(1) || '/') === from.fullPath) return
-    void router
-      .replace({
-        path: from.path,
-        query: from.query,
-        hash: from.hash,
-        force: true,
-      })
-      .catch((error: unknown) => {
-        ElMessage.error(
-          error instanceof Error ? error.message : translate('shell.editor.restoreAddressFailed'),
-        )
-      })
-  }
-
-  for (const delay of [0, 50, 200]) {
-    window.setTimeout(restoreIfNeeded, delay)
-  }
+function openReference(referenceId: string) {
+  const reference = application.referenceModels.value.find((model) => model.id === referenceId)
+  if (!reference) return
+  const query: Record<string, string> = {}
+  if (typeof route.query.lang === 'string') query.lang = route.query.lang
+  void router.push({
+    name: editorRouteName(reference.modelType),
+    params: { modelId: reference.id },
+    query,
+  })
 }
-
-onBeforeRouteLeave(async (_to, from) => {
-  if (bypassLeaveConfirmation || !application.authenticated.value) return true
-  if (!designerRef.value) return true
-
-  let canLeave = false
-  try {
-    canLeave = await designerRef.value.confirmClose()
-  } catch (error) {
-    ElMessage.error(
-      error instanceof Error ? error.message : translate('shell.editor.confirmLeaveFailed'),
-    )
-  }
-  if (!canLeave) restoreRejectedRoute(from)
-  return canLeave
-})
 
 watch(
   () => [application.authenticated.value, modelId.value] as const,
@@ -117,13 +83,28 @@ onBeforeUnmount(() => {
 
 <template>
   <BpmnDesigner
-    v-if="routeModel"
+    v-if="routeModel?.modelType === MODEL_TYPES.process"
     :key="routeModel.id"
-    ref="designerRef"
     :initial-xml="application.activeXml.value"
     :initial-file-name="`${routeModel.key}.bpmn20.xml`"
     :initial-saved-at="routeModel.lastUpdated"
+    :reference-models="application.referenceModels.value"
     :persist-model="application.saveActiveModel"
     @close="closeEditor"
+    @open-reference="openReference"
+  />
+  <StructuredDesigner
+    v-else-if="routeModel"
+    :key="routeModel.id"
+    :model-type="routeModel.modelType"
+    :initial-xml="application.activeXml.value"
+    :initial-name="routeModel.name"
+    :initial-key="routeModel.key"
+    :initial-description="routeModel.description"
+    :initial-saved-at="routeModel.lastUpdated"
+    :reference-models="application.referenceModels.value"
+    :persist-model="application.saveActiveModel"
+    @close="closeEditor"
+    @open-reference="openReference"
   />
 </template>

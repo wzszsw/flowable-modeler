@@ -18,6 +18,14 @@ export default defineConfig({
       '@': fileURLToPath(new URL('./src', import.meta.url)),
     },
   },
+  optimizeDeps: {
+    include: [
+      'cmmn-js/lib/Modeler',
+      'cmmn-js/lib/features/context-pad/ContextPadProvider',
+      'cmmn-js/lib/features/palette/PaletteProvider',
+      'cmmn-js/lib/features/popup-menu/ReplaceMenuProvider',
+    ],
+  },
   server: {
     proxy: {
       '/app': {

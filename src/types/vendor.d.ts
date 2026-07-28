@@ -1,6 +1,26 @@
 declare module 'diagram-js-minimap'
 declare module 'bpmn-js-token-simulation'
 declare module 'diagram-js-grid'
+declare module 'cmmn-js/lib/Modeler' {
+  const Modeler: new (options?: Record<string, unknown>) => any
+  export default Modeler
+}
+declare module 'cmmn-js/lib/features/palette/PaletteProvider' {
+  const PaletteProvider: any
+  export default PaletteProvider
+}
+declare module 'cmmn-js/lib/features/context-pad/ContextPadProvider' {
+  const ContextPadProvider: any
+  export default ContextPadProvider
+}
+declare module 'cmmn-js/lib/features/popup-menu/ReplaceMenuProvider' {
+  const ReplaceMenuProvider: any
+  export default ReplaceMenuProvider
+}
+declare module 'dmn-js/lib/Modeler' {
+  const Modeler: new (options?: Record<string, unknown>) => any
+  export default Modeler
+}
 
 declare module 'bpmn-moddle' {
   export class BpmnModdle {

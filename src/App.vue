@@ -20,12 +20,24 @@ import {
 import {
   ModelerApiError,
   type ModelerCredentials,
-  type ProcessModel,
-  type ProcessModelQuery,
+  type ModelerModel,
+  type ModelQuery,
 } from '@/modeler/modelerApi'
 import { createModelerClient, type ModelerClient } from '@/modeler/modelerClient'
-import { bpmnXmlToOryxJson, oryxJsonToBpmnXml } from '@/modeler/oryxConverter'
-import { ROUTE_NAMES } from '@/routes'
+import { editorJsonToXml, xmlToEditorJson } from '@/modeler/modelAdapters'
+import {
+  MODEL_TYPES,
+  modelTypesForCategory,
+  referenceModelTypes,
+  type DecisionModelType,
+  type ModelCategory,
+} from '@/modeler/modelTypes'
+import {
+  EDITOR_ROUTE_NAMES,
+  LIST_ROUTE_NAMES,
+  editorRouteName,
+  ROUTE_NAMES,
+} from '@/routes'
 
 const route = useRoute()
 const router = useRouter()
@@ -38,11 +50,12 @@ const loginError = ref('')
 const loginErrorKey = ref<string | null>(null)
 const loginErrorParams = ref<TranslationParams>({})
 const username = ref('')
-const models = ref<ProcessModel[]>([])
+const models = ref<ModelerModel[]>([])
 const totalModels = ref(0)
-const activeModel = ref<ProcessModel | null>(null)
+const activeModel = ref<ModelerModel | null>(null)
 const activeXml = ref('')
-const currentQuery = ref<ProcessModelQuery>({ sort: 'modifiedDesc' })
+const referenceModels = ref<ModelerModel[]>([])
+const currentQuery = ref<ModelQuery>(defaultListQuery())
 
 interface SessionContext {
   client: ModelerClient
@@ -65,9 +78,28 @@ function currentModelId() {
   return typeof value === 'string' ? value : ''
 }
 
-function isProcessEditorRoute(modelId?: string) {
+function routeCategory(): ModelCategory {
+  if (route.name === ROUTE_NAMES.cases) return 'cases'
+  if (route.name === ROUTE_NAMES.decisions) return 'decisions'
+  return 'processes'
+}
+
+function routeDecisionType(): DecisionModelType {
+  return route.query.type === 'service'
+    ? MODEL_TYPES.decisionService
+    : MODEL_TYPES.decisionTable
+}
+
+function defaultListQuery(): ModelQuery {
+  return {
+    sort: 'modifiedDesc',
+    modelTypes: modelTypesForCategory(routeCategory(), routeDecisionType()),
+  }
+}
+
+function isEditorRoute(modelId?: string) {
   return (
-    route.name === ROUTE_NAMES.processEditor &&
+    EDITOR_ROUTE_NAMES.includes(route.name as (typeof EDITOR_ROUTE_NAMES)[number]) &&
     (!modelId || currentModelId() === modelId)
   )
 }
@@ -76,6 +108,7 @@ function clearActiveModel() {
   editorRequest += 1
   activeModel.value = null
   activeXml.value = ''
+  referenceModels.value = []
 }
 
 function redirectAfterLogin() {
@@ -85,8 +118,8 @@ function redirectAfterLogin() {
   }
   const resolved = router.resolve(redirect)
   if (
-    resolved.name !== ROUTE_NAMES.processes &&
-    resolved.name !== ROUTE_NAMES.processEditor
+    !LIST_ROUTE_NAMES.includes(resolved.name as (typeof LIST_ROUTE_NAMES)[number]) &&
+    !EDITOR_ROUTE_NAMES.includes(resolved.name as (typeof EDITOR_ROUTE_NAMES)[number])
   ) {
     return { name: ROUTE_NAMES.processes }
   }
@@ -100,7 +133,7 @@ async function navigateToLogin(preserveEditorRoute = false) {
   const redirectQuery = { ...route.query }
   delete redirectQuery.lang
   const redirect =
-    preserveEditorRoute && isProcessEditorRoute()
+    preserveEditorRoute && isEditorRoute()
       ? router.resolve({ path: route.path, query: redirectQuery, hash: route.hash }).fullPath
       : undefined
   await router.replace({
@@ -185,7 +218,7 @@ function resetSession(messageKey?: string) {
   username.value = ''
   models.value = []
   totalModels.value = 0
-  currentQuery.value = { sort: 'modifiedDesc' }
+  currentQuery.value = defaultListQuery()
   clearActiveModel()
   sessionRestoring.value = false
   if (messageKey) setTranslatedLoginError(messageKey)
@@ -201,7 +234,7 @@ function handleSessionError(error: unknown, context: SessionContext, fallback: s
   reportError(error, fallback)
 }
 
-function replaceModel(updated: ProcessModel) {
+function replaceModel(updated: ModelerModel) {
   const index = models.value.findIndex((model) => model.id === updated.id)
   if (index >= 0) models.value[index] = updated
 }
@@ -273,7 +306,7 @@ async function logout() {
   username.value = ''
   models.value = []
   totalModels.value = 0
-  currentQuery.value = { sort: 'modifiedDesc' }
+  currentQuery.value = defaultListQuery()
   clearActiveModel()
   clearLoginError()
 
@@ -288,7 +321,7 @@ async function logout() {
   }
 }
 
-async function loadModels(query: ProcessModelQuery = currentQuery.value) {
+async function loadModels(query: ModelQuery = currentQuery.value) {
   const context = currentSession()
   if (!context) return
   currentQuery.value = { ...query }
@@ -312,20 +345,23 @@ async function loadModelForRoute(id: string) {
   if (!context) return false
   const request = ++editorRequest
   try {
-    const [model, editorDocument] = await Promise.all([
-      context.client.getModel(id),
-      context.client.getEditorModel(id),
-    ])
+    const model = await context.client.getModel(id)
     assertCurrentSession(context)
-    if (request !== editorRequest || !isProcessEditorRoute(id)) {
+    const editorDocument = await context.client.getEditorModel(id, model.modelType)
+    assertCurrentSession(context)
+    if (request !== editorRequest || !isEditorRoute(id)) {
       throw new SessionChangedError()
     }
-    const xml = await oryxJsonToBpmnXml(editorDocument.model)
-    assertCurrentSession(context)
-    if (request !== editorRequest || !isProcessEditorRoute(id)) {
-      throw new SessionChangedError()
+    const expectedRoute = editorRouteName(model.modelType)
+    if (route.name !== expectedRoute) {
+      await router.replace({
+        name: expectedRoute,
+        params: { modelId: id },
+        query: route.query,
+      })
+      assertCurrentSession(context)
     }
-    activeModel.value = {
+    const resolvedModel: ModelerModel = {
       ...model,
       name: editorDocument.name,
       key: editorDocument.key,
@@ -333,6 +369,26 @@ async function loadModelForRoute(id: string) {
       lastUpdated: editorDocument.lastUpdated,
       lastUpdatedBy: editorDocument.lastUpdatedBy,
     }
+    const referenceTypes = referenceModelTypes(model.modelType)
+    const references = referenceTypes.length
+      ? (
+          await context.client.listModels(
+            { sort: 'nameAsc', modelTypes: referenceTypes },
+            { showGlobalLoading: false },
+          )
+        ).data
+      : []
+    assertCurrentSession(context)
+    const xml = await editorJsonToXml(editorDocument.model, {
+      model: resolvedModel,
+      references,
+    })
+    assertCurrentSession(context)
+    if (request !== editorRequest || !isEditorRoute(id)) {
+      throw new SessionChangedError()
+    }
+    activeModel.value = resolvedModel
+    referenceModels.value = references.filter((reference) => reference.id !== id)
     activeXml.value = xml
     return true
   } catch (error) {
@@ -353,7 +409,7 @@ async function createModel(input: CreateModelInput) {
     const created = await context.client.createModel(input)
     assertCurrentSession(context)
     await router.push({
-      name: ROUTE_NAMES.processEditor,
+      name: editorRouteName(created.modelType),
       params: { modelId: created.id },
       query: route.query,
     })
@@ -370,28 +426,62 @@ async function importModel(input: ImportModelInput) {
   const context = sessionOrReport(fallback)
   if (!context) return
   modelMutationPending.value = true
-  let created: ProcessModel | null = null
   try {
+    if (input.modelType !== MODEL_TYPES.process) {
+      throw new Error(translate('shell.models.importUnsupported'))
+    }
     const metadata = parseBpmnMetadata(input.xml)
-    const editorJson = await bpmnXmlToOryxJson(input.xml)
+    const references = (
+      await context.client.listModels(
+        {
+          sort: 'nameAsc',
+          modelTypes: referenceModelTypes(MODEL_TYPES.process),
+        },
+        { showGlobalLoading: false },
+      )
+    ).data
     assertCurrentSession(context)
-    created = await context.client.createModel({
+    const importedModel: ModelerModel = {
+      id: crypto.randomUUID(),
       name: input.name || metadata.name,
       key: input.key || metadata.key,
       description: input.description || metadata.description,
+      createdBy: username.value,
+      lastUpdatedBy: username.value,
+      lastUpdated: 0,
+      latestVersion: true,
+      version: 1,
+      comment: '',
+      modelType: MODEL_TYPES.process,
+      tenantId: '',
+    }
+    const editorJson = await xmlToEditorJson(input.xml, {
+      model: importedModel,
+      references,
     })
     assertCurrentSession(context)
-    const saved = await context.client.saveEditorModel(created.id, {
-      name: input.name || metadata.name,
-      key: input.key || metadata.key,
-      description: input.description || metadata.description,
+    const created = await context.client.createModel({
+      name: importedModel.name,
+      key: importedModel.key,
+      description: importedModel.description,
+      modelType: MODEL_TYPES.process,
+    })
+    assertCurrentSession(context)
+    const saved = await context.client.saveEditorModel(created.id, created.modelType, {
+      name: importedModel.name,
+      key: importedModel.key,
+      description: importedModel.description,
       model: editorJson,
       lastUpdated: created.lastUpdated,
     })
     assertCurrentSession(context)
-    const xml = await oryxJsonToBpmnXml(editorJson)
+    const xml = await editorJsonToXml(editorJson, {
+      model: saved,
+      references,
+    })
     assertCurrentSession(context)
     activeModel.value = saved
+    referenceModels.value = references.filter((reference) => reference.id !== saved.id)
     activeXml.value = xml
     await router.push({
       name: ROUTE_NAMES.processEditor,
@@ -400,15 +490,6 @@ async function importModel(input: ImportModelInput) {
     })
     ElMessage.success(translate('shell.models.importSuccess', { fileName: input.fileName }))
   } catch (error) {
-    if (created) {
-      try {
-        await context.client.deleteModel(created.id)
-      } catch {
-        if (isCurrentSession(context)) {
-          ElMessage.warning(translate('shell.models.importCleanupFailed'))
-        }
-      }
-    }
     handleSessionError(error, context, fallback)
   } finally {
     if (isCurrentSession(context)) modelMutationPending.value = false
@@ -420,8 +501,15 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
   const model = activeModel.value
   if (!model) throw new Error(translate('shell.models.currentMissing'))
 
-  const editorJson = await bpmnXmlToOryxJson(snapshot.xml, {
-    preserveOryxSnapshot: true,
+  const modelForSave: ModelerModel = {
+    ...model,
+    name: snapshot.name,
+    key: snapshot.key,
+    description: snapshot.description,
+  }
+  const editorJson = await xmlToEditorJson(snapshot.xml, {
+    model: modelForSave,
+    references: referenceModels.value,
   })
   assertCurrentSession(context)
   const input = {
@@ -432,9 +520,9 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
     lastUpdated: model.lastUpdated,
   }
 
-  let saved: ProcessModel
+  let saved: ModelerModel
   try {
-    saved = await context.client.saveEditorModel(model.id, input)
+    saved = await context.client.saveEditorModel(model.id, model.modelType, input)
   } catch (error) {
     if (!isCurrentSession(context)) throw new SessionChangedError()
     if (isAuthenticationError(error)) {
@@ -459,7 +547,7 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
     }
     assertCurrentSession(context)
     try {
-      saved = await context.client.saveEditorModel(model.id, {
+      saved = await context.client.saveEditorModel(model.id, model.modelType, {
         ...input,
         conflictResolveAction: 'overwrite',
       })
@@ -479,34 +567,11 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
   return { savedAt: saved.lastUpdated }
 }
 
-async function deleteModel(id: string) {
-  if (modelMutationPending.value) return
-  const fallback = translate('shell.models.deleteFailed')
-  const context = sessionOrReport(fallback)
-  if (!context) return
-  modelMutationPending.value = true
-  listRequest += 1
-  try {
-    await context.client.deleteModel(id)
-    assertCurrentSession(context)
-    models.value = models.value.filter((model) => model.id !== id)
-    totalModels.value = Math.max(0, totalModels.value - 1)
-    ElMessage.success(translate('shell.models.deleteSuccess'))
-  } catch (error) {
-    handleSessionError(error, context, fallback)
-  } finally {
-    if (isCurrentSession(context)) {
-      await loadModels(currentQuery.value)
-      if (isCurrentSession(context)) modelMutationPending.value = false
-    }
-  }
-}
-
 async function syncRouteState() {
   if (sessionRestoring.value) return
 
   if (!authenticated.value) {
-    await navigateToLogin(isProcessEditorRoute())
+    await navigateToLogin(isEditorRoute())
     return
   }
 
@@ -526,6 +591,7 @@ const modelerApplication: ModelerApplication = {
   totalModels,
   activeModel,
   activeXml,
+  referenceModels,
   login,
   logout,
   loadModels,
@@ -533,7 +599,6 @@ const modelerApplication: ModelerApplication = {
   createModel,
   importModel,
   saveActiveModel,
-  deleteModel,
   clearActiveModel,
 }
 
@@ -551,10 +616,10 @@ watch(
     if (
       !restoring &&
       isAuthenticated &&
-      routeName === ROUTE_NAMES.processes &&
-      previous?.[2] === ROUTE_NAMES.processEditor
+      LIST_ROUTE_NAMES.includes(routeName as (typeof LIST_ROUTE_NAMES)[number]) &&
+      EDITOR_ROUTE_NAMES.includes(previous?.[2] as (typeof EDITOR_ROUTE_NAMES)[number])
     ) {
-      currentQuery.value = { sort: 'modifiedDesc' }
+      currentQuery.value = defaultListQuery()
       void loadModels(currentQuery.value)
     }
     void syncRouteState()
