@@ -46,6 +46,8 @@ export interface ModelerApplication {
   createModel: (input: CreateModelInput) => Promise<void>
   importModel: (input: ImportModelInput) => Promise<void>
   saveActiveModel: (snapshot: ModelSnapshot) => Promise<{ savedAt: number }>
+  downloadModel: (id: string) => Promise<void>
+  deleteModel: (id: string) => Promise<void>
   clearActiveModel: () => void
 }
 

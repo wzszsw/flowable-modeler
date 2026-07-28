@@ -317,4 +317,39 @@ export class IndexedDbModelerApi {
       rethrowStorageError(database, error)
     }
   }
+
+  async deleteModel(id: string) {
+    const database = await openDatabase()
+    try {
+      await new Promise<void>((resolve, reject) => {
+        const transaction = database.transaction(MODEL_STORE, 'readwrite')
+        const store = transaction.objectStore(MODEL_STORE)
+        const request = store.getKey(id)
+        let expectedError: ModelerApiError | undefined
+
+        request.onsuccess = () => {
+          try {
+            if (request.result === undefined) {
+              expectedError = modelNotFound(id)
+              transaction.abort()
+              return
+            }
+            store.delete(id)
+          } catch (error) {
+            expectedError = storageError(error)
+            try {
+              transaction.abort()
+            } catch {
+              reject(expectedError)
+            }
+          }
+        }
+        transaction.oncomplete = () => resolve()
+        transaction.onerror = () => reject(expectedError || storageError(transaction.error))
+        transaction.onabort = () => reject(expectedError || storageError(transaction.error))
+      })
+    } catch (error) {
+      rethrowStorageError(database, error)
+    }
+  }
 }

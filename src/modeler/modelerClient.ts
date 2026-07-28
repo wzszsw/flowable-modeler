@@ -13,6 +13,7 @@ export type ModelerClient = Pick<
   | 'getModel'
   | 'getEditorModel'
   | 'saveEditorModel'
+  | 'deleteModel'
 >
 
 export function createModelerClient(): ModelerClient {

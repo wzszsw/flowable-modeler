@@ -559,7 +559,7 @@ async function assertNoUnsupportedActions(page) {
     elements.map((element) => element.getAttribute('data-testid') || ''),
   )
   assert.equal(
-    testIds.some((value) => /(export|deploy|publish|download)/i.test(value)),
+    testIds.some((value) => /(export|deploy|publish)/i.test(value)),
     false,
     `unsupported action test id is visible: ${testIds.join(', ')}`,
   )
@@ -700,16 +700,59 @@ async function createAndReopenModel(page, baseUrl, modelType, name, key) {
   assert.equal(currentEditorId(page), id, `refresh changed the editor id for ${key}`)
   await page.locator('[data-testid="back-to-models"]').click()
   await page.locator('[data-testid="model-list-page"]').waitFor({ state: 'visible' })
+  const modelRow = page.locator(`[data-testid="model-row"][data-model-id="${id}"]`)
   assert.equal(
-    await page.locator('[data-testid="delete-model"]').count(),
-    0,
-    'model deletion must not be exposed without reverse-relation checks',
+    await modelRow.locator('[data-testid="delete-model"]').count(),
+    1,
+    'saved models must expose the Flowable delete action',
+  )
+  assert.equal(
+    await modelRow.locator('[data-testid="download-model"]').count(),
+    1,
+    'saved models must expose the Flowable download action',
   )
   const record = (await readStoredModels(page)).find((candidate) => candidate.id === id)
   assert.ok(record, `created model was not stored: ${key}`)
   assert.equal(record.modelType, modelType)
+  const downloadPromise = page.waitForEvent('download')
+  await modelRow.locator('[data-testid="download-model"]').click()
+  const download = await downloadPromise
+  const expectedFileName = modelType === MODEL_TYPES.process
+    ? `${name.replaceAll(' ', '_')}.bpmn20.xml`
+    : modelType === MODEL_TYPES.case
+      ? `${name.replaceAll(' ', '_')}.cmmn.xml`
+      : `${name}.dmn`
+  assert.equal(download.suggestedFilename(), expectedFileName)
+  const downloadStream = await download.createReadStream()
+  const chunks = []
+  for await (const chunk of downloadStream) chunks.push(Buffer.from(chunk))
+  const downloadedXml = Buffer.concat(chunks).toString('utf8')
+  assert.match(downloadedXml, /<[^>]*definitions\b/i, `downloaded XML is invalid: ${key}`)
+  console.log(`[pass] Flowable XML download: ${expectedFileName}`)
   console.log(`[pass] create, save, refresh and reopen: ${key}`)
   return record
+}
+
+async function createAndDeleteLocalModel(page, baseUrl) {
+  await openList(page, baseUrl, '/processes')
+  await page.locator('[data-testid="create-model"]').click()
+  await page.locator('[data-testid="model-create-name"]').fill('Disposable process')
+  await page.locator('[data-testid="model-create-key"]').fill('disposable_process')
+  await page.locator('[data-testid="confirm-create-model"]').click()
+  await waitForEditor(page, MODEL_TYPES.process)
+  const id = currentEditorId(page)
+  await page.locator('[data-testid="back-to-models"]').click()
+  const modelRow = page.locator(`[data-testid="model-row"][data-model-id="${id}"]`)
+  await modelRow.waitFor({ state: 'visible' })
+  await modelRow.locator('[data-testid="delete-model"]').click()
+  await page.getByRole('button', { name: 'Delete', exact: true }).click()
+  await modelRow.waitFor({ state: 'detached' })
+  assert.equal(
+    (await readStoredModels(page)).some((record) => record.id === id),
+    false,
+    'deleted local model remains in IndexedDB',
+  )
+  console.log('[pass] Flowable delete action removes the saved local model')
 }
 
 async function openStoredEditor(page, baseUrl, record) {
@@ -1019,6 +1062,7 @@ async function runLocalModeSuite(browser) {
     await assertNoUnsupportedActions(page)
     console.log('[pass] BPMN -> decision table and decision service references')
 
+    await createAndDeleteLocalModel(page, server.baseUrl)
     const records = await readStoredModels(page)
     assertCrossModelReferences(records)
     assert.deepEqual(pageErrors, [], `local browser page errors: ${pageErrors.join('; ')}`)

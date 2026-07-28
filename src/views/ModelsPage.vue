@@ -93,6 +93,8 @@ watch(
     @create="application.createModel"
     @import="application.importModel"
     @open="openModel"
+    @download="application.downloadModel"
+    @delete="application.deleteModel"
     @query-change="application.loadModels"
     @refresh="application.loadModels()"
     @logout="application.logout"

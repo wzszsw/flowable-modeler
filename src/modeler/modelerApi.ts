@@ -296,6 +296,11 @@ export class ModelerApi {
     return parseModel(response.data)
   }
 
+  async deleteModel(id: string) {
+    await this.http.delete(`/models/${encodeURIComponent(id)}`, {
+      timeout: REPEATABLE_REQUEST_TIMEOUT_MS,
+    })
+  }
 }
 
 function parseDecisionTableDocument(value: unknown): EditorModelDocument {

@@ -1,12 +1,13 @@
 <script setup lang="ts">
 import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import type { FormInstance, FormRules, TabsPaneContext } from 'element-plus'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import {
   ArrowUpDown,
   BriefcaseBusiness,
   ChevronDown,
   Database,
+  Download,
   FileText,
   FolderOpen,
   GitBranch,
@@ -15,6 +16,7 @@ import {
   RefreshCw,
   Search,
   TableProperties,
+  Trash2,
   Upload,
   UserRound,
   Workflow,
@@ -64,6 +66,8 @@ const emit = defineEmits<{
   create: [model: ModelCreatePayload]
   import: [model: ModelImportPayload]
   open: [id: string]
+  download: [id: string]
+  delete: [id: string]
   queryChange: [query: ModelQuery]
   refresh: []
   logout: []
@@ -275,6 +279,25 @@ function handleDecisionType(value: string | number | boolean) {
   }
 }
 
+async function confirmDelete(model: ModelerModel) {
+  if (interactionPending.value) return
+  try {
+    await ElMessageBox.confirm(
+      t('shell.models.deleteConfirm', { name: model.name }),
+      t('shell.models.deleteTitle'),
+      {
+        type: 'warning',
+        confirmButtonText: t('shell.common.delete'),
+        cancelButtonText: t('shell.common.cancel'),
+        confirmButtonClass: 'el-button--danger',
+      },
+    )
+  } catch {
+    return
+  }
+  if (!interactionPending.value) emit('delete', model.id)
+}
+
 function handleUserCommand(command: string | number | object) {
   if (!interactionPending.value && command === 'logout') emit('logout')
 }
@@ -479,6 +502,27 @@ function modelTypeLabel(modelType: ModelType) {
             >
               {{ t('shell.models.open') }}
             </el-button>
+            <el-tooltip :content="t('shell.models.delete')" placement="top">
+              <el-button
+                text
+                type="danger"
+                :icon="Trash2"
+                :disabled="interactionPending"
+                data-testid="delete-model"
+                :aria-label="t('shell.models.deleteAria', { name: model.name })"
+                @click.stop="confirmDelete(model)"
+              />
+            </el-tooltip>
+            <el-tooltip :content="t('shell.models.download')" placement="top">
+              <el-button
+                text
+                :icon="Download"
+                :disabled="interactionPending"
+                data-testid="download-model"
+                :aria-label="t('shell.models.downloadAria', { name: model.name })"
+                @click.stop="emit('download', model.id)"
+              />
+            </el-tooltip>
           </div>
         </div>
 
@@ -587,7 +631,7 @@ function modelTypeLabel(modelType: ModelType) {
 .search-input { width: 280px; }
 .sort-select { width: 220px; flex: 0 0 220px; }
 .model-list { position: relative; min-height: 360px; overflow: hidden; border: 1px solid #e4e7ec; border-radius: 7px; background: #fff; }
-.table-heading, .model-row { display: grid; grid-template-columns: minmax(260px, 1fr) 180px 96px; align-items: center; column-gap: 20px; }
+.table-heading, .model-row { display: grid; grid-template-columns: minmax(260px, 1fr) 180px 176px; align-items: center; column-gap: 20px; }
 .table-heading { min-height: 42px; padding: 0 18px; border-bottom: 1px solid #eaecf0; color: #667085; background: #f9fafb; font-size: 12px; font-weight: 600; }
 .model-row { min-height: 78px; padding: 12px 18px; border-bottom: 1px solid #eaecf0; }
 .model-row:last-child { border-bottom: 0; }

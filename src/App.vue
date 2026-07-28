@@ -567,6 +567,95 @@ async function saveActiveModel(snapshot: ModelSnapshot) {
   return { savedAt: saved.lastUpdated }
 }
 
+function downloadFileName(model: ModelerModel) {
+  const name = model.name.trim() || model.key || 'model'
+  if (model.modelType === MODEL_TYPES.process) return `${name.replaceAll(' ', '_')}.bpmn20.xml`
+  if (model.modelType === MODEL_TYPES.case) return `${name.replaceAll(' ', '_')}.cmmn.xml`
+  return `${name}.dmn`
+}
+
+function saveXmlFile(xml: string, fileName: string) {
+  const url = URL.createObjectURL(new Blob([xml], { type: 'application/xml;charset=utf-8' }))
+  const anchor = document.createElement('a')
+  anchor.href = url
+  anchor.download = fileName
+  anchor.hidden = true
+  document.body.appendChild(anchor)
+  anchor.click()
+  anchor.remove()
+  window.setTimeout(() => URL.revokeObjectURL(url), 0)
+}
+
+async function downloadModel(id: string) {
+  if (modelMutationPending.value) return
+  const fallback = translate('shell.models.downloadFailed')
+  const context = sessionOrReport(fallback)
+  const model = models.value.find((candidate) => candidate.id === id)
+  if (!context || !model) {
+    if (context) ElMessage.error(fallback)
+    return
+  }
+
+  modelMutationPending.value = true
+  try {
+    const editorDocument = await context.client.getEditorModel(id, model.modelType)
+    assertCurrentSession(context)
+    const types = referenceModelTypes(model.modelType)
+    const references = types.length
+      ? (
+          await context.client.listModels(
+            { sort: 'nameAsc', modelTypes: types },
+            { showGlobalLoading: false },
+          )
+        ).data
+      : []
+    assertCurrentSession(context)
+    const resolvedModel: ModelerModel = {
+      ...model,
+      name: editorDocument.name,
+      key: editorDocument.key,
+      description: editorDocument.description,
+      lastUpdated: editorDocument.lastUpdated,
+      lastUpdatedBy: editorDocument.lastUpdatedBy,
+    }
+    const xml = await editorJsonToXml(editorDocument.model, {
+      model: resolvedModel,
+      references,
+    })
+    assertCurrentSession(context)
+    const fileName = downloadFileName(resolvedModel)
+    saveXmlFile(xml, fileName)
+    ElMessage.success(translate('shell.models.downloadSuccess', { fileName }))
+  } catch (error) {
+    handleSessionError(error, context, fallback)
+  } finally {
+    if (isCurrentSession(context)) modelMutationPending.value = false
+  }
+}
+
+async function deleteModel(id: string) {
+  if (modelMutationPending.value) return
+  const fallback = translate('shell.models.deleteFailed')
+  const context = sessionOrReport(fallback)
+  if (!context) return
+  modelMutationPending.value = true
+  listRequest += 1
+  try {
+    await context.client.deleteModel(id)
+    assertCurrentSession(context)
+    models.value = models.value.filter((model) => model.id !== id)
+    totalModels.value = Math.max(0, totalModels.value - 1)
+    ElMessage.success(translate('shell.models.deleteSuccess'))
+  } catch (error) {
+    handleSessionError(error, context, fallback)
+  } finally {
+    if (isCurrentSession(context)) {
+      await loadModels(currentQuery.value)
+      if (isCurrentSession(context)) modelMutationPending.value = false
+    }
+  }
+}
+
 async function syncRouteState() {
   if (sessionRestoring.value) return
 
@@ -599,6 +688,8 @@ const modelerApplication: ModelerApplication = {
   createModel,
   importModel,
   saveActiveModel,
+  downloadModel,
+  deleteModel,
   clearActiveModel,
 }
 
