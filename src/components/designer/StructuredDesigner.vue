@@ -842,9 +842,14 @@ defineExpose({ confirmClose })
     </header>
 
     <div class="designer-toolbar">
-      <el-button text :icon="ArrowLeft" :disabled="saving" data-testid="back-to-models" @click="requestClose">
-        {{ t('designer.toolbar.back') }}
-      </el-button>
+      <el-button
+        text
+        :icon="ArrowLeft"
+        :disabled="saving"
+        :aria-label="t('designer.toolbar.back')"
+        data-testid="back-to-models"
+        @click="requestClose"
+      />
       <el-button-group>
         <el-button type="primary" :icon="Save" :loading="saving" :disabled="!ready" data-testid="save-model" @click="saveModel()">
           {{ t('designer.toolbar.save') }}

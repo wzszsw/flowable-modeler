@@ -75,11 +75,10 @@ const alignments = computed<Array<{
       text
       :disabled="!ready"
       :icon="Back"
+      :aria-label="t('designer.toolbar.back')"
       data-testid="back-to-models"
       @click="emit('back')"
-    >
-      {{ t('designer.toolbar.back') }}
-    </el-button>
+    />
     <el-button-group>
       <el-button
         type="primary"
